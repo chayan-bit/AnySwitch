@@ -4,7 +4,7 @@ B = build
 # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 GAME_H = ../gen/$(GAME)/game_profile.h
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time
 	$(B)/t_touch
 	$(B)/t_oe 2>/dev/null
 	$(B)/t_fs 2>/dev/null
@@ -18,6 +18,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_condvar
 	$(B)/t_condvar_old
 	$(B)/t_gate_stats
+	$(B)/t_time 2>/dev/null
 $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
@@ -36,6 +37,8 @@ $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
 $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
+$(B)/t_time: t_time.c ../hle_time.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_time.c
 $(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_swkbd.c ../hle_swkbd.c
 $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $(B)

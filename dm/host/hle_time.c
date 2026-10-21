@@ -81,12 +81,34 @@ HLE_FORCE("_ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv", "ne
 HLE_FORCE("_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", "snapshot from the time service; the host fills it on the spot (offline: network clock 0)", Result, h_time_Snapshot, uint8_t *s) {
     memset(s, 0, 0xd0);
     uint8_t tp[0x18]; h_time_SteadyNow(tp);
-    int64_t now, off; h_time_GetCurrentTime(&now); off = now - *(const int64_t *)tp;
-    memcpy(s, &off, 8); memcpy(s + 0x08, tp, 0x18); memcpy(s + 0x40, &now, 8);
+    int64_t now; h_time_GetCurrentTime(&now);
+    h_time_GetContext(s); memcpy(s + 0x40, &now, 8);   // the same user clock context GetSystemClockContext hands out: it changes only when the clock is set, as the comparisons below expect
     h_time_ToCalendarTime((CalendarTime *)(s + 0x50), (CalendarAdditionalInfo *)(s + 0x60), &now);
     memcpy(s + 0x90, tp, 0x18);
     tzset(); strlcpy((char *)s + 0xa8, tzname[0] && *tzname[0] ? tzname[0] : "UTC", 0x24);
     return RES_OK;
+}
+// Snapshot comparisons, IPC calls to the time service in SDK 7 (Pokémon Sword aborted in the first after its new-game naming, sdk+0x3839b0), computed as the service does
+// (Ryujinx / yuzu IStaticService 400 / 501). Steady time points match when their clock source IDs (+0x08 of a time point) are the same.
+static int tp_same_source(const uint8_t *a, const uint8_t *b) { return !memcmp(a + 8, b + 8, 16); }
+// User clock moved by hand between two snapshots: the difference of the user context offsets, 0 when nothing changed, the steady clock restarted, or both have
+// automatic correction on and either network context follows its own steady clock (the change came from the network, not the user)
+HLE_FORCE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_", "time service; computed from the two snapshots (nn::TimeSpan in ns)",
+          int64_t, h_time_UserClockDiff, const uint8_t *a, const uint8_t *b) {
+    if (!memcmp(a, b, 0x20) || !tp_same_source(a + 0x08, b + 0x08)) return 0;
+    int64_t d = (*(const int64_t *)b - *(const int64_t *)a) * 1000000000;
+    if (!a[0xcc] || !b[0xcc]) return d;
+    return tp_same_source(a + 0x28, a + 0x90) || tp_same_source(b + 0x28, b + 0x90) ? 0 : d;
+}
+// Time between two snapshots: by their steady time points (+0x90) when the source matches, else by their network times (+0x48), else "time not found"
+#define RES_TIME_NOT_FOUND 0x19074u   // time module 116, description 200
+HLE_FORCE("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", "time service; computed from the two snapshots", Result, h_time_SpanBetween,
+          int64_t *out, const uint8_t *a, const uint8_t *b) {
+    int64_t s;
+    if (tp_same_source(a + 0x90, b + 0x90)) s = *(const int64_t *)(b + 0x90) - *(const int64_t *)(a + 0x90);
+    else if (*(const int64_t *)(a + 0x48) && *(const int64_t *)(b + 0x48)) s = *(const int64_t *)(b + 0x48) - *(const int64_t *)(a + 0x48);
+    else return RES_TIME_NOT_FOUND;
+    *out = s * 1000000000; return RES_OK;
 }
 // The reverse: local calendar → absolute seconds (13 Sentinels). Around a daylight-saving switch one local time maps to 0 or 2 absolute seconds; the host's mktime gives one
 HLE_FORCE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE",
