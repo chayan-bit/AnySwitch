@@ -180,6 +180,7 @@ Comparison and testing:
 | `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/agents/04-graphics.md](../../docs/agents/04-graphics.md) section 7 |
 | `DM_LETTERBOX=ambient` or `black` | What the bars show when the picture does not fill the screen: `ambient` (default) the blurred live frame, `black` plain black bars; see "Letterbox" below |
 | `DM_CONTROLS_LAYOUT=auto` or `overlay` | iOS only: `auto` (default) puts the touch controls in the letterbox bars when they are tall enough, `overlay` keeps them over the picture |
+| `DM_CONTROLS_SCALE=0.75..1.6` | iOS only, controls in the bars: size of the A / B / X / Y keys, the left stick and the D-pad (default 1; Info.plist key `DMControlsScale`); the bar's height caps it, so the controls never reach the picture |
 | `DM_PRESENT_HZ=N` | The frequency of presentation pacing (default 60); 0 means no frame limit and is for performance profiling only |
 
 ## Letterbox
@@ -200,7 +201,9 @@ Before and after pictures of a generated scene are in `docs/images/letterbox/`.
 With `DM_CONTROLS_LAYOUT=auto` and bars that are at least 108 pt (bottom) and 60 pt (top) tall, `DmGamepad.m` moves the controls into them.
 The top bar holds ZL, L, (L3 in the 3D layout), then minus, the 2D / 3D button, plus and the frame-rate counter, then (R3,) R and ZR.
 The bottom bar holds the left stick, the D-pad in the 3D layout, and the A / B / X / Y diamond; the right stick has no drawn control.
-The bottom controls shrink to fit the bar and every hit target stays at least 44 pt.
+The bottom controls are sized from the bar's height: the stick fills it, and the A / B / X / Y diamond is flattened (keys wider apart than high) so its keys are as large as the bar allows.
+Every hit target stays at least 44 pt across (the floor is a 22 pt radius).
+`DM_CONTROLS_SCALE` (0.75 to 1.6, default 1) scales them; the size stops growing where the controls would come within 2 pt of the picture, and below 0.75 the keys' touch circles would drop under 44 pt, so it is the lower limit.
 The keys are semi-transparent with a lighter fill, a bright rim and a soft top-lit gloss, which reads as frosted glass over the blurred bars without a live backdrop blur (that would cost compositor time every frame).
 On an 13-inch iPad (4:3) the bars are 129 pt tall in landscape and the controls fit; on an 11-inch iPad (about 16:10) the bottom bar is 78 pt, so the layout falls back to the overlay.
 Touches on the bars that no control takes are not sent to the game's touch screen.

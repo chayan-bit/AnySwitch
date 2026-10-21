@@ -15,12 +15,14 @@
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
+void dm_gamepad_scale(float s);
 CGRect dm_gamepad_hud_frame(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 
 static CAMetalLayer *g_layer;
 static BOOL g_ambient = YES, g_controls_auto = YES;
+static float g_controls_scale = 1;
 // One setting: the environment variable (env.txt) wins, then the Info.plist key; a plist value is exported as the variable too, because the graphics layer reads DM_LETTERBOX itself
 static NSString *front_setting(const char *env, NSString *plistKey) {
     const char *e = getenv(env);
@@ -33,7 +35,8 @@ static void front_ios_settings(void) {
     NSString *l = front_setting("DM_LETTERBOX", @"DMLetterbox"), *c = front_setting("DM_CONTROLS_LAYOUT", @"DMControlsLayout");
     g_ambient = !([l isEqualToString:@"black"] || [l isEqualToString:@"0"]);
     g_controls_auto = !([c isEqualToString:@"overlay"] || [c isEqualToString:@"0"]);
-    LOG("front end: letterbox %s, controls layout %s", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay");
+    NSString *z = front_setting("DM_CONTROLS_SCALE", @"DMControlsScale"); g_controls_scale = z.length ? z.floatValue : 1;   // 0.75-1.6, clamped in DmGamepad.m
+    LOG("front end: letterbox %s, controls layout %s, controls scale %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale);
 }
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
@@ -82,6 +85,7 @@ static UILabel *front_ios_fps_label(void);
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
     self.pad = dm_gamepad_view(self.view.bounds);
+    dm_gamepad_scale(g_controls_scale);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
