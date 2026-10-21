@@ -28,7 +28,10 @@ python3 scripts/checkpoint.py verify 0100ABF008968000 bedroom
 ```
 
 Import on the Mac deletes the target directory and its `.work` and `.new` leftovers, then copies the checkpoint in.
-Import on the iPad finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies the checkpoint over `Documents/save` with `--remove-existing-content true`, so no stale file survives.
+Import on the iPad first lists `Documents/save` and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
+It then finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies each checkpoint file to `Documents/save/<file>`.
+It lists `Documents/save` again and fails, without launching, unless every file is on the device with the checkpoint's size.
+Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to `Documents/save` with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches) on 2026-10-22.
 A running app is stopped first because it would commit its own save over the checkpoint.
 Export refuses `.work` directories, empty saves and an existing name without `--force`, and checks the copy against the source manifest.
 Import refuses a checkpoint whose files no longer match its manifest.
