@@ -20,6 +20,8 @@ package	v458752
 shader_versions	v458752
 
 # ---- Files ----
+# Silicon Studio's YEBIS 3 (bloom, glare, tone map, final composite) keeps its 3,155 GLSLC outputs in one TinyEffect object (".tfxo file", 39.5 MB) compressed as a 3.2 MB zlib stream in main's read-only segment;
+# shader_split.py inflates it (zlib_streams): 3,015 more keys in the tables, 46 of them used on the route to Postwick
 # every module main imports from (subsdk1 is GLSLC; the game compiles no GLSL at run time on the routes tried, DM_GLSLC_CAPTURE stayed empty)
 modules	main subsdk0 subsdk1 sdk
 romfs_marker	bin/sound/NX64/wwise/bank/Stream.pck
