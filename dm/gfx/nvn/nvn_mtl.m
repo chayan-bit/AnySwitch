@@ -23,6 +23,7 @@
 #include "nvn_dirty.h"
 #include "nvn_refl.h"
 #include "nvn_cover.h"
+#include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree (in the game profile folder, -I from the Makefile)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
 // Texture slot table per stage: 0-127 the combined handles (nvnCommandBufferBindTexture), 128-255 the separate texture binds (NVN_SEPTEX_SLOT0, nvn_obj.h)
@@ -1155,7 +1156,7 @@ void mtl_present_flush(void);
 // took 78 s on the iPhone (5 s windowless on the Mac). A swapchain texture is not handed back before its previous present is processed (AcquireTexture waits for that ticket)
 void mtl_finish(void) { mtl_finish_gpu(); }
 static void present_drop_for_suspend(void);
-void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); mtl_init(); id<MTLCommandBuffer> cb = q_cb(); [cb commit]; [cb waitUntilCompleted]; mtl_finish_gpu(); }
+void mtl_drain(void) { psoarch_flush(1); present_drop_for_suspend(); mtl_present_flush(); mtl_init(); id<MTLCommandBuffer> cb = q_cb(); [cb commit]; [cb waitUntilCompleted]; mtl_finish_gpu(); }
 
 // ================= Render replay =================
 #include "../../host/front.h"
@@ -3714,6 +3715,7 @@ static struct { pso_key k; id<MTLRenderPipelineState> ps; int used, done; } g_pp
 static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pp_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
 static void pso_predict_rest(void);
+static NSString *pso_label(NvShader *vs, NvShader *fs) { return [NSString stringWithFormat:@"vertex %s fragment %s", vs->key, fs ? fs->key : "-"]; }   // shader keys, for archive miss lines
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k)) return;
@@ -3723,9 +3725,9 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // C
     if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].used = 1; }
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0 || slot < 0) return;
-    MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); g_pp_kicked++;
+    MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); g_pp_kicked++; NSString *lb = pso_label(vs, fs);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        NSError *e = nil; id<MTLRenderPipelineState> ps = psoarch_render(d, lb.UTF8String, &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
     });
 }
@@ -3768,13 +3770,13 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     else {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
         MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL);
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        ps = psoarch_render(d, pso_label(vs, fs).UTF8String, &e);
         // A vertex shader that writes the layer (render_target_array_index) needs the pipeline's input primitive class, which the reflection does not record and the pipeline key does not hold.
         // Pokémon Legends: Z-A has two (b29f08619f379a83, 57246f9a04af8529, layered full-screen passes); Metal names the reason, the shader is marked and every later pipeline with it gets the
         // triangle class (layered draws are triangle lists; a line or point draw with such a shader would fail validation)
         if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {
             vs->layer_out = 1; MLOG("vertex shader %s writes the layer: its pipelines get the triangle input primitive class", vs->key);
-            e = nil; d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL); ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+            e = nil; d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL); ps = psoarch_render(d, pso_label(vs, fs).UTF8String, &e);
         }
     }
     g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
@@ -3832,9 +3834,9 @@ static void warm_worker(NSArray<NSString *> *paths) {
                                                 if (!fsfn) { g_warm_skip_fz++; continue; }
                     }
                     pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
-                    NSError *e = nil; id ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e];
+                    NSError *e = nil; id ps = psoarch_render(pso_desc(&k, vs, fs, fsfn, sk.merged), pso_label(vs, fs).UTF8String, &e);
                     if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {   // a vertex shader that writes the layer (see pso_get_)
-                        vs->layer_out = 1; e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e]; }
+                        vs->layer_out = 1; e = nil; ps = psoarch_render(pso_desc(&k, vs, fs, fsfn, sk.merged), pso_label(vs, fs).UTF8String, &e); }
                     if (!ps) { MLOG("[RED] background render pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
                     WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = vkey; item->fs_key = fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
                     warm_enqueue(item); g_warm_rps++;
@@ -3842,15 +3844,17 @@ static void warm_worker(NSArray<NSString *> *paths) {
                     NSString *key = c[1]; if (!key.length) continue;
                     NvShader *cs = warm_shader(dict, key, 5);
                     if (!cs) continue;
-                    NSError *e = nil; id ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+                    NSError *e = nil; id ps = psoarch_compute(cs->fn, cs->key, &e);
                     if (!ps) { MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
                     WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps;
                     warm_enqueue(item); g_warm_cps++;
                 }
             }
         }
-        MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms",
-             g_warm_shaders, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6);
+        uint64_t ah, am, an; psoarch_stats(&ah, &am, &an);
+        MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; pipeline archive %llu hits / %llu misses, %llu harvested",
+             g_warm_shaders, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, ah, am, an);
+        psoarch_flush(0);
     }
     atomic_store(&g_warm_running, 0);
 }
@@ -3862,8 +3866,19 @@ int mtl_warm_wait(int timeout_ms) {
     while (atomic_load(&g_warm_running) && (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms) usleep(2000);
     return (int)((bp_now() - t0) / 1000000ull) + 1;
 }
+// Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map: the app's dm/, put there by build_ipa.sh);
+// DM_PSO_HARVEST=path, or 1 for pso_harvest.metallib beside pso_user.tsv (Documents on iOS): every pipeline created is recorded for tools/dmsh_psoarch.py
+static void pso_archive_open(void) {
+    const char *a = getenv("DM_PSO_ARCHIVE"), *h = getenv("DM_PSO_HARVEST");
+    NSString *load = a && !strcmp(a, "off") ? nil : a && *a ? @(a) : [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_archive.metallib"];
+    NSString *harv = h && *h && strcmp(h, "1") ? @(h) : nil;
+    if (h && !strcmp(h, "1")) { harv = [pso_user_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_harvest.metallib"];
+        if (!harv) MLOG("[RED] DM_PSO_HARVEST=1 but neither DM_PSO_USER nor DM_SAVE is set: no harvest (give DM_PSO_HARVEST a path)"); }
+    psoarch_open(g_dev, load, harv);
+}
 static void warm_start(void) {
     if (g_warm_started++) return;
+    pso_archive_open();
     const char *e = getenv("DM_PSO_MANIFEST");
     if (e && !strcmp(e, "off")) return;
     NSArray<NSString *> *paths;
@@ -6008,7 +6023,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> tf_pso(NvShader *vs) {
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
     if (hm_get_id(&g_pso_fail, &k)) return nil;
-    NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, nil, nil, 0) error:&e];
+    NSError *e = nil; id<MTLRenderPipelineState> ps = psoarch_render(pso_desc(&k, vs, nil, nil, 0), pso_label(vs, nil).UTF8String, &e);
     if (!ps) { MLOG("[RED] failed to create the transform feedback pipeline (vertex %s): %s", vs->key, e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
     hm_put_id(&g_pso, &k, ps);
     return ps;
@@ -6459,7 +6474,7 @@ static void dispatch(const p_dispatch *dp) {
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
-        NSError *e = nil; uint64_t bt = bp_now(); ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+        NSError *e = nil; uint64_t bt = bp_now(); ps = psoarch_compute(cs->fn, cs->key, &e);
         g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
         if (!ps) { MLOG("[RED] failed to create compute pipeline: %s", e.localizedDescription.UTF8String); return; }
         pso_record("C\t%s\n", cs->key);
@@ -7494,6 +7509,7 @@ static double g_link_it_tin;   // Enqueue time of the frame the display-link cal
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
+    if (g_present_n % 600 == 0) psoarch_flush(0);   // harvest runs: new pipelines reach the disk within seconds (an app killed in the background loses no more); a no-op otherwise
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
         MLOG("[bootprof] t=%.3f s present #%llu: metallibs loaded %llu / %.1f ms; pipelines created %llu / %.1f ms (all synchronous on the submit thread); prewarmed and used: shaders %llu / render pipelines %llu / compute pipelines %llu; "

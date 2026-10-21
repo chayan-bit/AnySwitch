@@ -46,6 +46,17 @@ cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHE
 if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
 else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" Gen/dm/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
+# Precompiled pipelines (docs/stageB-pipeline-archives.md) as dm/pso_archive.metallib, where the host looks each pipeline up before compiling it: PSO_ARCHIVE=a finished archive, taken as is;
+# else a harvest (PSO_HARVEST, default $W/build/pso_harvest.metallib, from a DM_PSO_HARVEST run on the Mac or the device) is compiled by dmsh_psoarch.py with metal-tt for the iOS GPUs
+# (PSO_ARCHS=architectures to keep it small, default every iOS GPU) against this chain's iOS libraries; MSL_MAC = the Mac libraries (their MSL is rebuilt with the driver link metal-tt reads).
+# No archive is no error: pipelines then compile on first use, as before
+MSL_MAC=${MSL_MAC:-$W/build/cache/metal_shader_cache}; PSO_HARVEST=${PSO_HARVEST:-$W/build/pso_harvest.metallib}
+if [ -n "${PSO_ARCHIVE:-}" ]; then cp "$PSO_ARCHIVE" Gen/dm/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"
+elif [ "$GFXAPI" = nvn ] && [ -f "$PSO_HARVEST" ]; then
+  t "pipeline archive: compile $PSO_HARVEST for the iOS GPUs (metal-tt)"
+  mkdir -p "$O" && python3 "$DM/gfx/tools/dmsh_psoarch.py" "$PSO_HARVEST" --libs "$MSL_MAC/b-$V" "$MSL_IOS/b-$V" --target-libs "$MSL_IOS/b-$V" --msl "$MSL_MAC/b-$V" \
+    ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cp "$O/pso_archive.metallib" Gen/dm/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
+else t "no pipeline harvest at $PSO_HARVEST: no pipeline archive, pipelines compile on first use"; fi
 # Diagnostic build: DM_ENV_FILE=file → dm/env.txt in the bundle (main.m sets one environment variable per line at boot)
 if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy DM_ENV_FILE"; t "env: $(grep -v '^#' "$DM_ENV_FILE" | tr '\n' ' ')"; fi
 # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
