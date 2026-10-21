@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install lz4 capstone
+      - run: python -m compileall -q dm scripts
+      - run: python -I dm/tools/tests/test_exefs_patches.py
+  host-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # host unit tests need a profile only; no game files. Pokemon Legends: Z-A is just a profile that exists upstream.
+      - run: make -C dm/host/tests GAME=0100F43008C44000 run
