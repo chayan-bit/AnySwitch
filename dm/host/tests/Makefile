@@ -4,7 +4,7 @@ B = build
 # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 GAME_H = ../gen/$(GAME)/game_profile.h
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost
 	$(B)/t_touch
 	$(B)/t_oe 2>/dev/null
 	$(B)/t_fs 2>/dev/null
@@ -20,6 +20,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_gate_stats
 	$(B)/t_time 2>/dev/null
 	$(B)/t_sync
+	$(B)/t_gate_cost
 $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
@@ -56,6 +57,8 @@ $(B)/t_sync: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wall -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
 $(B):
 	mkdir -p $@
+$(B)/t_gate_cost: t_gate_cost.c t_gate_cost.S t_condvar_stub.c ../entry.S ../hle.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_gate_cost.c t_gate_cost.S t_condvar_stub.c ../entry.S ../hle.c ../hle_thread.c
 $(B)/t_sync_tsan: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -g -fsanitize=thread -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
 .PHONY: run tsan

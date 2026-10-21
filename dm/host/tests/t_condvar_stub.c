@@ -5,7 +5,7 @@ struct dm_flags g_flag;
 uint64_t g_t0_ns;
 void crash_thread_init(void) {}
 void guest_thread_init(void) {}
-void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)sp; ((void (*)(uint64_t))entry)(arg); abort(); }   // t_sync: a C entry on the host stack, which must end in ExitThread
+__attribute__((weak)) void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)sp; ((void (*)(uint64_t))entry)(arg); abort(); }   // t_sync: a C entry on the host stack, which must end in ExitThread (weak: t_gate_cost links the real one from entry.S)
 void *guest_sym(const char *name) { (void)name; return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 #include <mach/mach_time.h>
