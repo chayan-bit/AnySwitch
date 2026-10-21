@@ -894,6 +894,17 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     return 0;
 }
 
+#ifdef DM_TEST_HOOKS
+// Unit tests (t_sync): how many threads wait in kind (1 lock, 2 condition, 3 address, 4 handle) on addr (the condition key for kind 2; ignored for kind 4)
+int dm_test_waiters(int kind, uint64_t addr) {
+    int n = 0;
+    pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t; t = t->all) n += t->wkind == kind && (kind == 4 || (kind == 2 ? t->wkey : t->waddr) == addr);
+    pthread_mutex_unlock(&G);
+    return n;
+}
+#endif
+
 // ---------- SystemEvent of the service layer ----------
 // Real device: the service hands the read end of a kernel event to the client, and the guest waits on it through SDK nn::os. Host: on a guest thread, call the SDK's own
 // CreateSystemEvent(inter-process=true), and the SDK creates the kernel event through SVC 0x45; the write-end handle is recorded, after which any thread (including the host audio thread) can signal it.
