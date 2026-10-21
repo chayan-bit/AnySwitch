@@ -1,4 +1,3 @@
-//          0x10 GetCurrentProcessorNumber 0x25 GetThreadId 0x19 CancelSynchronization
 // Thread and synchronization SVCs of the Horizon kernel, implemented natively: each guest thread = one host pthread, running on the guest stack given by the SDK.
 // The SDK's nn::os runs as is; only the "kernel" underneath it is replaced by the host:
 //   Threads    0x08 CreateThread 0x09 StartThread 0x0A ExitThread 0x0B SleepThread 0x0C/0x0D priority 0x0E/0x0F core mask
