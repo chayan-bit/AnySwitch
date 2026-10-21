@@ -56,6 +56,9 @@ $(B)/t_sync: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wall -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
 $(B):
 	mkdir -p $@
+$(B)/t_sync_tsan: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -fsanitize=thread -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
 .PHONY: run tsan
-tsan: $(B)/t_audio_spsc_tsan
+tsan: $(B)/t_audio_spsc_tsan $(B)/t_sync_tsan
 	$(B)/t_audio_spsc_tsan
+	T_SYNC_SECS=10 $(B)/t_sync_tsan
