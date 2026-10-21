@@ -1328,7 +1328,7 @@ static void tsummary(uint64_t frame) {
         py = cy; pk = ck; pw = cw; }
       pi = ci; pc = cc; pd = dr_; pf = frame; }
     uint64_t up, re, fa, pr; mtl_pkg_stats(&up, &re); nvn_dirty_stats(&fa, &pr);
-    LOG("[nvn] packaged textures: first uploads %llu, re-uploads on pool content change %llu, kept with the bytes unchanged %llu; write-protection faults %llu, pages unprotected before host writes %llu; missed %llu (cumulative)", up, re, mtl_pkg_same(), fa, pr, mtl_pkg_miss());
+    LOG("[nvn] packaged textures: first uploads %llu, re-uploads on pool content change %llu, kept with the bytes unchanged %llu (snapshots %.1f MB made); write-protection faults %llu, pages unprotected before host writes %llu; missed %llu (cumulative)", up, re, mtl_pkg_same(), mtl_pkg_shd_bytes() / 1048576.0, fa, pr, mtl_pkg_miss());
     memset(g_tn, 0, sizeof g_tn);
 }
 // DM_SLOWFRAME=1 (test switch, read over the log port on a real device): per-frame timings are first stored in a ring of the last 16 frames; dropped frames are judged 8 frames late (GPU / on-screen present times are back by then),

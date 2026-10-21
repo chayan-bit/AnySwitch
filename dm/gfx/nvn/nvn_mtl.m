@@ -1269,13 +1269,14 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
 // shd / spare_shd: the guest bytes tex / spare were filled from (a re-upload snapshots the storage and deswizzles the snapshot), nil when filled straight from guest memory. Pages are 16 KB on the
 // host and pools only 4 KB aligned, so writes next to a texture fault its pages too: Pokémon Sword re-uploaded about 46 unchanged textures a frame. A dirty texture whose storage still equals
-// shd keeps tex (pkg_same). Dropped when the GPU writes tex (pkg_gpu_wrote), so that case re-uploads as before
+// shd keeps tex (g_pkg_same). gw: the GPU wrote tex (pkg_gpu_wrote), so it never snapshots and re-uploads as before. nchg: checks in a row that found the bytes changed; from 2 on only every 16th
+// re-upload (nup) snapshots, so a texture rewritten every frame does not pay a copy and a compare each time
 @interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; id<MTLBuffer> shd, spare_shd; uint64_t stamp, seen, hash, spare_fence, vgen, vseen; const void *span; int sparse, vbase, nchg, gw; unsigned nup; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); if (spare) res_remove(spare); if (shd) res_remove(shd); if (spare_shd) res_remove(spare_shd); }
 @end
-static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same;
+static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same, g_pkg_shd_bytes;
 static uint64_t g_pfv_upgrades;
 // DM_NVN_DIRTYCHECK=1 (diagnostic, compared against ground truth): fully hash the pool content on every use; changed but not detected by dirty-page tracking = a missed detection
 static int dirtycheck(void) { static int v = -1; if (v < 0) v = getenv("DM_NVN_DIRTYCHECK") != NULL; return v; }
@@ -1835,11 +1836,18 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                     MLOG("[RED] dirty-page miss: texture ser=%llu pool content changed but was not detected", t->serial);
                 return pk->view ? pk->view : pk->tex;
             }
-            // Dirty pages holding the bytes tex was made from (see NvPkg): re-arm the write tracking as an upload does (protect, stamp, then read) and keep tex
+            // Dirty pages holding the bytes tex was made from (see NvPkg): only the pages written since the stamp can differ from the snapshot. Re-arm them as an upload does (protect, stamp, then read),
+            // compare them, and keep tex when they match. A page first written while they were being protected was not compared: the second count catches it and the texture re-uploads
             if (!lost && pk->shd && !pk->gw) {
-                nvn_dirty_protect(t->mem, t->L.size); uint64_t st = nvn_dirty_now();
-                if (!memcmp(t->mem, pk->shd.contents, t->L.size)) { pk->stamp = st; pk->seen = nvn_dirty_now(); pk->nchg = 0; g_pkg_same++; return pk->view ? pk->view : pk->tex; }
-                pk->nchg++;
+                size_t run[16][2], run2[16][2]; int nr, nr2, pages = nvn_dirty_runs(pk->span, t->mem, t->L.size, pk->stamp, run, 16, &nr);
+                if (pages > 0) {
+                    for (int i = 0; i < nr; i++) nvn_dirty_protect_span(pk->span, (const uint8_t *)t->mem + run[i][0], run[i][1] - run[i][0]);
+                    uint64_t st = nvn_dirty_now();
+                    int same = nvn_dirty_runs(pk->span, t->mem, t->L.size, pk->stamp, run2, 16, &nr2) == pages;
+                    for (int i = 0; same && i < nr; i++) same = !memcmp((const uint8_t *)t->mem + run[i][0], (const uint8_t *)pk->shd.contents + run[i][0], run[i][1] - run[i][0]);
+                    if (same) { pk->stamp = st; pk->seen = nvn_dirty_now(); pk->nchg = 0; g_pkg_same++; return pk->view ? pk->view : pk->tex; }
+                    pk->nchg++;
+                }
             }
             // Pool content changed (streamed assets written into the same storage, a movie frame): switch to another texture, as in-flight draws still read the old one. That is the spare
             // when the GPU is done with it (see NvPkg), else a new one; the old one becomes the spare (pkg_upload_ made nt resident)
@@ -1848,7 +1856,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             // Snapshot unless the GPU wrote tex, or the content really changed at the last two looks (a movie frame: every 16th re-upload still takes one, to notice when it stops)
             int snap = !pk->sparse && !pk->gw && (pk->nchg < 2 || !(pk->nup++ & 15));
             if (!snap) rshd = nil;
-            else if (rshd.length < t->L.size) { rshd = [g_dev newBufferWithLength:MAX(t->L.size, 16u) options:MTLResourceStorageModeShared]; res_add(rshd); }
+            else if (rshd.length < t->L.size) { rshd = [g_dev newBufferWithLength:MAX(t->L.size, 16u) options:MTLResourceStorageModeShared]; res_add(rshd); g_pkg_shd_bytes += rshd.length; }
             uint64_t st, vg = nvn_sparse_gen(); id<MTLTexture> nt = pkg_upload(t, &st, reuse, rshd);
             if (!nt && rshd && rshd != pk->spare_shd) res_remove(rshd);
             if (nt) { id<MTLTexture> old = pk->tex; id<MTLBuffer> olds = pk->shd; pk->tex = nt; pk->shd = rshd;
@@ -1947,6 +1955,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 }
 void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads) { *uploads = g_pkg_uploads; *reuploads = g_pkg_reuploads; }
 uint64_t mtl_pkg_same(void) { return g_pkg_same; }
+uint64_t mtl_pkg_shd_bytes(void) { return g_pkg_shd_bytes; }
 uint64_t mtl_pkg_miss(void) { return g_pkg_miss; }
 void mtl_vc_drop(uint64_t ser);
 void mtl_tex_release(tex_t *t) {
