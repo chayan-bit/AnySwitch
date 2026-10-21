@@ -17,6 +17,11 @@ GAME_H = gen/$(GAME)/game_profile.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
+# Dev input channel (docs/dev-control.md): only with make DEVCTL=1 (also read from the environment, so build_ipa.sh / gen_build.py carry it into the iOS app); product builds have none of it
+ifneq ($(strip $(DEVCTL)),)
+CFLAGS += -DDM_DEVCTL
+SRC += devctl.c
+endif
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex and dm/gfx/vk are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m))
@@ -40,15 +45,17 @@ $(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py FORCE
 # Records which game the host was built for: changing GAME changes the stamp's content and rebuilds the host (otherwise make sees dmhost as newer than both headers and keeps the other game's host).
 # The game of the last build is also read when the Makefile is parsed, and a different one forces the link: make compares whole seconds, and a stamp written in the same second as
 # another game's dmhost (two builds in a row) did not count as newer, so that game's host was kept
+# The stamp also records a dev build (DEVCTL), so switching between dev and product builds always relinks: a product build never keeps a dev host
 GAME_STAMP = gen/game.stamp
+STAMP_ID = $(GAME)$(if $(strip $(DEVCTL)),-devctl)
 $(GAME_STAMP): FORCE
-	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || echo $(GAME) > $@
+	@mkdir -p gen; echo $(STAMP_ID) | cmp -s - $@ || echo $(STAMP_ID) > $@
 ifneq ($(strip $(GAME)),)
-ifneq ($(shell cat $(GAME_STAMP) 2>/dev/null),$(GAME))
+ifneq ($(shell cat $(GAME_STAMP) 2>/dev/null),$(STAMP_ID))
 dmhost: FORCE
 endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h devctl.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers

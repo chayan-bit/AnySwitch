@@ -109,7 +109,13 @@ static uint32_t style_of(uint32_t id) { return id != connected_id() ? 0 : id == 
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of the two paths is deflected more
 
+#ifdef DM_DEVCTL
+void devctl_poll(void);   // dev input channel (hle_devctl.c, dev builds only): applies the events due by the current frame through dm_pad_set / dm_touch_set
+#endif
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
+#ifdef DM_DEVCTL
+    devctl_poll();
+#endif
     memset(s, 0, sizeof *s);
     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
     if (!(style_of(id) & style)) return;   // no controller of this id / style: attributes = 0
@@ -270,6 +276,9 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
 // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
 int touch_fill_n(void *out, int max, uint64_t now_ns);
 static void touch_read(void *s, int n) {
+#ifdef DM_DEVCTL
+    devctl_poll();
+#endif
     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
 }
