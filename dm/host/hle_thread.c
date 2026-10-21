@@ -206,7 +206,7 @@ static void count_block(thr_t *t, int kind) { CNT(t->nblock[kind]); }
 static int64_t park(thr_t *t, int64_t ns) {
     int det_wait = ns > 0 && dm_detclock_enabled();
     uint64_t guest_deadline = det_wait ? guest_ns() + (uint64_t)ns : 0, abs_deadline = 0;
-    if (ns > 0 && !det_wait && (uint64_t)ns < (1ull << 60)) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+    if (ns > 0 && !det_wait && (uint64_t)ns < (1ull << 60)) { mach_timebase_info_data_t tb; mach_timebase_info(&tb);
         abs_deadline = mach_absolute_time() + (uint64_t)((__uint128_t)ns * tb.denom / tb.numer) + 1; }
     for (;;) {
         uint32_t v = atomic_load_explicit(&t->park, memory_order_acquire);
