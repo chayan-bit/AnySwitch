@@ -32,3 +32,4 @@ __pycache__/
 pso_archive*.metallib*
 pso_harvest*.metallib*
 *.mtlp-json
+CLAUDE.local.md
