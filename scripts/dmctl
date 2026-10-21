@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Client for the dev input channel of a dev build (make DEVCTL=1 / DEVCTL=1 build_ipa.sh); grammar and protocol in docs/dev-control.md.
+
+  dmctl [--host H] [--port P] [--token T | --log FILE] frame
+  dmctl ... run 'f900:A wait(30) hold(LUp) wait(60) release'    # sends one sequence, waits until the game has played it, prints the reply
+  dmctl ... run -f steps.txt                                       # the sequence from a file (# starts a comment)
+
+The token comes from --token, $DMCTL_TOKEN, or the last "devctl: ... token <hex>" line of --log (the host's stderr / the app's Documents/log.txt).
+Exit status 0 on "ok" / "frame" / "done", 1 on an "err" reply, 2 on a connection or usage problem."""
+import argparse
+import os
+import re
+import socket
+import sys
+
+TOKEN_RE = re.compile(r'devctl: .* token ([0-9a-f]{32})')
+
+
+def token_from_log(path):
+    tok = None
+    with open(path, errors='replace') as f:
+        for line in f:
+            m = TOKEN_RE.search(line)
+            if m: tok = m.group(1)
+    return tok
+
+
+def read_sequence(args):
+    if args.file:
+        with open(args.file) as f:
+            text = '\n'.join(l.split('#', 1)[0] for l in f)
+    else:
+        text = ' '.join(args.steps)
+    return ' '.join(text.split())   # one line on the wire
+
+
+class Channel:
+    def __init__(self, host, port, token, timeout):
+        self.sock = socket.create_connection((host, port), timeout=10)
+        self.sock.settimeout(timeout)
+        self.buf = b''
+        reply = self.ask('auth ' + token)
+        if not reply.startswith('ok '): raise ConnectionError(f'refused: {reply}')
+        self.hello = reply
+
+    def ask(self, line):
+        self.sock.sendall(line.encode() + b'\n')
+        while b'\n' not in self.buf:
+            chunk = self.sock.recv(4096)
+            if not chunk: raise ConnectionError('channel closed')
+            self.buf += chunk
+        reply, self.buf = self.buf.split(b'\n', 1)
+        return reply.decode()
+
+    def close(self):
+        try: self.sock.sendall(b'quit\n')
+        except OSError: pass
+        self.sock.close()
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--port', type=int, default=int(os.environ.get('DMCTL_PORT', 47800)))
+    ap.add_argument('--token', default=os.environ.get('DMCTL_TOKEN'))
+    ap.add_argument('--log', help='take the token from this host / app log')
+    ap.add_argument('--timeout', type=float, default=600, help='seconds to wait for a reply (a run waits for its last frame)')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('frame')
+    r = sub.add_parser('run')
+    r.add_argument('-f', '--file')
+    r.add_argument('steps', nargs='*')
+    args = ap.parse_args(argv)
+    token = args.token or (token_from_log(args.log) if args.log else None)
+    if not token: ap.error('no token: pass --token, set DMCTL_TOKEN, or point --log at the log that printed it')
+    if args.cmd == 'run' and not (args.file or args.steps): ap.error('run wants a sequence or -f FILE')
+    try:
+        ch = Channel(args.host, args.port, token, args.timeout)
+        reply = ch.ask('frame' if args.cmd == 'frame' else 'run ' + read_sequence(args))
+        ch.close()
+    except (OSError, ConnectionError) as e:
+        print(f'dmctl: {e}', file=sys.stderr); return 2
+    print(reply)
+    return 1 if reply.startswith('err') else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
