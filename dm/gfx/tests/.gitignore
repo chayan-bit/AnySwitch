@@ -48,3 +48,5 @@ t_dirty_race
 t_dirty_race.dSYM/
 t_psoarch
 t_psoarch.dSYM/
+t_passgpu
+t_passgpu.dSYM/
