@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import checkpoint as cp
 
-T = '0100ABF008968000'
+T = '0100AAAAAAAAA000'   # any title ID: the tests never read a game
 
 
 def save_dir(root, files):

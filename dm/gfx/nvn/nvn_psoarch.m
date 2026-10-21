@@ -32,7 +32,7 @@ void psoarch_open(id<MTLDevice> dev, NSString *load, NSString *harvest) {
         g_load = arch_new(load, &e);
         if (g_load) PLOG("loaded %s: pipelines found there are not compiled (this GPU: %s, the slice the archive needs; xcrun metal-lipo -archs lists an archive's)", load.UTF8String, dev.architecture.name.UTF8String);
         else PLOG("[RED] cannot load %s (%s): every pipeline compiles as without an archive", load.UTF8String, e.localizedDescription.UTF8String);
-    } else if (load) PLOG("no archive at %s: every pipeline compiles on first use (build one: docs/stageB-pipeline-archives.md)", load.UTF8String);
+    } else if (load) PLOG("no archive at %s: every pipeline compiles on first use (build one: dm/gfx/README.md#precompiled-pipeline-archives)", load.UTF8String);
     // The harvest is rewritten whole by this run: pipelines of earlier runs come back through the warm-up replay of the pipeline list (DM_PSO_USER), so run with the same list
     if (harvest) PLOG("harvest on: every pipeline created is written to %s (replaces an earlier harvest there)", harvest.UTF8String);
     g_archs = g_load ? @[g_load] : @[];

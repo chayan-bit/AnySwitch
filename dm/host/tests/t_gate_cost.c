@@ -1,6 +1,6 @@
 // Cost of the host gate (entry.S dm_gate + hle.c gate_dispatch) per call, for a cntpct read and for a short SVC (GetCurrentProcessorNumber, 0x10), next to the C work alone.
 // Also checks what the gate must keep: a cntpct read returns the guest tick in its target register, and every register and the flags survive (FPCR included).
-// Timing is printed, not asserted (docs/perf-sync-cntpct.md records it).
+// Timing is printed, not asserted.
 #include "../dm.h"
 #include <stdatomic.h>
 #include <mach/mach_time.h>

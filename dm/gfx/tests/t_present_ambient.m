@@ -1,7 +1,7 @@
 // Ambient letterbox fill (nvn_ambient.h): real Metal rendering of synthetic frames (flat colour quadrants for closed-form checks, a generated scene for screenshots), no game artwork.
 // Checks: the picture is exact and the bars carry the darkened, blurred colours of the nearest part of the frame; black mode leaves exact zeros; the Metal 4 present and the legacy screenshot path agree;
 // pillarboxing; resize / rotation reallocates the slot's targets once and steady frames reuse them; and the GPU cost of the blur passes (DM_NVN_PASSGPU-style timestamps) stays under the budget.
-// DM_AMB_OUT=<dir> also writes before / after PNGs (black bars versus ambient) of the generated scene at 2752x2064 (13-inch iPad) and 1376x1032.
+// DM_AMB_OUT=<dir> also writes before / after PNGs (black bars versus ambient) of the generated scene at 2752x2064 (a 13-inch iPad) and 1376x1032.
 #include "../nvn/nvn_mtl.m"
 uint64_t g_t0_ns;
 int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }   // Tests use host-thread stacks.

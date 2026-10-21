@@ -1,6 +1,6 @@
 // Precompiled pipelines (Metal binary archives): pipeline creation looks each pipeline up in a shipped archive of GPU binaries before compiling it, and a harvest run records every pipeline it creates.
 // Game-agnostic: an archive entry is keyed by Metal itself (the functions' hashes + the whole descriptor nxnative builds: vertex layout, attachment formats, blending), never by game.
-// Flow (docs/stageB-pipeline-archives.md): harvest (DM_PSO_HARVEST) -> tools/dmsh_psoarch.py compiles the harvested pipelines for the iOS GPUs with metal-tt -> build_ipa.sh packs dm/pso_archive.metallib.
+// Flow (dm/gfx/README.md#precompiled-pipeline-archives): harvest (DM_PSO_HARVEST) -> tools/dmsh_psoarch.py compiles the harvested pipelines for the iOS GPUs with metal-tt -> build_ipa.sh packs dm/pso_archive.metallib.
 #pragma once
 #import <Metal/Metal.h>
 

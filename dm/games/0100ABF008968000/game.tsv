@@ -1,8 +1,8 @@
-# Game profile of Pokémon Sword (Switch, base game v0 + update 1.3.2 = v458752, both DLC licences). In bring-up (docs/stageA-sword-bringup.md)
+# Game profile of Pokémon Sword (Switch, base game v0 + update 1.3.2 = v458752, both DLC licences). Experimental: the opening plays, later parts are untested
 # Format: see dm/games/README.md
 # Game Freak's engine, SDK 7.3.2, NVN 7.3.2, NintendoWare Font / Ui2d / Vfx / G3d, Wwise audio; modules main + subsdk0 (NintendoSDK_movie) + subsdk1 (GLSLC) + sdk.
 # RomFS: 50,494 files, 12.1 GB; almost every model, texture and shader sits in GFLXPACK archives (.gfpak, raw / zlib / LZ4 entries), 577 loose BNSH files.
-# Started from the survey's provisional profile; every value below was checked on the Mac (first-boot language select, naming, opening scene in Postwick)
+# Started from the survey's provisional profile; the values below were checked on the Mac
 
 # ---- Identity ----
 title_id	0100ABF008968000
@@ -21,7 +21,7 @@ shader_versions	v458752
 
 # ---- Files ----
 # Silicon Studio's YEBIS 3 (bloom, glare, tone map, final composite) keeps its 3,155 GLSLC outputs in one TinyEffect object (".tfxo file", 39.5 MB) compressed as a 3.2 MB zlib stream in main's read-only segment;
-# shader_split.py inflates it (zlib_streams): 3,015 more keys in the tables, 46 of them used on the route to Postwick
+# shader_split.py inflates it (zlib_streams): 3,015 more keys in the tables
 # every module main imports from (subsdk1 is GLSLC; the game compiles no GLSL at run time on the routes tried, DM_GLSLC_CAPTURE stayed empty)
 modules	main subsdk0 subsdk1 sdk
 romfs_marker	bin/sound/NX64/wwise/bank/Stream.pck
