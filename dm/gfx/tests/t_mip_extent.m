@@ -42,7 +42,7 @@ static void finish(recording *r) {
     mtl_pool_del(r->mem);free(r->mem);
 }
 static void seed(const tex_t *t) {
-    id<MTLTexture> m=tex_mtl(t);id<MTLCommandBuffer> cb=[g_q commandBuffer];
+    id<MTLTexture> m=tex_mtl(t);id<MTLCommandBuffer> cb=q_cb();   // q_cb waits for the upload batch: the new texture's zero fill must land before the seed, not race it on the other queue
     for(int l=0;l<t->d.levels;l++){MTLRenderPassDescriptor *p=[MTLRenderPassDescriptor renderPassDescriptor];
         if(t->d.format==NVN_FORMAT_RGBA8){p.colorAttachments[0].texture=m;p.colorAttachments[0].level=l;
             p.colorAttachments[0].loadAction=MTLLoadActionClear;p.colorAttachments[0].storeAction=MTLStoreActionStore;p.colorAttachments[0].clearColor=MTLClearColorMake(0,0,1,1);}
@@ -87,7 +87,7 @@ static void colour_case(const char *name,int lv,int sc,int clear_only,int slot,i
     else {h_nvnCommandBufferBindProgram(&r.cb,(const NVNprogram *)&colour_pg,3);h_nvnCommandBufferDrawArrays(&r.cb,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);}
     finish(&r);NSUInteger pre_w,pre_h;rt_dims(&pre_w,&pre_h);EXPECT("precheck: first target selected width upper bound",W[lv],pre_w);EXPECT("precheck: first target selected height upper bound",H[lv],pre_h);
     if(sc!=3||!clear_only){EXPECT("actual pass effective width",w,g_pass.tw);EXPECT("actual pass effective height",h,g_pass.th);}
-    colour_check(name,&t,lv,clear_only?(sc==3?0:1):2,w,h,sc==3);
+    colour_check(name,&t,lv,clear_only?1:2,w,h,sc==3);   // NVN clears honour the scissor: a partial-scissor clear writes red inside it only (drawn as a triangle, clear_color_tri)
     if(mrt)colour_check("MRT_unwritten_attachment",&other,-1,0,0,0,0);
 }
 static void plane_case(const char *name,int stencil,int clear_only) {
@@ -118,7 +118,7 @@ int main(int argc,char **argv){@autoreleasepool{
     else if(argc>1&&!strcmp(argv[1],"--oversized"))colour_case("oversized",1,2,0,0,0);
     else {for(int lv=0;lv<4;lv++){char name[64];snprintf(name,sizeof name,"bounded_L%d",lv);colour_case(name,lv,1,0,0,0);
             snprintf(name,sizeof name,"clear_L%d",lv);colour_case(name,lv,1,1,0,0);}
-        colour_case("partial_draw",1,3,0,0,0);colour_case("partial_clear_reject",1,3,1,0,0);colour_case("slot1_clear",1,1,1,1,0);
+        colour_case("partial_draw",1,3,0,0,0);colour_case("partial_clear",1,3,1,0,0);colour_case("slot1_clear",1,1,1,1,0);
         if(argc==1){colour_case("default",1,0,0,0,0);colour_case("oversized",1,2,0,0,0);colour_case("MRT_min",0,0,0,0,1);plane_case("depth",0,0);plane_case("stencil",1,0);plane_case("depth_clear",0,1);plane_case("stencil_clear",1,1);}}
     printf("== %d checks, %d failed ==\n",cases,failed);return failed!=0;
 }}
