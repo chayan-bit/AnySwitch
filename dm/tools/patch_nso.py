@@ -6,10 +6,13 @@
 #   mrs tpidrro_el0     → read thread slot KTLR (Horizon ThreadLocalRegion pointer)
 #   svc #n, mrs cntpct_el0 → host gate (gate address taken from thread slot KGATE; once in C, gates.tsv is looked up by return point)
 #   Registered cuts (CUTS, restricted by NSO build ID): before rewriting, the original bytes are asserted one by one and any mismatch aborts; results are listed in <name>.cuts.tsv
+#   Community ExeFS patches (DM_EXEFS_PATCHES=<folder>, opt-in; dm/tools/exefs_patches.py): IPS / IPS32 / .pchtxt files for this module's build ID are applied after the registered cuts and before the rewrite scan, so the rewriter sees the patched words; a patch that overlaps a cut or gate, another patch with different bytes, the NSO header, or that puts an x18 / svc / system-register word where the rewriter does not sweep, aborts; results are listed in <name>.exefs_patches.tsv
 #   Registered observation gates (OBS, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
 # The key page only stores "actual key number × 8" at the end of the data segment, and patch code fetches thread slots indirectly through the key page: the loader may use any key number.
 # Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF; when that would start beyond 112 MB the patch area sits before the base, see FAR), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
 import struct, re, sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import exefs_patches
 from itertools import combinations
 import lz4.block
 from capstone import *
@@ -244,6 +247,15 @@ for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'
     IMG[off:off + len(nb)] = nb
+# Community ExeFS patches from a user-supplied folder (not part of the repository): after the cuts, before the scan below
+EXEFS_DIR = os.environ.get('DM_EXEFS_PATCHES', '')
+exefs_summary, exefs_writes = (), []
+if EXEFS_DIR:
+    reserved = [(off, len(ob) // 2, 'registered cut') for off, ob, _, _ in cuts] + [(off, 4, 'observation gate') for off, *_ in OBS.get(BUILD_ID, [])]
+    exefs_summary, exefs_writes = exefs_patches.load(EXEFS_DIR, d[0x40:0x60].hex(), segs[2][1] + segs[2][2], reserved)
+    for off, data, label in exefs_writes: IMG[off:off + len(data)] = data
+    for label, n, nbytes in exefs_summary: print(f'{NAME}: build {BUILD_ID}: exefs patch {label} applied ({n} records, {nbytes} bytes)')
+    if not exefs_summary: print(f'{NAME}: build {BUILD_ID}: no exefs patch matches')
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
 KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511}
 KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE'))}
@@ -616,22 +628,27 @@ starts = sorted(x for x in starts if x < TEXT_END)
 
 # ---- Linear scan to find all rewrite points (not relying on register read/write reports) ----
 # Data blocks in the text (nso_code.py: Absolum's main starts with 1.7 MB of them) are not code: words there that read as rewrite sites are left alone
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nso_code
 DATA_BLOCKS = nso_code.data_blocks(IMG, TEXT_END, md)
+def site_kind(o):   # what the rewriter does with the word at o: ('svc', n) / ('tpidr_r', None) / ... / ('x18', None), None for an ordinary word
+    w = struct.unpack_from('<I', IMG, o)[0]
+    if w & 0xFFE0001F == 0xD4000001: return ('svc', (w >> 5) & 0xFFFF)
+    if w & 0xFFFFFFE0 == 0xD53BD040: return ('tpidr_r', None)
+    if w & 0xFFFFFFE0 == 0xD51BD040: return ('tpidr_w', None)
+    if w & 0xFFFFFFE0 == 0xD53BD060: return ('tpidrro_r', None)
+    if w & 0xFFFFFFE0 == 0xD53BE020: return ('cntpct', w & 31)
+    if w & 0xFFFFFFE0 == 0xD53BE040: return ('cntvct', w & 31)
+    # mrs xN, ctr_el0 (cache type): the Apple kernel does not expose it to user mode (SIGILL); SDK 16's nn::os::FlushDataCache reads it for the cache line size
+    if w & 0xFFFFFFE0 == 0xD53B0020: return ('ctr', w & 31)
+    for ins in md.disasm(IMG[o:o + 4], o):
+        if has18(ins): return ('x18', None)
 kinds = {}
 for o in (o for s, e in zip([0] + [e for _, e in DATA_BLOCKS], [s for s, _ in DATA_BLOCKS] + [TEXT_END]) for o in range(s, e, 4)):
-    w = struct.unpack_from('<I', IMG, o)[0]
-    if w & 0xFFE0001F == 0xD4000001: kinds[o] = ('svc', (w >> 5) & 0xFFFF); continue
-    if w & 0xFFFFFFE0 == 0xD53BD040: kinds[o] = ('tpidr_r', None); continue
-    if w & 0xFFFFFFE0 == 0xD51BD040: kinds[o] = ('tpidr_w', None); continue
-    if w & 0xFFFFFFE0 == 0xD53BD060: kinds[o] = ('tpidrro_r', None); continue
-    if w & 0xFFFFFFE0 == 0xD53BE020: kinds[o] = ('cntpct', w & 31); continue
-    if w & 0xFFFFFFE0 == 0xD53BE040: kinds[o] = ('cntvct', w & 31); continue
-    # mrs xN, ctr_el0 (cache type): the Apple kernel does not expose it to user mode (SIGILL); SDK 16's nn::os::FlushDataCache reads it for the cache line size
-    if w & 0xFFFFFFE0 == 0xD53B0020: kinds[o] = ('ctr', w & 31); continue
-    for ins in md.disasm(IMG[o:o + 4], o):
-        if has18(ins): kinds[o] = ('x18', None)
+    if k := site_kind(o): kinds[o] = k
+# A patched word that reads as a rewrite site but was not swept (data / ro / a data block in the text) would run unrewritten on the host: stop instead
+for off, data, label in exefs_writes:
+    for o in range(off & ~3, min(off + len(data), len(IMG) - 3), 4):
+        assert o in kinds or not site_kind(o), f'{label}: patched word at image offset {o:#x} ({IMG[o:o + 4].hex()}) uses x18 / svc / a system register but lies outside the swept code (data, ro or a data block of the text): it would not be rewritten'
 
 # Take the instruction table per function, find the windows and jump tables
 import bisect
@@ -1197,6 +1214,11 @@ with open(P('sites.tsv'), 'w') as f:
 with open(P('cuts.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, ob, nb, why in cuts: f.write(f'{off:#x}\t{ob}\t{nb}\t{why}\n')   # Columns: offset, original bytes, new bytes, reason
+if EXEFS_DIR:
+    with open(P('exefs_patches.tsv'), 'w') as f:
+        f.write(f'# BUILD_ID\t{BUILD_ID}\n')
+        for label, n, nbytes in exefs_summary: f.write(f'{label}\t{n}\t{nbytes}\n')   # Columns: patch file (relative to the folder), records, bytes
+        for off, data, label in exefs_writes: f.write(f'#\t{off:#x}\t{len(data)}\t{label}\n')   # one comment line per record: image offset, length
 with open(P('obs.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, oid, ow, why in obs: f.write(f'{off:#x}\t{oid}\t{ow}\t{why}\n')
