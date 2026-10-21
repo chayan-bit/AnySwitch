@@ -70,6 +70,8 @@ typedef struct thr {
     mach_port_t mport;         // Host thread port (to get CPU time)
     _Atomic int qos_pending;   // SetThreadPriority from another thread changed prio: the thread applies the new class at its next SVC (only a thread can set its own QoS)
     uint32_t qos;
+    // Host gate counts (written only by this thread, read by dm_gate_stats): SVCs by number, cntpct reads through the gate, waits that blocked by kind (block(): 1 lock, 2 condition, 3 address, 4 handle)
+    _Atomic uint32_t svc_n[128]; _Atomic uint64_t ntick, nblock[5];
     // Pausing (SetThreadActivity, used by IL2CPP's garbage collector to stop the world): pause_req = requested, paused = stopped; when stopped inside an SVC the context comes from the gate frame svc_regs (registered on SVC entry),
     // when stopped in guest code the signal handler saves it into ctx_*; pcv lets the requester wait for "stopped" and the paused thread wait for "resume"
     _Atomic int pause_req; int paused;
@@ -82,6 +84,8 @@ typedef struct thr {
     pthread_cond_t pcv;
 } thr_t;
 static thr_t *g_all;
+#define CNT(x) atomic_store_explicit(&(x), atomic_load_explicit(&(x), memory_order_relaxed) + 1, memory_order_relaxed)   // a plain load and store: only the owning thread writes
+static uint64_t g_dead_svc[128], g_dead_tick, g_dead_block[5];   // the counts of threads already freed (thr_free), so the totals only grow
 extern __thread _Atomic int dm_host_work;   // declared in hle.h too; defined in hle_nvn.c
 static _Atomic uint64_t g_preempt_n, g_preempt_ns, g_preempt_cap;   // same-core preemption yields: count, total wait, cap hits (svc_thread)
 
@@ -166,6 +170,7 @@ static void wake(thr_t *t, int64_t res) {
 }
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
 static int64_t block(thr_t *t, int kind, int64_t ns) {
+    if (ns != 0 && kind >= 1 && kind <= 4) CNT(t->nblock[kind]);
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
     if (ns == 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     struct timespec dl;
@@ -251,6 +256,9 @@ static void *thread_main(void *p) {
 }
 static void thr_free(thr_t *t) {   // Holding G; unlink from the all-threads chain and free
     for (thr_t **p = &g_all; *p; p = &(*p)->all) if (*p == t) { *p = t->all; break; }
+    for (int i = 0; i < 128; i++) g_dead_svc[i] += atomic_load_explicit(&t->svc_n[i], memory_order_relaxed);
+    g_dead_tick += atomic_load_explicit(&t->ntick, memory_order_relaxed);
+    for (int i = 0; i < 5; i++) g_dead_block[i] += atomic_load_explicit(&t->nblock[i], memory_order_relaxed);
     pthread_cond_destroy(&t->cv); pthread_cond_destroy(&t->pcv); free(t);
 }
 static const char *thr_name(thr_t *t, char *buf, size_t n);
@@ -584,6 +592,37 @@ void dm_thread_cpu(char *out, size_t n, double secs) {
     if (!top[0] && o < n) snprintf(out + o, n - o, "none");
     pthread_mutex_unlock(&G);
 }
+// Host gate counts (the host gates line every 300 frames, hle_nvn.c): the rewriter turns every svc and every mrs cntpct into a call to the host (hle.c gate_dispatch), and every contended kernel wait ends in block() behind the one lock G.
+// cntpct reads come through thr_tick_note; GetSystemTick (svc 0x1E) is the other tick read. Per frame, since the previous call: SVCs in all and the four most frequent by number, tick reads, and the waits that blocked by kind
+// (a wait that returned at once is not counted: only a blocked wait pays the pthread_cond wake). Counts of exited threads are kept in g_dead_*
+void thr_tick_note(void) { thr_t *t = pthread_getspecific(g_keythr); if (t) CNT(t->ntick); }
+static const char *svc_name(int n) {
+    switch (n) {
+    case 0x0B: return "SleepThread"; case 0x0D: return "SetThreadPriority"; case 0x18: return "WaitSynchronization"; case 0x1A: return "ArbitrateLock"; case 0x1B: return "ArbitrateUnlock";
+    case 0x1C: return "WaitProcessWideKeyAtomic"; case 0x1D: return "SignalProcessWideKey"; case 0x1E: return "GetSystemTick"; case 0x21: return "SendSyncRequest"; case 0x34: return "WaitForAddress";
+    case 0x35: return "SignalToAddress"; case 0x36: return "SynchronizePreemptionState"; default: return NULL; }
+}
+void dm_gate_stats(char *out, size_t n, double frames) {
+    static uint64_t ps[128], pt, pb[5];
+    uint64_t s[128], tk, b[5], d[128], tot = 0; int top[4] = {-1, -1, -1, -1};
+    pthread_mutex_lock(&G);
+    memcpy(s, g_dead_svc, sizeof s); tk = g_dead_tick; memcpy(b, g_dead_block, sizeof b);
+    for (thr_t *t = g_all; t; t = t->all) {
+        for (int i = 0; i < 128; i++) s[i] += atomic_load_explicit(&t->svc_n[i], memory_order_relaxed);
+        tk += atomic_load_explicit(&t->ntick, memory_order_relaxed);
+        for (int i = 0; i < 5; i++) b[i] += atomic_load_explicit(&t->nblock[i], memory_order_relaxed);
+    }
+    pthread_mutex_unlock(&G);
+    if (frames < 1) frames = 1;
+    for (int i = 0; i < 128; i++) { d[i] = s[i] - ps[i]; tot += d[i]; ps[i] = s[i];
+        for (int j = 0; j < 4; j++) if (d[i] && (top[j] < 0 || d[i] > d[top[j]])) { for (int q = 3; q > j; q--) top[q] = top[q - 1]; top[j] = i; break; } }
+    size_t o = (size_t)snprintf(out, n, "SVCs %.0f per frame (", tot / frames);
+    for (int j = 0; j < 4 && top[j] >= 0 && o < n; j++) { const char *nm = svc_name(top[j]); char hx[8]; if (!nm) { snprintf(hx, sizeof hx, "%#x", top[j]); nm = hx; }
+        o += (size_t)snprintf(out + o, n - o, "%s%s %.0f", j ? ", " : "", nm, d[top[j]] / frames); }
+    if (o < n) snprintf(out + o, n - o, "); tick reads %.0f per frame (cntpct gate %.0f, GetSystemTick %.0f); waits that blocked %.0f per frame (lock %.0f, condition %.0f, address %.0f, handle %.0f)",
+        (tk - pt + d[0x1E]) / frames, (tk - pt) / frames, d[0x1E] / frames, (double)(b[1] + b[2] + b[3] + b[4] - pb[1] - pb[2] - pb[3] - pb[4]) / frames, (double)(b[1] - pb[1]) / frames, (double)(b[2] - pb[2]) / frames, (double)(b[3] - pb[3]) / frames, (double)(b[4] - pb[4]) / frames);
+    pt = tk; memcpy(pb, b, sizeof pb);
+}
 // Sleep until dl (host monotonic ns) on time: macOS nanosleep / mach_wait_until carry timer slack; measured, 33 ms sleeps take about 36.4 ms, 5 ms take 6.1 ms, 1 ms take 1.26 ms (the same at any QoS).
 // Metroid Dread's sound thread sleeps "33 ms minus this round's work" (main+0xf95b0), and on the host its period became 36.9 ms; cutscenes render a frame whenever the audio play position that thread updates moves, so they ran at about 27 fps (30 on the Switch).
 // Each step sleeps only 3/4 of the remaining time (the slack is at most about 25%, so it never oversleeps), looping until within 20 µs: a 33 ms sleep takes about 4 system calls with an error of tens of microseconds, and nothing spins
@@ -608,7 +647,7 @@ int svc_thread(int num, uint64_t *regs) {
     return r;
 }
 static int svc_thread_impl(int num, uint64_t *regs) {
-    { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; } }
+    { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; CNT(me->svc_n[num & 127]); } }
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
     switch (num) {
     case 0x08: {  // CreateThread(→w1 handle; x1 entry, x2 argument, x3 stack top, w4 priority, w5 core)
