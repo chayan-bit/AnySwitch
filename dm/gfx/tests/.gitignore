@@ -52,3 +52,5 @@ t_passgpu
 t_passgpu.dSYM/
 t_present_ambient
 t_present_ambient.dSYM/
+pso_replay
+pso_replay.dSYM/
