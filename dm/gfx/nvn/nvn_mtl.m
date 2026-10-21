@@ -1167,7 +1167,7 @@ void mtl_drain(void) { psoarch_flush(1); present_drop_for_suspend(); mtl_present
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[109];
+static int g_red_once[110];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -3092,6 +3092,16 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
         NSUInteger ns = base.textureType == MTLTextureType3D ? 1 : (r.v.set_layers && r.v.nlayers ? r.v.nlayers : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1) - s0);
         MTLTextureType tt = r.v.set_target ? ttype(r.v.target, base.textureType) : base.textureType;
         if (tt == MTLTextureType2D && ns > 1) ns = 1;
+        // Metal takes whole cubes in a cube or cube array view (asserts otherwise: "newSliceRange.length(1) must be a multiple of (6)"). Pokémon Sword's outdoor scenes make cube views
+        // (target CUBE) with a layer count of 1 and sample them as cubes: the count is in cubes there, so the view gets 6 faces per counted cube from its first face. Without the faces
+        // for that, a face view instead: one face as 2D, several as a 2D array
+        if ((tt == MTLTextureTypeCube || tt == MTLTextureTypeCubeArray) && ns % 6) {
+            NSUInteger have = base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1), want = tt == MTLTextureTypeCube ? 6 : ns * 6;
+            int cubes = s0 + want <= have;
+            RED_ONCE(109, "cube texture view of %lu layers from layer %lu (texture ID %d, view target %s %d): %s", (unsigned long)ns, (unsigned long)s0, tid, r.v.set_target ? "set" : "unset", r.v.target,
+                     cubes ? "layers counted as whole cubes" : "too few faces for a cube, a 2D (array) view of those faces");
+            if (cubes) ns = want; else tt = ns == 1 ? MTLTextureType2D : MTLTextureType2DArray;
+        }
         vc_key k; memset(&k, 0, sizeof k); k.pf = pf; k.tt = (uint8_t)tt; k.l0 = (uint32_t)l0; k.nl = (uint32_t)nl; k.s0 = (uint32_t)s0; k.ns = (uint32_t)ns; memcpy(k.sw, sw, 4);
         if (!(v = vc_get(rp->t.serial, &k, base))) {
             v = need_sw ? [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns) swizzle:MTLTextureSwizzleChannelsMake(sw[0], sw[1], sw[2], sw[3])]
