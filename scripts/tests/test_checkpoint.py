@@ -76,13 +76,20 @@ class Mac(unittest.TestCase):
 
 class FakeDevice:
     """Answers devicectl like the real tool would, records every command."""
-    def __init__(self, t, save=None, pids=(), app_url='file:///private/var/containers/Bundle/Application/X/DmIOS.app/'):
-        self.t, self.save, self.pids, self.url, self.cmds = t, save or {}, pids, app_url, []
+    def __init__(self, t, save=None, pids=(), app_url='file:///private/var/containers/Bundle/Application/X/DmIOS.app/', drop=()):
+        self.t, self.save, self.pids, self.url, self.cmds, self.drop = t, dict(save or {}), pids, app_url, [], drop
 
     def run(self, cmd, capture_output=True, text=True):
         self.cmds.append(cmd); a = cmd[2:]
         def opt(k): return a[a.index(k) + 1]
         if a[:3] == ['device', 'copy', 'from']: save_dir(Path(opt('--destination')), self.save)
+        elif a[:3] == ['device', 'copy', 'to']:
+            rel = opt('--destination').removeprefix(cp.DEVICE_SAVE + '/')
+            if rel not in self.drop: self.save[rel] = Path(opt('--source')).read_bytes()
+        elif a[:3] == ['device', 'info', 'files']:
+            if not self.save: return subprocess.CompletedProcess(cmd, 1, '', 'not found')
+            files = [{'relativePath': k, 'metadata': {'size': len(v)}, 'resources': {'isDirectory': False}} for k, v in self.save.items()]
+            Path(opt('--json-output')).write_text(json.dumps({'result': {'files': files}}))
         elif a[:3] == ['device', 'info', 'apps']: Path(opt('--json-output')).write_text(json.dumps({'result': {'apps': [{'url': self.url}]}}))
         elif a[:3] == ['device', 'info', 'processes']:
             procs = [{'processIdentifier': p, 'executable': self.url + 'DmIOS'} for p in self.pids] + [{'processIdentifier': 1, 'executable': 'file:///sbin/launchd'}]
@@ -104,17 +111,32 @@ class Device(unittest.TestCase):
         self.assertEqual(c[:5], ['xcrun', 'devicectl', 'device', 'copy', 'from'])
         self.assertIn('appDataContainer', c); self.assertEqual(c[c.index('--source') + 1], 'Documents/save')
 
-    def test_import_stops_the_app_then_replaces_the_save(self):
-        cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a'}), root=self.root)
-        dev = FakeDevice(self.t, pids=(812,))
+    def test_import_stops_the_app_then_copies_each_file_and_checks_them(self):
+        cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a', 'backup': b'bb'}), root=self.root)
+        dev = FakeDevice(self.t, save={'main': b'old', 'backup': b'old'}, pids=(812,))
         cp.import_device(T, 'x', 'UDID', 'com.x.y', launch=True, root=self.root, run=dev.run)
         verbs = [' '.join(c[2:5]) for c in dev.cmds]
-        self.assertEqual(verbs, ['device info apps', 'device info processes', 'device process terminate', 'device copy to', 'device process launch'])
-        term = dev.cmds[2]; self.assertEqual(term[term.index('--pid') + 1], '812')
-        copy = dev.cmds[3]
-        self.assertEqual(copy[copy.index('--destination') + 1], 'Documents/save')
-        self.assertEqual(copy[copy.index('--remove-existing-content') + 1], 'true')
-        self.assertTrue(copy[copy.index('--source') + 1].endswith('/x/save'))
+        self.assertEqual(verbs, ['device info files', 'device info apps', 'device info processes', 'device process terminate',
+                                 'device copy to', 'device copy to', 'device info files', 'device process launch'])
+        term = dev.cmds[3]; self.assertEqual(term[term.index('--pid') + 1], '812')
+        dests = sorted(c[c.index('--destination') + 1] for c in dev.cmds if c[2:5] == ['device', 'copy', 'to'])
+        self.assertEqual(dests, ['Documents/save/backup', 'Documents/save/main'])
+        self.assertFalse(any('--remove-existing-content' in c for c in dev.cmds), 'that flag empties the whole destination container directory')
+        self.assertEqual(dev.save, {'main': b'a', 'backup': b'bb'})
+
+    def test_import_refuses_a_device_save_with_extra_files_unless_kept(self):
+        cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a'}), root=self.root)
+        dev = FakeDevice(self.t, save={'main': b'old', 'extra': b'e'})
+        with self.assertRaises(cp.Fail): cp.import_device(T, 'x', 'UDID', 'com.x.y', root=self.root, run=dev.run)
+        self.assertNotIn('copy', [c[3] for c in dev.cmds], 'nothing is copied before the refusal')
+        cp.import_device(T, 'x', 'UDID', 'com.x.y', keep_extra=True, root=self.root, run=dev.run)
+        self.assertEqual(dev.save, {'main': b'a', 'extra': b'e'})
+
+    def test_import_fails_when_a_copied_file_is_missing_on_the_device(self):
+        cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a', 'backup': b'b'}), root=self.root)
+        dev = FakeDevice(self.t, drop=('backup',))
+        with self.assertRaises(cp.Fail): cp.import_device(T, 'x', 'UDID', 'com.x.y', launch=True, root=self.root, run=dev.run)
+        self.assertNotIn('launch', [c[4] for c in dev.cmds])
 
     def test_import_without_a_running_app_terminates_nothing(self):
         cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a'}), root=self.root)

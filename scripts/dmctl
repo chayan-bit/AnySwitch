@@ -2,16 +2,22 @@
 """Client for the dev input channel of a dev build (make DEVCTL=1 / DEVCTL=1 build_ipa.sh); grammar and protocol in docs/dev-control.md.
 
   dmctl [--host H] [--port P] [--token T | --log FILE] frame
+  dmctl --device UDID --bundle ID frame                             # an iOS dev build: host and token come from the device
   dmctl ... run 'f900:A wait(30) hold(LUp) wait(60) release'    # sends one sequence, waits until the game has played it, prints the reply
   dmctl ... run -f steps.txt                                       # the sequence from a file (# starts a comment)
 
 The token comes from --token, $DMCTL_TOKEN, or the last "devctl: ... token <hex>" line of --log (the host's stderr / the app's Documents/log.txt).
+With --device the host is the device's CoreDevice tunnel address, where the app listens by default, and with --bundle as well the token is
+read from the app's Documents/log.txt, both through devicectl.
 Exit status 0 on "ok" / "frame" / "done", 1 on an "err" reply, 2 on a connection or usage problem."""
 import argparse
+import json
 import os
 import re
 import socket
+import subprocess
 import sys
+import tempfile
 
 TOKEN_RE = re.compile(r'devctl: .* token ([0-9a-f]{32})')
 
@@ -23,6 +29,25 @@ def token_from_log(path):
             m = TOKEN_RE.search(line)
             if m: tok = m.group(1)
     return tok
+
+
+def devicectl_json(*args):
+    with tempfile.TemporaryDirectory() as t:
+        out = os.path.join(t, 'o.json')
+        subprocess.run(['xcrun', 'devicectl', *args, '--json-output', out], check=True, capture_output=True)
+        with open(out) as f: return json.load(f)['result']
+
+
+def device_host(udid):
+    return devicectl_json('device', 'info', 'details', '--device', udid)['connectionProperties']['tunnelIPAddress']
+
+
+def device_token(udid, bundle):
+    with tempfile.TemporaryDirectory() as t:
+        log = os.path.join(t, 'log.txt')
+        subprocess.run(['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', udid, '--domain-type', 'appDataContainer',
+                        '--domain-identifier', bundle, '--source', 'Documents/log.txt', '--destination', log], check=True, capture_output=True)
+        return token_from_log(log)
 
 
 def read_sequence(args):
@@ -61,6 +86,8 @@ class Channel:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--device', help='UDID of an iOS device running a dev build: connect through its CoreDevice tunnel')
+    ap.add_argument('--bundle', help='with --device: the app bundle id, to read the token from its Documents/log.txt')
     ap.add_argument('--port', type=int, default=int(os.environ.get('DMCTL_PORT', 47800)))
     ap.add_argument('--token', default=os.environ.get('DMCTL_TOKEN'))
     ap.add_argument('--log', help='take the token from this host / app log')
@@ -71,14 +98,16 @@ def main(argv=None):
     r.add_argument('-f', '--file')
     r.add_argument('steps', nargs='*')
     args = ap.parse_args(argv)
-    token = args.token or (token_from_log(args.log) if args.log else None)
-    if not token: ap.error('no token: pass --token, set DMCTL_TOKEN, or point --log at the log that printed it')
     if args.cmd == 'run' and not (args.file or args.steps): ap.error('run wants a sequence or -f FILE')
     try:
+        if args.device: args.host = device_host(args.device)
+        token = args.token or (token_from_log(args.log) if args.log else None)
+        if not token and args.device and args.bundle: token = device_token(args.device, args.bundle)
+        if not token: ap.error('no token: pass --token, set DMCTL_TOKEN, point --log at the log that printed it, or give --device and --bundle')
         ch = Channel(args.host, args.port, token, args.timeout)
         reply = ch.ask('frame' if args.cmd == 'frame' else 'run ' + read_sequence(args))
         ch.close()
-    except (OSError, ConnectionError) as e:
+    except (OSError, ConnectionError, subprocess.CalledProcessError, KeyError) as e:
         print(f'dmctl: {e}', file=sys.stderr); return 2
     print(reply)
     return 1 if reply.startswith('err') else 0

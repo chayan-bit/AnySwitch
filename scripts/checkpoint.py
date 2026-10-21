@@ -5,7 +5,7 @@ Usage and examples: docs/dev-control.md. A checkpoint is the game's own save (us
   checkpoint.py export <title> <name> --mac <DM_SAVE dir>                     the committed save of a Mac run (not <dir>.work)
   checkpoint.py export <title> <name> --device <udid> --bundle <bundle id>    Documents/save of the app (quit the app first)
   checkpoint.py import <title> <name> --mac <DM_SAVE dir>                     replaces the directory; launch the host with DM_SAVE=<dir>
-  checkpoint.py import <title> <name> --device <udid> --bundle <bundle id> [--launch]
+  checkpoint.py import <title> <name> --device <udid> --bundle <bundle id> [--launch] [--keep-extra]
   checkpoint.py list [<title>] | verify <title> <name>
 
 The Mac host and the iOS app keep a save the same way (dm/host/hle_fs.c): DM_SAVE is the committed directory, swapped in whole on every Commit, and a
@@ -146,13 +146,31 @@ def app_pids(udid, bundle, run=subprocess.run):
     return [p['processIdentifier'] for p in procs if p.get('executable', '').startswith(url)]
 
 
-def import_device(title, name, udid, bundle, launch=False, root=None, run=subprocess.run):
+def device_save_files(udid, bundle, run=subprocess.run):
+    """{relative path: size} of the files in the app's Documents/save ({} when it does not exist)."""
+    with tempfile.TemporaryDirectory() as t:
+        r = run(['xcrun', 'devicectl', 'device', 'info', 'files', *device_args(udid, bundle), '--subdirectory', DEVICE_SAVE, '--json-output', f'{t}/f.json'],
+                capture_output=True, text=True)
+        if r.returncode: return {}
+        files = json.loads(Path(f'{t}/f.json').read_text())['result']['files']
+    return {f['relativePath']: f['metadata']['size'] for f in files if not f['resources']['isDirectory']}
+
+
+def import_device(title, name, udid, bundle, launch=False, keep_extra=False, root=None, run=subprocess.run):
+    """Copies the checkpoint over Documents/save file by file. devicectl cannot delete one file, and its --remove-existing-content
+    clears the whole destination container directory (it wiped Documents once), so it is never used: a device save holding files the
+    checkpoint lacks is refused unless keep_extra, and the result is checked against the manifest."""
     d = ckpt_dir(title, name, root); meta = load(d)
     if meta.get('guest_name_xattrs'): raise Fail(f'checkpoint has case-collision names kept in extended attributes, which devicectl drops: {meta["guest_name_xattrs"]}')
+    extra = sorted(set(device_save_files(udid, bundle, run=run)) - set(meta['files']))
+    if extra and not keep_extra: raise Fail(f'the device save has files this checkpoint lacks, which devicectl cannot delete: {extra} (--keep-extra leaves them in place)')
     for pid in app_pids(udid, bundle, run=run):   # a running app would commit its own save over the checkpoint
         devicectl('device', 'process', 'terminate', '--device', udid, '--pid', str(pid), run=run)
-    devicectl('device', 'copy', 'to', *device_args(udid, bundle), '--source', str(d / 'save'), '--destination', DEVICE_SAVE,
-              '--remove-existing-content', 'true', run=run)
+    for rel in meta['files']:
+        devicectl('device', 'copy', 'to', *device_args(udid, bundle), '--source', str(d / 'save' / rel), '--destination', f'{DEVICE_SAVE}/{rel}', run=run)
+    got = device_save_files(udid, bundle, run=run)
+    bad = sorted(rel for rel, f in meta['files'].items() if got.get(rel) != f['size'])
+    if bad: raise Fail(f'after the copy these device files do not match the checkpoint: {bad}')
     if launch: devicectl('device', 'process', 'launch', '--device', udid, '--terminate-existing', bundle, run=run)
     return meta
 
@@ -165,7 +183,7 @@ def main(argv=None):
         w = p.add_mutually_exclusive_group(required=True); w.add_argument('--mac', metavar='DIR'); w.add_argument('--device', metavar='UDID')
         p.add_argument('--bundle')
         if c == 'export': p.add_argument('--note', default=''); p.add_argument('--force', action='store_true')
-        else: p.add_argument('--launch', action='store_true')
+        else: p.add_argument('--launch', action='store_true'); p.add_argument('--keep-extra', action='store_true')
     p = sub.add_parser('list'); p.add_argument('title', nargs='?')
     p = sub.add_parser('verify'); p.add_argument('title'); p.add_argument('name')
     a = ap.parse_args(argv)
@@ -175,7 +193,7 @@ def main(argv=None):
             m = export_mac(a.title, a.name, a.mac, a.note, a.force) if a.mac else export_device(a.title, a.name, a.device, a.bundle, a.note, a.force)
             print(f'exported {a.title.upper()}/{a.name}: {len(m["files"])} files, {sum(f["size"] for f in m["files"].values())} bytes')
         elif a.cmd == 'import':
-            m = import_mac(a.title, a.name, a.mac) if a.mac else import_device(a.title, a.name, a.device, a.bundle, a.launch)
+            m = import_mac(a.title, a.name, a.mac) if a.mac else import_device(a.title, a.name, a.device, a.bundle, a.launch, a.keep_extra)
             print(f'installed {a.title.upper()}/{a.name} ({len(m["files"])} files) into {a.mac or a.device + ":" + DEVICE_SAVE}')
         elif a.cmd == 'verify':
             m = load(ckpt_dir(a.title, a.name)); print(f'ok: {len(m["files"])} files match')
