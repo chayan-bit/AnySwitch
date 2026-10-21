@@ -1,0 +1,21 @@
+# Game dump, keys, firmware and every derived artifact. Never tracked.
+data/
+*.keys
+*.xci
+*.nsp
+*.nca
+*.nso
+*.nro
+*.nsz
+*.xcz
+*.romfs
+*.exefs
+*.bin
+*.ipa
+
+# Build output
+build/
+DerivedData/
+bin/
+obj/
+*.app/
