@@ -19,6 +19,7 @@ For the build steps of the whole project see `README.md` and `setup.sh` in the r
 - **Replay layer `nvn/nvn_mtl.m`**: at submit time it replays the record stream as Metal commands.
   - Memory pools are created as zero-copy `MTLBuffer`s, with the GPU address equal to the CPU address, so only unified-memory devices are supported.
   - The visible effects of "GPU completion" (sync objects becoming ready, events writing their value, counters) happen only after the Metal command buffer has actually completed.
+  - Pipelines found in the shipped binary archive (`pso_archive.metallib`, `nvn/nvn_psoarch.m`) are created without a driver compile; see `docs/stageB-pipeline-archives.md`.
   - Pipeline states and depth-stencil states are cached by state hash; at startup, shaders and pipelines are pre-built in the background according to the warm-up manifests (the bundled seed `pso_manifest.tsv`, then this device's `pso_user.tsv`; see below). A pipeline that fails to build is cached as failed and reported once with its shader keys.
   - The game's packaged textures are in Tegra block-linear layout and are deswizzled before upload (see `tex/README.md`).
   - Presentation: the game's swapchain texture is drawn to a `CAMetalLayer`, and presentation timing is scheduled by the pacer in `nvn/nvn_pace.h`.
@@ -88,6 +89,7 @@ The scripts in `tools/`; usage is written in each file's header:
 | Script | Purpose |
 |---|---|
 | `dmsh_xlate/` | The shader translation tool (C#), which references the translation library in `dm/third_party/ryujinx` |
+| `dmsh_psoarch.py` | Compiles a pipeline harvest (`DM_PSO_HARVEST`) with `metal-tt` into the precompiled pipeline archive the app ships (`build_ipa.sh` runs it; see `docs/stageB-pipeline-archives.md`) |
 | `dmsh_build.py` | Drives the whole translation chain to produce the shader libraries; when the environment variable `IOSOUT=directory` is set, it also produces the iOS version |
 | `dmsh_chain.py`, `dmsh_chain.lock` | Translation chain version and tool fingerprints |
 | `dmsh_facts.py` | Reads the answer table `shader_facts.tsv` (which `shader_split.py` writes) |
@@ -132,6 +134,7 @@ The tests in `dm/gfx/tests` compile the production code in directly and need a M
 | `t_mip_extent` | Effective size when rendering to a mip level other than level 0 |
 | `t_fuse_check`, `t_reorder_chain`, `t_defer_chain`, `t_zskip`, `t_xv`, `t_ub`, `t_pfv`, `t_rt_range`, `t_rt_range_shape`, `t_rt_range_ro`, `t_rt_depth_ro` | Compile the replay layer `nvn_mtl.m` in directly and check the various optimization and diagnostic logic inside the replay layer |
 | `test_tbdr_budget.py` | The parsing in `tools/tbdr_budget.py` |
+| `t_psoarch`, `test_psoarch.py` | Precompiled pipeline archive: harvest, lookup hits and misses, and `tools/dmsh_psoarch.py` archives built with `metal-tt` (no game files) |
 
 ## Common run-time switches
 
@@ -145,6 +148,8 @@ Resource locations:
 | `DM_MSL_DIR=directory` | The parent directory of the shader libraries; the host loads from `b-<V>/` beneath it. When running the host on a Mac, set it to `$DM_ROOT/build/cache/metal_shader_cache` |
 | `DM_PSO_MANIFEST=path` or `off` | Use a different warm-up manifest, or turn warm-up off |
 | `DM_PSO_RECORD=path` | Appends the shaders and pipelines used in this run to a file, for re-recording the warm-up manifest |
+| `DM_PSO_ARCHIVE=path` or `off` | Precompiled pipeline archive looked up before compiling a pipeline (default: `pso_archive.metallib` beside the shader map, put in the app by `build_ipa.sh`) |
+| `DM_PSO_HARVEST=path` or `1` | Records every pipeline created into a Metal binary archive for `tools/dmsh_psoarch.py` (`1`: `pso_harvest.metallib` beside `pso_user.tsv`) |
 | `DM_PSO_USER=path` | Where to keep the per-device list of shaders and pipelines built on the spot (default: `pso_user.tsv` in the parent of `DM_SAVE`) |
 
 Logging and capture:
