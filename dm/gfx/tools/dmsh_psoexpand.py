@@ -11,6 +11,7 @@
 #          [--per-pair K] [--max-pipelines N] [--max-bytes B] [--no-groups] [--table --pairs shader_pairs.tsv]
 #        dmsh_psoexpand.py ... --holdout 0.5   (no output: trains on the first half of the records, reports how much of the second half the expansion predicts)
 import os, re, sys, json, struct, argparse, subprocess, collections
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 SKEY, KOFF = 432, 88                    # sizeof(pso_skey), offsetof(pso_skey, k)
 RT = [(50, KOFF), (KOFF + 16, KOFF + 136), (KOFF + 328, KOFF + 336)]   # merged, fz, fz_desc + pad | cfmt .. blend[8] | lmap
@@ -204,12 +205,29 @@ def expand(voc, cands, stage, per_pair, max_pipes):
     return out[:max_pipes], tiers
 
 
+def relinked_away(recs, lib_dir):
+    """Shader keys whose library dmsh_psoarch.py leaves out (its relink gives other function hashes: shaders writing only constants), decided the way it decides,
+    once per distinct library content (a script names libraries by content, so identical libraries share one relink)"""
+    import hashlib, tempfile, concurrent.futures as cf
+    import dmsh_psoarch as P
+    by = collections.defaultdict(list)
+    for k in {k for b in recs for k in keys(b)[:2] if k}:
+        with open(os.path.join(lib_dir, k + '.metallib'), 'rb') as f: by[hashlib.sha256(f.read()).digest()].append(k)
+    with tempfile.TemporaryDirectory() as w:
+        def away(ks):
+            p = P.relink(ks[0] + '.metallib', lib_dir, lib_dir, w)
+            return P.fn_hashes(p) != P.fn_hashes(os.path.join(lib_dir, ks[0] + '.metallib'))
+        with cf.ThreadPoolExecutor(os.cpu_count()) as ex:
+            return {k for ks, a in zip(by.values(), ex.map(away, by.values())) if a for k in ks}
+
+
 def replay(manifest, env):
     """Creates the manifest's pipelines through the host's warm-up (pso_replay, built for $GAME); returns its summary line"""
     tests = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../tests')
     if not os.environ.get('GAME'): sys.exit('[RED] GAME is not set (the game profile pso_replay is built for)')
     subprocess.run(['make', '-s', '-C', tests, 'GAME=' + os.environ['GAME'], 'pso_replay'], check=True, stdout=subprocess.DEVNULL)
     r = subprocess.run([os.path.join(tests, 'pso_replay')], env={**os.environ, 'DM_PSO_MANIFEST': manifest, **env}, capture_output=True, text=True)
+    with open(manifest + '.log', 'w') as f: f.write(r.stderr)   # every miss / failure line, beside the manifest
     red = [l for l in r.stderr.splitlines() if '[RED]' in l]
     if red: print('\n'.join(red[:10]) + (f'\n... {len(red)} [RED] lines' if len(red) > 10 else ''), file=sys.stderr)
     line = next((l for l in r.stdout.splitlines() if l.startswith('PSO_REPLAY')), None)
@@ -261,7 +279,13 @@ def main():
         line = replay(os.path.abspath(man), {'DM_PSO_ARCHIVE': os.path.abspath(o.check)})
         print(line)
         m = re.search(r'archive (\d+) hits / (\d+) misses', line)
-        if not m or int(m.group(2)): sys.exit('[RED] archive check: misses (keys differ from what the runtime looks up, or pipelines missing)')
+        moved = relinked_away(out, o.refl)
+        want = sum(1 for b in out if {k for k in keys(b)[:2] if k} & moved)
+        logged = {tuple(x) for x in re.findall(r'miss #\d+: render pipeline vertex (\S+) fragment (\S+)', text(os.path.abspath(man) + '.log'))}
+        odd = {p for p in logged if not set(p) & moved}
+        print(f'archive check: {m and m.group(2)} misses, {want} expected (records using one of {len(moved)} libraries whose relink gives other function hashes,'
+              f' left out by dmsh_psoarch.py); unexpected among the logged misses: {len(odd)}')
+        if not m or int(m.group(2)) != want or odd: sys.exit('[RED] archive check: misses beyond the left-out libraries (a key differs from what the runtime looks up)')
 
 
 if __name__ == '__main__':
