@@ -130,25 +130,28 @@ static void check_resize(void) {
     CHECK("resize: the same size reuses the blur targets; every size has targets of its own proportions", reuse);
     CHECK("resize: rotation and a smaller window each reallocated once", realloc_ == 2);
 }
-static void timing(int dw, int dh, int sw, int sh) {   // the Mac is shared with other jobs: each pass's best of 8 batches of 100 frames, one frame at a time (nothing overlaps)
+// The Mac is shared with other jobs and the cost is the difference of two small timings, so one measurement of each is noise (the black-bar final pass alone swings 0.17 to 0.46 ms on a busy machine).
+// The two variants are therefore timed interleaved, in many short batches (an ambient batch and a black batch next to each other, the order flipped every round, one frame at a time so nothing overlaps),
+// and every pass keeps its minimum over all rounds: a slow patch of the machine or another job's GPU slice spoils the batches it falls in, and the minimum is the cost of the passes themselves.
+static void timing(int dw, int dh, int sw, int sh) {
+    enum { ROUNDS = 300, BATCH = 2 };
     id<MTLTexture> src = make_src(sw, sh, fill_scene), dst = make_dst(dw, dh);
-    double best[2][3], ms[3], cost = 1e9, blur = 0; uint64_t n[3], timed = 0;
+    double best[2][3], ms[3], cost = 1e9; uint64_t n[3], timed = 0;
     for (int attempt = 0; attempt < 3 && cost >= 0.3; attempt++) {   // up to 3 attempts to catch a quiet GPU
-    timed = 0;
-    for (int mode = 1; mode >= 0; mode--) {
-        mtl_letterbox_set(mode); for (int i = 0; i < 30; i++) render_m4(src, dst, i % 3);   // warm up (pipelines, targets, clocks)
-        for (int k = 0; k < 3; k++) best[mode][k] = 1e9;
-        for (int batch = 0; batch < 8; batch++) {
-            mtl_amb_stats_take(ms, n);
-            for (int i = 0; i < 100; i++) render_m4(src, dst, i % 3);
-            mtl_amb_stats_take(ms, n); if (mode) timed += n[0];
-            for (int k = 0; k < 3; k++) if (ms[k] > 0 && ms[k] < best[mode][k]) best[mode][k] = ms[k];
-        }
+        timed = 0;
+        for (int mode = 0; mode < 2; mode++) { mtl_letterbox_set(mode); for (int i = 0; i < 30; i++) render_m4(src, dst, i % 3); for (int k = 0; k < 3; k++) best[mode][k] = 1e9; }   // warm up both (pipelines, targets, clocks)
+        for (int r = 0; r < ROUNDS; r++)
+            for (int j = 0; j < 2; j++) {
+                int mode = (j + r) & 1;
+                mtl_letterbox_set(mode); mtl_amb_stats_take(ms, n);
+                for (int i = 0; i < BATCH; i++) render_m4(src, dst, i % 3);
+                mtl_amb_stats_take(ms, n); if (mode) timed += n[0];
+                for (int k = 0; k < 3; k++) if (ms[k] > 0 && ms[k] < best[mode][k]) best[mode][k] = ms[k];
+            }
+        cost = best[1][0] + best[1][1] + best[1][2] - best[0][2];
     }
-    blur = best[1][0] + best[1][1]; cost = blur + best[1][2] - best[0][2];
-    }
-    printf("GPU time %dx%d drawable, %dx%d source: blur passes %.3f + %.3f ms, final pass %.3f ms with ambient bars versus %.3f ms with black bars: ambient costs %.3f ms per frame\n", dw, dh, sw, sh, best[1][0], best[1][1], best[1][2], best[0][2], cost);
-    char nm[160]; snprintf(nm, sizeof nm, "GPU cost of the ambient fill at %dx%d is under 0.3 ms (%.3f ms)", dw, dh, cost); CHECK(nm, timed == 800 && cost < 0.3);
+    printf("GPU time %dx%d drawable, %dx%d source (best of %d interleaved batches each): blur passes %.3f + %.3f ms, final pass %.3f ms with ambient bars versus %.3f ms with black bars: ambient costs %.3f ms per frame\n", dw, dh, sw, sh, ROUNDS, best[1][0], best[1][1], best[1][2], best[0][2], cost);
+    char nm[160]; snprintf(nm, sizeof nm, "GPU cost of the ambient fill at %dx%d is under 0.3 ms (%.3f ms)", dw, dh, cost); CHECK(nm, timed == ROUNDS * BATCH && cost < 0.3);
 }
 static void shots(const char *dir) {
     static const int sz[][2] = {{2752, 2064}, {1376, 1032}};
