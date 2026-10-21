@@ -309,3 +309,11 @@ HLE_FORCE("_ZN2nn3hid41IsFirmwareUpdateAvailableForSixAxisSensorERKNS0_19SixAxis
 // Vibration device info / actual value: no device, zeroed
 HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration device info: none", void, h_hid_VibInfo, uint32_t *info, const void *h) { (void)h; info[0] = 0; info[1] = 0; }
 HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "actual vibration value: 0", void, h_hid_VibActual, float *v, const void *h) { (void)h; memset(v, 0, 16); }
+// Palma (the Poké Ball Plus): Pokémon Sword / Shield set its boost mode and allow any Palma connection at boot (main+0xf25f44), which the SDK sends to the hid service.
+// The host never connects one: the void calls do nothing and the per-controller calls fail (the game only makes them for a controller reporting the Palma style, which the host never does)
+HLE_FORCE("_ZN2nn3hid17SetPalmaBoostModeEb", "Poké Ball Plus boost mode; ignored by the host", void, h_hid_PalmaBoost, unsigned on) { (void)on; }
+HLE_FORCE("_ZN2nn3hid24EnableAnyPalmaConnectionEv", "Poké Ball Plus pairing; none ever connects on the host", void, h_hid_PalmaAnyOn, void) {}
+HLE_FORCE("_ZN2nn3hid25DisableAnyPalmaConnectionEv", "Poké Ball Plus pairing; none ever connects on the host", void, h_hid_PalmaAnyOff, void) {}
+HLE_FORCE("_ZN2nn3hid24GetPalmaConnectionHandleEPNS0_21PalmaConnectionHandleERKj", "Poké Ball Plus handle: none connected (fails)", Result, h_hid_PalmaHandle, uint64_t *h, const uint32_t *id) { (void)id; *h = 0; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3hid15InitializePalmaERKNS0_21PalmaConnectionHandleE", "Poké Ball Plus: none connected (fails)", Result, h_hid_PalmaInit, const void *h) { (void)h; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3hid31BindPalmaOperationCompleteEventERKNS0_21PalmaConnectionHandleEPNS_2os15SystemEventTypeENS4_14EventClearModeE", "Poké Ball Plus: none connected (fails)", Result, h_hid_PalmaBind, const void *h, void *ev, int mode) { (void)h; (void)ev; (void)mode; return RES_FAIL; }

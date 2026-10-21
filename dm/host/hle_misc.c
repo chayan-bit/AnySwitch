@@ -144,3 +144,12 @@ HLE_FORCE("_ZN2nn4pctl28IsFreeCommunicationAvailableEv", "parental controls · w
 HLE_FORCE("_ZN2nn4pctl27CheckStereoVisionPermissionEb", "parental controls · stereoscopic 3D permission; the host has no parental controls, allowed", unsigned, h_pctl_Stereo, unsigned show_ui) { (void)show_ui; return 1; }
 
 // swkbd software keyboard: see hle_swkbd.c
+
+// Play statistics of other titles (pdm service through am; SDK 7): Pokémon Sword asks whether the Let's Go games were played (main+0xc88074) and reads each entry's launch count.
+// The host has no play history: every entry gets its title ID and zero time and launches. ApplicationPlayStatistics = {u64 application ID, i64 play time (ns), i64 launch count}
+HLE_FORCE("_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsERKNS_7account3UidEPKNS_13ApplicationIdEi", "play statistics of other titles: never played",
+          int, h_pdm_QueryPlayStats, uint64_t *out, const void *uid, const uint64_t *ids, int n) {
+    (void)uid;
+    for (int i = 0; i < n; i++) { out[3 * i] = ids[i]; out[3 * i + 1] = 0; out[3 * i + 2] = 0; }
+    return n;
+}
