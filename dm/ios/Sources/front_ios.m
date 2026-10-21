@@ -1,4 +1,7 @@
-// iOS front end (the iOS implementation of front.h): a centered 16:9 Metal view (black bars on both sides) + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture).
+// iOS front end (the iOS implementation of front.h): the Metal view + a full-screen virtual gamepad layer (DmGamepad.m).
+// The picture is the game's 16:9 frame fitted into the screen. With letterbox=ambient (default) the Metal view is the whole screen and the present stage fills the bars with the blurred live frame (dm/gfx/nvn/nvn_ambient.h);
+// with letterbox=black the view is just the 16:9 rectangle on a black screen, as before. Controls sit in the bars when they are tall enough (controls layout auto), else over the picture (DmGamepad.m).
+// Settings: DM_LETTERBOX = ambient | black, DM_CONTROLS_LAYOUT = auto | overlay; in Documents/env.txt, else the Info.plist keys DMLetterbox / DMControlsLayout (project.yml), else the defaults (ambient, auto)
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -11,10 +14,27 @@
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
+BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
+CGRect dm_gamepad_hud_frame(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 
 static CAMetalLayer *g_layer;
+static BOOL g_ambient = YES, g_controls_auto = YES;
+// One setting: the environment variable (env.txt) wins, then the Info.plist key; a plist value is exported as the variable too, because the graphics layer reads DM_LETTERBOX itself
+static NSString *front_setting(const char *env, NSString *plistKey) {
+    const char *e = getenv(env);
+    if (e && *e) return @(e);
+    id p = [NSBundle.mainBundle objectForInfoDictionaryKey:plistKey];
+    if ([p isKindOfClass:NSString.class] && [p length] && ![p hasPrefix:@"$"]) { setenv(env, [p UTF8String], 0); return p; }
+    return nil;
+}
+static void front_ios_settings(void) {
+    NSString *l = front_setting("DM_LETTERBOX", @"DMLetterbox"), *c = front_setting("DM_CONTROLS_LAYOUT", @"DMControlsLayout");
+    g_ambient = !([l isEqualToString:@"black"] || [l isEqualToString:@"0"]);
+    g_controls_auto = !([c isEqualToString:@"overlay"] || [c isEqualToString:@"0"]);
+    LOG("front end: letterbox %s, controls layout %s", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay");
+}
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
 static UILabel *front_ios_fps_label(void);
@@ -57,6 +77,7 @@ static UILabel *front_ios_fps_label(void);
         [self.view addSubview:lb]; return;
     }
     front_ios_audio_watch();
+    front_ios_settings();
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
@@ -71,8 +92,13 @@ static UILabel *front_ios_fps_label(void);
     CGRect b = self.view.bounds; if (!self.game) return;
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
-    if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
+    CGRect content = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+    self.game.frame = g_ambient ? b : content;   // ambient: the drawable is the whole screen and the present stage letterboxes the picture inside it (the same fit, so the rectangles agree)
+    self.pad.frame = b;
+    BOOL bars = dm_gamepad_layout(content, g_controls_auto);
+    CGRect hud = bars ? dm_gamepad_hud_frame() : CGRectNull;
+    if (self.fps && !CGRectIsNull(hud)) self.fps.frame = hud;   // the counter joins the top bar
+    else if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }

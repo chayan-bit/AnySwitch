@@ -10,6 +10,10 @@
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
 //   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
+//   Controls in the letterbox bars: when the picture is letterboxed top and bottom (a 16:9 game on a 4:3 iPad) and both bars are tall enough for 44 pt targets, the controls move out of the picture into the bars (front_ios.m's
+//     DM_CONTROLS_LAYOUT=auto, dm_gamepad_layout): top bar ZL, L (L3 in 3D), then - / layout button / + and the frame-rate counter, then R3 (3D), R, ZR; bottom bar the left stick, (3D: the D-pad,) and the diamond.
+//     The keys get a frosted look (a lighter fill, a bright rim and a soft top-lit gloss over the blurred ambient bars). Touches on the bars that no control takes are not sent to the game's touch screen.
+//     With DM_CONTROLS_LAYOUT=overlay, or bars too small (a 16:10 screen), everything stays as described above, over the picture.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
@@ -87,6 +91,13 @@ static const CGFloat
     K_RSTICK_R = 60,                                // right stick (not drawn): radius around its centre, the touch-down point
     K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+static const CGFloat
+    K_BAR_EDGE = 20,                                // bars mode: the bottom controls keep this far from the screen edge (the rounded corners; over the picture they hug it)
+    K_BAR_PAD = 4,                                  // bars mode: margin inside the bottom bar above and below the diamond / stick
+    K_BAR_MIN_BOTTOM = 108, K_BAR_MIN_TOP = 60,     // bars mode needs bars at least this tall (points): the diamond at 0.65 u gives 44 pt hit circles, the top row needs 44 pt plus margins
+    K_BAR_L_DX = 64,                                // bars mode: L / R centre from ZL / ZR (in u, along the bar)
+    K_BAR_CLICK_X = 165,                            // bars mode: L3 / R3 centre from the outer edge (in u): inward of L / R
+    K_HUD_W = 64, K_HUD_H = 22;                     // the frame-rate counter's size (front_ios.m)
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
 
@@ -108,9 +119,11 @@ static __weak DmGamepad *g_view;
     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+    BOOL _bars;                                    // controls live in the letterbox bars (dm_gamepad_layout)
+    CGRect _content, _top, _bot;                   // the picture, and the usable parts of the bars above and below it
 }
 
-static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
+static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn, *k_idleBar, *k_lineBar, *k_ringBar, *k_textBar;
 static CAShapeLayer *shape(CALayer *parent) {
     CAShapeLayer *l = [CAShapeLayer layer];
     l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
@@ -133,6 +146,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
             k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
             k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
+            k_idleBar = [UIColor colorWithWhite:1 alpha:0.18]; k_lineBar = [UIColor colorWithWhite:1 alpha:0.50]; k_ringBar = [UIColor colorWithWhite:1 alpha:0.10]; k_textBar = [UIColor colorWithWhite:1 alpha:0.9];   // frosted: the bars behind are already blurred
         });
         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
@@ -174,28 +188,47 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 - (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
 - (CGFloat)u { return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
+- (CGFloat)bu { return _bars ? MIN(self.u, (_bot.size.height / 2 - K_BAR_PAD) / (K_FACE_GAP + K_FACE_R)) : self.u; }   // the bottom controls' unit: shrunk so the diamond and the stick fit the bar
+- (CGFloat)padY:(CGFloat)overlayFromBottom { CGRect s = self.corner; return _bars ? CGRectGetMidY(_bot) : CGRectGetMaxY(s) - overlayFromBottom * self.u; }   // the bottom controls' centre line
+- (CGFloat)topY:(CGFloat)overlayFromTop { return _bars ? CGRectGetMidY(_top) : CGRectGetMinY(self.safe) + overlayFromTop * self.u; }   // the top controls' centre line
 static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
-- (CGPoint)faceCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 1, K_FACE_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
-- (CGFloat)faceGap { return K_FACE_GAP * self.u; }
-- (CGFloat)faceR { return K_FACE_R * self.u; }
+- (CGPoint)faceCenter { CGRect s = self.corner; return side(s, 1, K_FACE_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_PAD_Y]); }
+- (CGFloat)faceGap { return K_FACE_GAP * self.bu; }
+- (CGFloat)faceR { return K_FACE_R * self.bu; }
 - (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
-- (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u); }   // the left stick's ring centre
+- (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_PAD_Y]); }   // the left stick's ring centre
 - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
-- (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
+- (CGFloat)stickR:(int)i { return i ? K_RSTICK_R * self.u : K_STICK_R * self.bu; }
 - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
-- (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u); }
-- (CGFloat)dpadR { return K_DPAD_R * self.u; }
+- (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, K_LOW_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_LOW_Y]); }
+- (CGFloat)dpadR { return K_DPAD_R * self.bu; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
-    return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
+    CGFloat dx = _bars ? (z ? K_ZL_X : K_ZL_X + K_BAR_L_DX) : (z ? K_ZL_X : K_L_X);   // bars: ZL and L side by side along the bar; overlay: one column
+    return side(s, b == B_ZR || b == B_R, dx * u, [self topY:z ? K_ZL_Y : K_L_Y]); }
 - (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
-- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, K_CLICK_X * u, CGRectGetMinY(s) + K_ZL_Y * u); }
+- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, (_bars ? K_BAR_CLICK_X : K_CLICK_X) * u, [self topY:K_ZL_Y]); }
 - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
-    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − on the left, + on the right
+    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, [self topY:K_PILL_Y]);   // − on the left, + on the right
     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
-- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_PILL_Y * self.u); }
+- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), [self topY:K_PILL_Y]); }
+- (BOOL)inBars { return _bars; }
+- (CGRect)hudFrame { CGFloat u = self.u; CGPoint c = CGPointMake(CGRectGetMidX(self.safe) + (K_PILL_DX + K_PILL_W / 2 + 16) * u, [self topY:K_PILL_Y]);   // right of the + key (bars mode)
+    return CGRectMake(floor(c.x), floor(c.y - K_HUD_H / 2), K_HUD_W, K_HUD_H); }
+// The picture's rectangle in this view, and whether the controls go in the bars around it (returns that). The bars must span the width (letterbox, not pillarbox) and both be tall enough
+- (BOOL)setContent:(CGRect)c allowBars:(BOOL)allow {
+    CGRect b = self.bounds, cr = self.corner; UIEdgeInsets in = self.safeAreaInsets;
+    CGFloat top = CGRectGetMinY(c) - in.top / 2, bot = CGRectGetHeight(b) - CGRectGetMaxY(c) - in.bottom / 2;   // half the safe-area inset: that is the home indicator / the notch, the controls may sit close to it
+    BOOL bars = allow && fabs(CGRectGetWidth(c) - CGRectGetWidth(b)) < 2 && top >= K_BAR_MIN_TOP && bot >= K_BAR_MIN_BOTTOM;
+    CGRect t = CGRectMake(CGRectGetMinX(cr), in.top / 2, CGRectGetWidth(cr), top), bt = CGRectMake(CGRectGetMinX(cr), CGRectGetMaxY(c), CGRectGetWidth(cr), bot);
+    if (bars == _bars && CGRectEqualToRect(c, _content) && CGRectEqualToRect(t, _top) && CGRectEqualToRect(bt, _bot)) return bars;
+    if (bars != _bars) [self reset];   // controls move: release every touch so no key stays held under a finger that is now somewhere else
+    _bars = bars; _content = c; _top = t; _bot = bt;
+    [self setNeedsLayout];
+    return bars;
+}
 
 static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
 - (int)btnAt:(CGPoint)p {   // locked keys (tested on touch-down only, then locked)
@@ -277,8 +310,10 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     BOOL game = NO;
     for (UITouch *t in ts) {
-        if (_padOff) { game |= [self gameBegin:t]; continue; }
-        CGPoint p = [t locationInView:self]; int hit = [self btnAt:p];
+        CGPoint p = [t locationInView:self];
+        BOOL onBars = _bars && !CGRectContainsPoint(_content, p);   // a touch on the bars that no control takes is not the game's (it would clamp to the picture's edge)
+        if (_padOff) { if (!onBars) game |= [self gameBegin:t]; continue; }
+        int hit = [self btnAt:p];
         if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
         if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
         // diamond, D-pad, left stick: take the one with the smallest distance / grab radius, if it is <= 1
@@ -290,7 +325,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
         else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
         else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
-        else game |= [self gameBegin:t];
+        else if (!onBars) game |= [self gameBegin:t];
     }
     if (game) [self pushGame];
     [self recompute];
@@ -346,6 +381,18 @@ static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat an
     CGPathCloseSubpath(p); return p;
 }
 static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
+static void gloss(CAShapeLayer *l, BOOL on) {   // frosted look in the bars: a soft top-lit gradient inside the key's own outline, below its label
+    CAGradientLayer *g = nil; for (CALayer *x in l.sublayers) if ([x.name isEqualToString:@"gloss"]) g = (CAGradientLayer *)x;
+    if (!on || !l.path) { g.hidden = YES; return; }
+    if (!g) {
+        g = [CAGradientLayer layer]; g.name = @"gloss"; g.mask = [CAShapeLayer layer];
+        g.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.30].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.02].CGColor];
+        [l insertSublayer:g atIndex:0];
+    }
+    CGRect bb = CGPathGetBoundingBox(l.path); CGAffineTransform t = CGAffineTransformMakeTranslation(-bb.origin.x, -bb.origin.y);
+    CGPathRef lp = CGPathCreateCopyByTransformingPath(l.path, &t);
+    g.hidden = NO; g.frame = bb; ((CAShapeLayer *)g.mask).path = lp; CGPathRelease(lp);
+}
 static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
     t.font = f; t.fontSize = fs;
@@ -356,10 +403,10 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat u = self.u;
+    CGFloat u = self.u, bu = self.bu;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.frame = self.layer.bounds;
-    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
+    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * bu); }
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
@@ -372,13 +419,16 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
         }
     }
     static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
-    for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+    for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * bu, K_ARM_IN * bu, arms[i].angle, 6 * bu));
     CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
-    CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+    CGFloat k = K_KNOB_R * bu; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
     setPath(_knob, circlePath(CGPointMake(k, k), k));
     CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
     in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
+    for (int b = 0; b < B_N; b++) gloss(_key[b], _bars);
+    gloss(_swap, _bars); gloss(_ring, _bars);
+    _ring.strokeColor = (_bars ? k_lineBar : k_line).CGColor; _ring.fillColor = (_bars ? k_ringBar : k_ringFill).CGColor;
     [CATransaction commit];
     [self refresh];
 }
@@ -386,11 +436,12 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 - (void)refresh {   // pressed state → fill, sticks → knob position
     uint64_t all = _faceBits | _dpadBits | _btnBits;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
+    UIColor *idle = _bars ? k_idleBar : k_idle, *line = _bars ? k_lineBar : k_line, *text = _bars ? k_textBar : k_text;
     for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
-        _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
-    _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+        _key[b].fillColor = (on ? k_on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (on ? k_textOn : text).CGColor; }
+    _swap.fillColor = (_swapHeld ? k_on : idle).CGColor; _swap.strokeColor = line.CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : text).CGColor;
     CGPoint h = self.stickHome, o = [self knobOffset:0];
-    _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : k_idle).CGColor;
+    _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : idle).CGColor; _knob.strokeColor = line.CGColor;
     [CATransaction commit];
 }
 
@@ -423,6 +474,8 @@ static void read_pad(GCExtendedGamepad *g) {
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
+BOOL dm_gamepad_layout(CGRect content, BOOL allowBars) { return [g_view setContent:content allowBars:allowBars]; }   // main thread: the picture's rectangle; YES when the controls moved into the bars around it
+CGRect dm_gamepad_hud_frame(void) { return g_view && [g_view inBars] ? [g_view hudFrame] : CGRectNull; }   // the frame-rate counter's place in the bars (CGRectNull: keep the overlay place)
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
     pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_shake_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();
