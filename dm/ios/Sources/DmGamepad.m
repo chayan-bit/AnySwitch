@@ -93,16 +93,17 @@ static const CGFloat
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
 static const CGFloat
     K_BAR_EDGE = 20,                                // bars mode: the bottom controls keep this far from the screen edge (the rounded corners; over the picture they hug it)
-    K_BAR_PAD = 5, K_BAR_PAD_MAX = 2,               // bars mode: margin inside the bottom bar above the diamond / stick at scale 1, and the least margin any scale may leave (never over the picture)
-    K_BAR_SCALE_MIN = 0.75, K_BAR_SCALE_MAX = 1.6,  // DM_CONTROLS_SCALE range: below 0.75 the face keys' touch circles drop under 44 pt (1.25 x radius, 22 pt floor); above the bar's limit the size stops growing
-    K_BAR_FACE_R = 0.45, K_BAR_FACE_GY = 0.55, K_BAR_FACE_GX = 1.1,   // bars mode: the diamond is flattened to the bar: key radius and up / down and left / right key distance, as fractions of the stick's radius (the bar's height limits it, its width does not)
+    K_SCALE_MIN = 0.75, K_SCALE_MAX = 2.5,          // DM_CONTROLS_SCALE range: the bottom controls (stick, diamond, D-pad) grow past the bar over the picture; at 0.75 the face keys' touch circles are still 44 pt (1.25 x radius, 22 pt floor)
+    K_BAR_REF_H = 1024, K_BAR_UNIT = 7.0 / 6,       // bars mode: the unit bu of the bottom controls = K_BAR_UNIT x (screen height / K_BAR_REF_H) x scale: at scale 1 on a 13-inch iPad the stick is 180 pt across, the A / B / X / Y keys 75 pt, the D-pad 112 pt
+    K_BAR_FACE_U = 32,                              // bars mode: face key radius in bu (overlay: K_FACE_R); the diamond keeps K_FACE_GAP, so neighbouring keys stay 8 pt apart at scale 1
+    K_BAR_LOW_X = 220,                              // bars mode: D-pad centre from the outer edge in bu: right of the stick (3D layout)
     K_FACE_HIT = 1.25, K_HIT_MIN = 22,              // touch circle: times the key radius, never under 22 pt (44 pt across)
     K_BAR_MIN_BOTTOM = 108, K_BAR_MIN_TOP = 60,     // bars mode needs bars at least this tall (points): the diamond at 0.65 u gives 44 pt hit circles, the top row needs 44 pt plus margins
     K_BAR_L_DX = 64,                                // bars mode: L / R centre from ZL / ZR (in u, along the bar)
     K_BAR_CLICK_X = 165,                            // bars mode: L3 / R3 centre from the outer edge (in u): inward of L / R
     K_HUD_W = 64, K_HUD_H = 22;                     // the frame-rate counter's size (front_ios.m)
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
-static CGFloat g_scale = 1;   // dm_gamepad_scale: size of the bottom controls in the bars (1 = fill the bar with a K_BAR_PAD margin)
+static CGFloat g_scale = 1;   // dm_gamepad_scale: size of the bottom controls, 1 = the default
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
 
 @interface DmGamepad : UIView
@@ -192,22 +193,25 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 - (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
 - (CGFloat)u { return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
-- (CGFloat)barFH { CGFloat h = _bot.size.height / 2; return MIN(g_scale * (h - K_BAR_PAD), h - K_BAR_PAD_MAX); }   // bars: the stick's radius = half the height the bottom controls use (the scale, never more than the bar)
-- (CGFloat)bu { return _bars ? MIN(self.u, self.barFH / K_STICK_R) : self.u; }   // the bottom controls' unit: the stick and the D-pad fit the bar
-- (CGFloat)padY:(CGFloat)overlayFromBottom { CGRect s = self.corner; return _bars ? CGRectGetMidY(_bot) : CGRectGetMaxY(s) - overlayFromBottom * self.u; }   // the bottom controls' centre line
+- (CGFloat)bu {   // the bottom controls' unit (stick, diamond, D-pad): over the picture the overlay unit times the scale; in the bars from the screen height, so a 13-inch iPad gets thumb-sized controls whatever the bars' height
+    return _bars ? K_BAR_UNIT * fmax(0.55, fmin(self.bounds.size.height / K_BAR_REF_H, 1.25)) * g_scale : self.u * g_scale;
+}
+- (CGFloat)padY:(CGFloat)overlayFromBottom { CGRect s = self.corner;   // the bottom controls' centre line; bars mode: the diamond's lowest key and the stick's ring (aligned, via the D-pad's offset) sit K_BAR_EDGE above the screen's bottom, extending up from the bar over the picture
+    if (!_bars) return CGRectGetMaxY(s) - overlayFromBottom * self.u;
+    CGFloat bu = self.bu, y = CGRectGetMaxY(self.bounds) - K_BAR_EDGE - (K_FACE_GAP + K_BAR_FACE_U) * bu;
+    return overlayFromBottom == K_LOW_Y ? y + (K_STICK_X - K_DPAD_R) * bu : y; }
 - (CGFloat)topY:(CGFloat)overlayFromTop { return _bars ? CGRectGetMidY(_top) : CGRectGetMinY(self.safe) + overlayFromTop * self.u; }   // the top controls' centre line
 static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
-- (CGPoint)faceCenter { CGRect s = self.corner; return side(s, 1, _bars ? K_BAR_EDGE + self.faceGap + self.faceR : K_FACE_X * self.bu, [self padY:K_PAD_Y]); }
-- (CGFloat)faceGap { return _bars ? K_BAR_FACE_GX * K_STICK_R * self.bu : K_FACE_GAP * self.bu; }   // A / Y distance from the centre (bars: wider than X / B)
-- (CGFloat)faceGapY { return _bars ? K_BAR_FACE_GY * K_STICK_R * self.bu : K_FACE_GAP * self.bu; }   // X / B distance from the centre
-- (CGFloat)faceR { return _bars ? K_BAR_FACE_R * K_STICK_R * self.bu : K_FACE_R * self.bu; }
-- (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap, gy = self.faceGapY;
-    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + gy); case B_X: return CGPointMake(c.x, c.y - gy); default: return CGPointMake(c.x - g, c.y); } }
+- (CGPoint)faceCenter { CGRect s = self.corner; return side(s, 1, _bars ? K_BAR_EDGE + (K_FACE_GAP + K_BAR_FACE_U) * self.bu : K_FACE_X * self.bu, [self padY:K_PAD_Y]); }
+- (CGFloat)faceGap { return K_FACE_GAP * self.bu; }
+- (CGFloat)faceR { return (_bars ? K_BAR_FACE_U : K_FACE_R) * self.bu; }
+- (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
 - (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_PAD_Y]); }   // the left stick's ring centre
 - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
 - (CGFloat)stickR:(int)i { return i ? K_RSTICK_R * self.u : K_STICK_R * self.bu; }
 - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
-- (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, K_LOW_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_LOW_Y]); }
+- (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, _bars ? K_BAR_EDGE + K_BAR_LOW_X * self.bu : K_LOW_X * self.bu, [self padY:K_LOW_Y]); }
 - (CGFloat)dpadR { return K_DPAD_R * self.bu; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
@@ -481,8 +485,8 @@ static void read_pad(GCExtendedGamepad *g) {
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars) { return [g_view setContent:content allowBars:allowBars]; }   // main thread: the picture's rectangle; YES when the controls moved into the bars around it
-void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size in the bars, clamped to the usable range (the bar's height still caps it)
-    g_scale = fminf(fmaxf(s, K_BAR_SCALE_MIN), K_BAR_SCALE_MAX); [g_view setNeedsLayout]; }
+void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size (stick, A / B / X / Y, D-pad), clamped to K_SCALE_MIN...K_SCALE_MAX
+    g_scale = fminf(fmaxf(s, K_SCALE_MIN), K_SCALE_MAX); [g_view setNeedsLayout]; }
 CGRect dm_gamepad_hud_frame(void) { return g_view && [g_view inBars] ? [g_view hudFrame] : CGRectNull; }   // the frame-rate counter's place in the bars (CGRectNull: keep the overlay place)
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });

@@ -35,7 +35,7 @@ static void front_ios_settings(void) {
     NSString *l = front_setting("DM_LETTERBOX", @"DMLetterbox"), *c = front_setting("DM_CONTROLS_LAYOUT", @"DMControlsLayout");
     g_ambient = !([l isEqualToString:@"black"] || [l isEqualToString:@"0"]);
     g_controls_auto = !([c isEqualToString:@"overlay"] || [c isEqualToString:@"0"]);
-    NSString *z = front_setting("DM_CONTROLS_SCALE", @"DMControlsScale"); g_controls_scale = z.length ? z.floatValue : 1;   // 0.75-1.6, clamped in DmGamepad.m
+    NSString *z = front_setting("DM_CONTROLS_SCALE", @"DMControlsScale"); g_controls_scale = z.length ? z.floatValue : 1;   // 0.75-2.5, clamped in DmGamepad.m
     LOG("front end: letterbox %s, controls layout %s, controls scale %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale);
 }
 static void front_ios_power_watch(void);
