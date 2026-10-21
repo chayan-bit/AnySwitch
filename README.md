@@ -1,53 +1,91 @@
 # AnySwitch
 
-Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
+[![CI](https://github.com/chayan-bit/AnySwitch/actions/workflows/ci.yml/badge.svg)](https://github.com/chayan-bit/AnySwitch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
+Play your own Nintendo Switch games natively on iPhone and iPad.
+Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
 
-## Acknowledgements
+AnySwitch is not an emulator.
+The game's own code runs directly on the Apple chip, with the Switch's graphics rebuilt on Metal.
+Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
 
-This project is built on other people's work:
+## How it works
 
-- **[nxnative](https://github.com/seedds/nxnative)** (MIT): AnySwitch is a fork of nxnative, which provides the rewriter, host, NVN-on-Metal layer and build scripts it extends. Its history is kept, and the `upstream` remote tracks it.
-- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
-- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
-- **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
-- **yuzu**: Maxwell instruction encodings for the shader reference tool, and a cross-check for kernel behaviour.
-- **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`. **hactool** did the first extractions.
-- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
-- **deko3d** (zlib): its texture layout size algorithm is ported in `dm/gfx/nvn/nvn_tex.c`.
-- **libvpx** (VP9 movies), **stb_vorbis** (movie sound), the **Vulkan headers** and **NVIDIA FLIP** ship in `dm/third_party` with their licenses ([list](dm/third_party/README.md)).
-- **Capstone**, **lz4**, **fontTools** and **XcodeGen** are used by the build.
+| Piece | What it does |
+|---|---|
+| **AOT CPU rewrite** | At build time, `dm/tools/patch_nso.py` rewrites the few aarch64 instructions Apple's kernel cannot run (system registers, `svc`, a reserved register) and leaves the rest of the game's code untouched, so it runs natively with no JIT. |
+| **NVN on Metal** | The games talk to the GPU through NVN. `dm/gfx` replays those calls on Metal, with a Vulkan layer for the games that use Vulkan. |
+| **Offline shaders** | The games' Maxwell shaders are extracted from their containers, translated to SPIR-V and then to Metal at build time, and compiled pipelines are cached on the device, so there is no shader translation while playing. |
+| **HLE of Horizon** | `dm/host` stands in for the Horizon kernel and the system services the games call: threads and synchronization, memory, file system and saves, input, audio, movies, software keyboard. |
+| **Game profiles** | Everything specific to one title lives in `dm/games/<title id>/`. The code itself is game-agnostic. |
 
-## Games
+The deeper write-up is in [docs/development.md](docs/development.md) and [dm/gfx/README.md](dm/gfx/README.md).
 
-All of these are tested on an iPhone and playable:
+## Status
 
-| | |
-|:---:|:---:|
-| ![Super Mario Bros. Wonder](docs/images/super-mario-bros-wonder.jpg)<br>Super Mario Bros. Wonder<br><sub>IPA ~4 GB</sub> | ![Fire Emblem Engage](docs/images/fire-emblem-engage.jpg)<br>Fire Emblem Engage<br><sub>IPA ~15 GB · 60 fps (30 on Switch) with update 2.0.0</sub> |
-| ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread<br><sub>IPA ~5 GB</sub> | ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim<br><sub>IPA ~5 GB</sub> |
-| ![Super Mario 3D World + Bowser's Fury](docs/images/super-mario-3d-world.jpg)<br>Super Mario 3D World + Bowser's Fury<br><sub>IPA ~3 GB</sub> | ![The Legend of Zelda: Breath of the Wild](docs/images/zelda-breath-of-the-wild.jpg)<br>The Legend of Zelda: Breath of the Wild<br><sub>IPA ~16 GB · 60 fps (30 on Switch) with update 1.9.0</sub> |
-| ![The Legend of Zelda: Link's Awakening](docs/images/zelda-links-awakening.jpg)<br>The Legend of Zelda: Link's Awakening<br><sub>IPA ~6 GB</sub> | ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey<br><sub>IPA ~6 GB</sub> |
-| ![Hades](docs/images/hades.jpg)<br>Hades<br><sub>IPA ~4 GB</sub> | ![Hyrule Warriors: Age of Calamity](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>Hyrule Warriors: Age of Calamity<br><sub>IPA ~15 GB · 60 fps (30 on Switch) with update 1.3.0</sub> |
-| ![Fire Emblem: Three Houses](docs/images/fire-emblem-three-houses.jpg)<br>Fire Emblem: Three Houses<br><sub>IPA ~13 GB · 60 fps (30 on Switch) with update 1.2.0</sub> | ![Super Mario Galaxy](docs/images/super-mario-galaxy.jpg)<br>Super Mario Galaxy<br><sub>IPA ~3 GB</sub> |
-| ![The Legend of Zelda: Tears of the Kingdom](docs/images/zelda-tears-of-the-kingdom.jpg)<br>The Legend of Zelda: Tears of the Kingdom<br><sub>IPA ~17 GB · 60 fps (30 on Switch) with update 1.4.3</sub> | ![Monster Hunter Rise](docs/images/monster-hunter-rise.jpg)<br>Monster Hunter Rise<br><sub>IPA ~22 GB · 60 fps (30 on Switch) with update 16.0.2</sub> |
-| ![Ace Attorney Investigations Collection](docs/images/ace-attorney-investigations.jpg)<br>Ace Attorney Investigations Collection<br><sub>IPA ~7 GB</sub> | ![Hades II](docs/images/hades-ii.jpg)<br>Hades II<br><sub>IPA ~4 GB</sub> |
-| ![Unicorn Overlord](docs/images/unicorn-overlord.jpg)<br>Unicorn Overlord<br><sub>IPA ~4 GB</sub> | ![Rhythm Heaven Groove](docs/images/rhythm-heaven-groove.jpg)<br>Rhythm Heaven Groove<br><sub>IPA ~3 GB</sub> |
-| ![Octopath Traveler 0](docs/images/octopath-traveler-0.jpg)<br>Octopath Traveler 0<br><sub>IPA ~4 GB · 60 fps (30 on Switch) with update 1.0.5</sub> | ![Pokémon Legends: Z-A](docs/images/pokemon-legends-z-a.jpg)<br>Pokémon Legends: Z-A<br><sub>IPA ~6 GB</sub> |
-| ![Cuphead](docs/images/cuphead.jpg)<br>Cuphead<br><sub>IPA ~5 GB</sub> | ![Super Mario Galaxy 2](docs/images/super-mario-galaxy-2.jpg)<br>Super Mario Galaxy 2<br><sub>IPA ~3 GB</sub> |
-| ![FINAL FANTASY TACTICS - The Ivalice Chronicles](docs/images/final-fantasy-tactics.jpg)<br>FINAL FANTASY TACTICS - The Ivalice Chronicles<br><sub>IPA ~11 GB</sub> | ![Absolum](docs/images/absolum.jpg)<br>Absolum<br><sub>IPA ~2 GB</sub> |
-| ![Captain Toad: Treasure Tracker](docs/images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>IPA ~2 GB</sub> | ![Brain Memory Training Academy](docs/images/brain-memory-training-academy.jpg)<br>Brain Memory Training Academy<br><sub>IPA ~0.1 GB</sub> |
-| ![The Great Ace Attorney Chronicles](docs/images/the-great-ace-attorney-chronicles.jpg)<br>The Great Ace Attorney Chronicles<br><sub>IPA ~4 GB</sub> | |
+AnySwitch is under active development.
+The table lists every game profile in [dm/games](dm/games), generated by `python3 scripts/compat_table.py`.
+Playable means the game has been run on an iPhone or iPad with its listed build.
+Other games are not supported yet.
+For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
+To add a game, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-game-profile).
 
-Needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later: the games' textures are BC-compressed, and older iPhones can't read that format. Other games aren't supported yet. For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
+| Game | Title ID | Supported builds | Status |
+|---|---|---|---|
+| 13 Sentinels: Aegis Rim | `01003FC01670C000` | 1.10 | Playable |
+| Absolum | `0100A83022A22000` | 1.1.1 | Playable |
+| Ace Attorney Investigations Collection | `010005501E68C000` | 1.0.0.2 | Playable |
+| Brain Memory Training Academy | `0100F5D01DA3A000` | 1.0.0 | Playable |
+| Captain Toad: Treasure Tracker | `01009BF0072D4000` | 1.4.2 | Playable |
+| Cuphead | `0100A5C00D162000` | 1.3.7 | Playable |
+| FINAL FANTASY TACTICS - The Ivalice Chronicles | `010038B015560000` | 1.4.0 | Playable |
+| Fire Emblem Engage | `0100A6301214E000` | 2.0.0 | Playable |
+| Fire Emblem: Three Houses | `010055D009F78000` | 1.2.0 | Playable |
+| Hades | `0100535012974000` | 1.0.38233 | Playable |
+| Hades II | `0100A00019DE0000` | 0.0.126424 | Playable |
+| Hyrule Warriors: Age of Calamity | `01002B00111A2000` | 1.3.0 | Playable |
+| Metroid Dread | `010093801237C000` | 2.1.0 | Playable |
+| Monster Hunter Rise | `0100B04011742000` | 16.0.2 | Playable |
+| OCTOPATH TRAVELER 0 | `01005270232F2000` | 1.0.5 | Playable |
+| Pokémon Legends: Z-A | `0100F43008C44000` | 2.0.2 | Playable |
+| Pokémon Sword | `0100ABF008968000` | 1.3.2 | Experimental |
+| Rhythm Heaven Groove | `0100D9F01D474000` | 1.0.0 | Playable |
+| Super Mario 3D World + Bowser's Fury | `010028600EBDA000` | 1.2.2 | Playable |
+| Super Mario Bros. Wonder | `010015100B514000` | 1.0.0, 1.2.1 | Playable |
+| Super Mario Galaxy | `010099C022B96000` | 1.3.1 | Playable |
+| Super Mario Galaxy 2 | `0100FD8022DAA000` | 1.4.0 | Playable |
+| Super Mario Odyssey | `0100000000010000` | 1.4.1 | Playable |
+| The Great Ace Attorney Chronicles | `010036E00FB20000` | 1.0.0 | Playable |
+| The Legend of Zelda: Breath of the Wild | `01007EF00011E000` | 1.9.0 | Playable |
+| The Legend of Zelda: Link's Awakening | `01006BB00C6F0000` | 1.1.0 | Playable |
+| The Legend of Zelda: Tears of the Kingdom | `0100F2C0115B6000` | 1.4.3 | Playable |
+| Unicorn Overlord | `010069401ADB8000` | 1.05 | Playable |
 
-## Pack an IPA
+Known issues:
 
-**1. Get nxnative and its tools** (once, on a Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835) and [Homebrew](https://brew.sh)):
+- No amiibo and no online features.
+- Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
+- Fire Emblem: Three Houses: small square patches on the ground where decals land.
+- Super Mario Galaxy and Super Mario Galaxy 2: effects drawn as points or lines come out one pixel wide.
+
+Test reports for a title or a build go in a [compatibility report](https://github.com/chayan-bit/AnySwitch/issues/new?template=compatibility_report.yml).
+
+## Requirements
+
+- A Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835), [Homebrew](https://brew.sh) or Nix, and Python 3.
+- iOS or iPadOS 26 or later, on an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.
+  The games' textures are BC-compressed, and older iPhones cannot read that format.
+- Your own game dump (NSP files; an XCI cartridge dump works for the base game) and the `prod.keys` of your console.
+- Free disk space of about twice the NSPs' size plus 10 GB.
+- A way to sideload an IPA (AltStore, Sideloadly, LiveContainer, or Xcode).
+
+## Quick start
+
+**1. Get AnySwitch and its tools** (once):
 
 ```
-git clone https://github.com/seedds/nxnative.git && cd nxnative
+git clone https://github.com/chayan-bit/AnySwitch.git && cd AnySwitch
 brew install xcodegen zstd spirv-cross
 brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
@@ -61,40 +99,64 @@ python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < 
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
 
-**3. Run the script:**
+**3. Run the script** [scripts/build_ipa_from_nsp.py](scripts/build_ipa_from_nsp.py):
 
 ```
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 ```
 
-The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the NSPs' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
+The IPA appears in the same folder.
+The first build takes 30 to 60 minutes, later ones about 10.
+Options such as `-o` (output path), `--app-name` and `--bundle-id` are listed by `-h`.
+The default bundle ID is `org.anyswitch.<base game title ID in lowercase>`.
 
-**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update).
+**4. Install** the IPA with your sideloading tool.
+The app gets the game's name, icon and version (the update's version when there is an update, else the base game's).
 
 ## Play
 
-**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. Wonder, Engage, Dread, 13 Sentinels, Link's Awakening, Ace Attorney Investigations Collection, Unicorn Overlord, Rhythm Heaven Groove, Octopath Traveler 0, Pokémon Legends: Z-A, Cuphead, Absolum, Brain Memory Training Academy and The Great Ace Attorney Chronicles start in 2D, the other games in 3D. In 3D, the right stick (the camera in most games) is not drawn: swipe on the right third of the screen, starting anywhere off the buttons. In Super Mario Galaxy and Super Mario Galaxy 2, other touches outside the controls move the pointer; in Captain Toad: Treasure Tracker they touch the game's screen (touch blocks, stun enemies).
+**Touch controls.**
+Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice.
+In 3D, the right stick (the camera in most games) is not drawn: swipe on the right third of the screen, starting anywhere off the buttons.
 A connected game controller hides the touch controls and keeps every button.
+The in-app settings screen (the gear button at the top, or hold + and - on a controller) changes the bars, the controls and the frame-rate counter: [docs/settings.md](docs/settings.md).
 
-**Shaking.** Shake the iPhone to shake the controller, in games that read its motion: Super Mario Odyssey's motion moves (such as the cap throw on a shake) need it, and Odyssey only takes them in its default docked mode. A light bump does not count; a sharp flick of the phone does.
+**Shaking.**
+Shake the phone to shake the controller, in games that read its motion.
+A light bump does not count; a sharp flick does.
 
 - **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
-- **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, send `log.txt` (the previous run is `log.prev.txt`).
+- **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, attach the relevant lines of `log.txt` to an issue (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
 - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
-- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom and Octopath Traveler 0 at their original 30 fps, which saves battery. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start).
+- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps the games that run at 60 fps on their original 30 fps, which saves battery. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start).
 
-## Known issues
+## Legal
 
-- No amiibo and no online features.
-- Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
-- Fire Emblem: Three Houses: small square patches on the ground where decals land.
-- Super Mario Galaxy and Super Mario Galaxy 2: effects drawn as points or lines come out one pixel wide.
+AnySwitch is for running games you own, on hardware you own.
+It does not include, distribute or require any game, firmware or key.
 
-## For developers
+- Bring your own dumps and your own `prod.keys`, dumped from your own console.
+- No game files, keys, firmware or anything derived from them (extracted files, translated shaders, recompiled code, IPAs, save files) belong in this repository, in issues, in pull requests or in logs you post.
+  Redact paths and key values from logs.
+- The game profiles in `dm/games` hold only generated tables (hashes, shader keys, file paths inside the game) and settings, never game bytes.
+- AnySwitch is an independent project, not affiliated with, authorized or endorsed by Nintendo or any game publisher.
+  Nintendo and Switch are trademarks of Nintendo.
 
-How it works, the script's options, running games on the Mac, adding a game, and per-game notes: [docs/development.md](docs/development.md). In-depth bring-up and debugging notes: [docs/agents](docs/agents/README.md).
+## Contributing
+
+Contributions are welcome: bug fixes, new game profiles, compatibility reports, docs.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report security problems as described in [SECURITY.md](SECURITY.md).
+The docs are indexed in [docs/README.md](docs/README.md).
+
+## Credits
+
+AnySwitch is a fork of [nxnative](https://github.com/seedds/nxnative) by seedds (MIT), which is built on the native-execution approach of [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) (MIT).
+It also uses the shader translator of Ryujinx (MIT), and draws on Atmosphère, yuzu, LibHac, SPIRV-Cross, deko3d, libvpx, stb_vorbis and the Vulkan headers.
+The full list with licenses is in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/third_party](dm/third_party/README.md).
+MIT, see [LICENSE](LICENSE).
+Third-party code keeps its own license: [THIRD_PARTY.md](THIRD_PARTY.md) and [dm/third_party](dm/third_party/README.md).

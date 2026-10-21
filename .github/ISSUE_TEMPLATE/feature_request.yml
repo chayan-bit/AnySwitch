@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest an improvement to AnySwitch.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        AnySwitch keeps its code game-agnostic, so a request that holds for every game is easier to take than one for a single title.
+        Do not attach or paste game files, keys, firmware or anything derived from them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve
+      description: What you cannot do today, or what is hard.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: Behaviour you want, and alternatives you considered.
+    validations:
+      required: true
+  - type: input
+    id: scope
+    attributes:
+      label: Games or devices it matters for
+      description: A title ID or device class, or "all".
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to work on this myself.
+        - label: I searched the existing issues.
+          required: true

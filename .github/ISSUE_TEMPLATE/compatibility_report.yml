@@ -1,0 +1,99 @@
+name: Game compatibility report
+description: Tell us how a game runs, or that you tried a game without a profile.
+labels: ["compatibility"]
+title: "[Compatibility] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One report per title and build.
+        Do not attach or paste game files, keys, firmware or anything derived from them, and redact paths and key values from logs.
+        Screenshots are welcome, as long as they show no files and no keys.
+  - type: input
+    id: game
+    attributes:
+      label: Game name
+    validations:
+      required: true
+  - type: input
+    id: title_id
+    attributes:
+      label: Title ID
+      description: The 16 hex digits of the base game, for example 010015100B514000.
+    validations:
+      required: true
+  - type: input
+    id: game_version
+    attributes:
+      label: Game build
+      description: Base game or update, with its version, for example "update 1.2.1". Say whether the game came from an NSP or an XCI.
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Does the game have a profile in dm/games?
+      options:
+        - Yes
+        - No (the script wrote a provisional profile)
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: How far does it get
+      options:
+        - The build fails
+        - The app does not start
+        - Starts, then crashes or hangs
+        - Starts, shows a black or broken screen
+        - Reaches the menus
+        - In game, with problems
+        - Playable
+    validations:
+      required: true
+  - type: input
+    id: anyswitch_version
+    attributes:
+      label: AnySwitch commit
+    validations:
+      required: true
+  - type: dropdown
+    id: device_class
+    attributes:
+      label: Device class
+      options:
+        - iPhone (A17 Pro or newer)
+        - iPhone (older than A17 Pro)
+        - iPad (M-series)
+        - iPad (A-series)
+        - Mac (running the host directly)
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+  - type: textarea
+    id: performance
+    attributes:
+      label: Frame rate and performance
+      description: Typical frame rate (the in-app counter shows it), stutter, heat, battery, memory kills.
+  - type: textarea
+    id: problems
+    attributes:
+      label: Problems you saw
+      description: Visual glitches, audio problems, controls, crashes, and where in the game they happen.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The relevant lines of `log.txt`, a few dozen at most. Lines that start with `[RED]` are the useful ones.
+      render: text
+  - type: checkboxes
+    id: legal
+    attributes:
+      label: Checklist
+      options:
+        - label: I did not include game files, keys, firmware or derived data, and I redacted private paths from the log.
+          required: true

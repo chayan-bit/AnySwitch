@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Legal note - read before posting
+    url: https://github.com/chayan-bit/AnySwitch#legal
+    about: Do not post game files, keys, firmware or anything derived from them (extracted files, translated shaders, IPAs, save files) in issues. Redact paths and key values from logs. Issues that contain them are removed.
+  - name: Security problem
+    url: https://github.com/chayan-bit/AnySwitch/security/policy
+    about: Report vulnerabilities privately, see SECURITY.md. Do not open a public issue.
