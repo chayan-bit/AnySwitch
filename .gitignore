@@ -36,3 +36,7 @@ CLAUDE.local.md
 # Spotlight skips *.noindex; data is a symlink to it
 data
 data.noindex/
+# Local-only notes and assistant configuration
+notes/
+CLAUDE.md
+.claude/
