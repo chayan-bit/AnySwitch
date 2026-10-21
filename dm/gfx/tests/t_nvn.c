@@ -323,6 +323,20 @@ int main(void) {
         close(fd); unlink(path);
         GPU_READ_EQ(2, "re-upload after host write: GPU-side contents = version 2");
         mtl_pkg_stats(&up, &re); EXPECT("host write triggers a re-upload, 2 in total", 2, re - re0);
+        // Same bytes written again (a neighbour on the same 16 KB page, or the game rewriting identical data): the page faults, the check finds the snapshot equal and keeps the texture
+        uint64_t sm0 = mtl_pkg_same(); nvn_dirty_stats(&fa1, &pr);
+        FILLPAT(2); nvn_swizzle(&dd, 0, 0, lin, 64, store);
+        nvn_dirty_stats(&fa, &pr); EXPECT("same-bytes write still faults", 1, fa - fa1 >= 1);
+        GPU_READ_EQ(2, "same-bytes write: GPU-side contents stay version 2");
+        mtl_pkg_stats(&up, &re); EXPECT("same-bytes write: no re-upload, still 2", 2, re - re0); EXPECT("same-bytes write: kept unchanged +1", 1, mtl_pkg_same() - sm0);
+        // A GPU copy into the texture makes it differ from the guest bytes: a same-bytes write afterwards re-uploads, as before the snapshot existed
+        FILLPAT(3); memcpy(outb, lin, sizeof lin);
+        P(nvnCommandBufferBeginRecording)(&cb); P(nvnCommandBufferSetCopyRowStride)(&cb, 0); P(nvnCommandBufferCopyBufferToTexture)(&cb, (NVNbufferAddress)outb, &tw, NULL, &all, 0);
+        { NVNcommandHandle hh = P(nvnCommandBufferEndRecording)(&cb); P(nvnQueueSubmitCommands)(&q, 1, &hh); P(nvnQueueFinish)(&q); }
+        GPU_READ_EQ(3, "GPU copy into the packaged texture: contents = version 3");
+        FILLPAT(2); nvn_swizzle(&dd, 0, 0, lin, 64, store);
+        GPU_READ_EQ(2, "same-bytes write after a GPU copy: re-uploaded, contents = version 2");
+        mtl_pkg_stats(&up, &re); EXPECT("same-bytes write after a GPU copy: re-uploads 3", 3, re - re0); EXPECT("same-bytes write after a GPU copy: kept unchanged still +1", 1, mtl_pkg_same() - sm0);
         P(nvnMemoryPoolFinalize)(&wp);
     }
 
