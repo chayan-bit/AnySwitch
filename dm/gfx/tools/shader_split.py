@@ -19,6 +19,7 @@
 #   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
+#   · GFLXPACK (Game Freak, Pokémon Sword / Shield): BNSH inside the LZ4 files of the .gfpak packs, see gfpak_shaders
 #   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
 #   · SPK (Capcom's MT Framework, The Great Ace Attorney Chronicles): the shader package inside an ARC archive (zlib entries), code area + control section per shader, see mtarc_members and mtspk_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
@@ -429,6 +430,21 @@ def trinity_shaders(path, rel, packs, out):
                 else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
                 scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
 
+GFLX = b'GFLXPACK'
+def gfpak_shaders(path, rel, out):
+    """Game Freak's GFLXPACK (Pokémon Sword / Shield: 7,699 .gfpak files under bin/archive, 201,635 entries, every one LZ4): u64 magic, u32 version 0x1000, u32 0, u32 file count, u32 folder count,
+    u64 file table offset, u64 offset of the files' u64 path hashes, then one u64 folder pointer per folder. File table entry (0x18 bytes): u16 level, u16 compression (0 stored, 1 zlib, 2 LZ4 block),
+    u32 length, u32 stored length, u32 0, u64 offset of the stored data. Each file is scanned like a loose one (BNSH in model shader archives and in VFXB particle effects); about 95% of Sword's shaders live here"""
+    import mmap, zlib, lz4.block
+    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+        n, ft, hp = struct.unpack_from('<I', d, 0x10)[0], *struct.unpack_from('<QQ', d, 0x18)
+        for k in range(n):
+            comp, ln, sz, off = struct.unpack_from('<2xHII4xQ', d, ft + 0x18 * k)
+            raw = d[off:off + sz]
+            data = raw if comp == 0 else zlib.decompress(raw) if comp == 1 else lz4.block.decompress(raw, uncompressed_size=ln) if comp == 2 else None
+            if data is None or len(data) != ln: red(f'/{rel}: file {k} has compression {comp} ({sz} → {ln} bytes), which is not known')
+            scan_blob(data, f'/{rel}#{struct.unpack_from("<Q", d, hp + 8 * k)[0]:016x}', out)
+
 def yaz0(s):
     """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
     Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
@@ -618,6 +634,9 @@ def scan_file(args):
     found = []; trees = {}
     if head[:8] == IDRK:
         idrk_shaders(path, '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:8] == GFLX:   # a Game Freak pack (Pokémon Sword / Shield)
+        gfpak_shaders(path, rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)
         trinity_shaders(path, rel, args[2], found)
