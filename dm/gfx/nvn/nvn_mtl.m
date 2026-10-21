@@ -7556,7 +7556,7 @@ static double g_link_it_tin;   // Enqueue time of the frame the display-link cal
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
-    if (g_present_n % 600 == 0) psoarch_flush(0);   // harvest runs: new pipelines reach the disk within seconds (an app killed in the background loses no more); a no-op otherwise
+    if (g_present_n % 600 == 0) psoarch_flush(0);   // harvest runs: new pipelines reach the disk within seconds (an app killed in the background loses no more); with an archive, the hits / misses so far
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
         MLOG("[bootprof] t=%.3f s present #%llu: metallibs loaded %llu / %.1f ms; pipelines created %llu / %.1f ms (all synchronous on the submit thread); prewarmed and used: shaders %llu / render pipelines %llu / compute pipelines %llu; "

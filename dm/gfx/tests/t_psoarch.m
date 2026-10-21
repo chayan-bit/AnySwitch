@@ -54,8 +54,10 @@ int main(int argc, char **argv) {
         assert(psoarch_render(rdesc(@"fmain", MTLPixelFormatRGBA8Unorm), "vmain/fmain other format", &e));   // a descriptor not harvested misses, and is compiled anyway
         expect(3, 1, 0, "miss");
 
-        psoarch_open(g_dev, harv, harv); create_all(); psoarch_flush(1);   // extending an earlier harvest keeps what it had
-        expect(3, 0, 3, "extend");
+        psoarch_open(g_dev, harv, harv); create_all(); psoarch_flush(1);   // a second harvest run rewrites the archive whole, from its own pipelines
+        expect(3, 0, 3, "second harvest");
+        psoarch_open(g_dev, harv, nil); create_all();   // and the rewritten archive still has every pipeline
+        expect(3, 0, 0, "after second harvest");
 
         psoarch_open(g_dev, [work stringByAppendingPathComponent:@"none.metallib"], nil); create_all();   // no archive: plain compiles, nothing counted
         expect(0, 0, 0, "no archive");
@@ -64,6 +66,6 @@ int main(int argc, char **argv) {
         // functions specialized at run time, and with them stored there (MTLFunctionOptionStoreFunctionInMetalPipelinesScript) metal-tt's binary still has another key (Xcode 27, macOS 27)
         if (argc > 3) { psoarch_open(g_dev, @(argv[3]), nil); create_all(); expect(2, 1, 0, "offline archive"); }
     }
-    printf("PSOARCH OK harvest 3 -> lookup 3 hits, unharvested descriptor 1 miss (compiled), extend keeps entries, no archive = plain compile%s\n", argc > 3 ? ", offline archive 2 hits + specialized 1 miss" : "");
+    printf("PSOARCH OK harvest 3 -> lookup 3 hits, unharvested descriptor 1 miss (compiled), a second harvest rewrites it whole, no archive = plain compile%s\n", argc > 3 ? ", offline archive 2 hits + specialized 1 miss" : "");
     return 0;
 }

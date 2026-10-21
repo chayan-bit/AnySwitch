@@ -4,7 +4,8 @@
 #pragma once
 #import <Metal/Metal.h>
 
-// load: archive to look pipelines up in (nil or missing file = none); harvest: archive file to add every created pipeline to (nil = off; an existing file is extended).
+// load: archive to look pipelines up in (nil or missing file = none); harvest: archive file every created pipeline is written to (nil = off; an existing file is replaced:
+// pipelines of earlier runs come back through the warm-up replay of DM_PSO_USER).
 // Callable again (tests): replaces both archives and zeroes the counters
 void psoarch_open(id<MTLDevice> dev, NSString *load, NSString *harvest);
 // Create a pipeline: hit in the loaded archive = no driver compile; a miss compiles as before and is logged with label (the shader keys). Never fails because of the archive
@@ -12,5 +13,5 @@ id<MTLRenderPipelineState> psoarch_render(MTLRenderPipelineDescriptor *d, const 
 id<MTLComputePipelineState> psoarch_compute(id<MTLFunction> fn, const char *label, NSError **err);
 // Harvest: write the archive if it gained pipelines since the last write (wait = 0 writes on a background queue). No-op when harvest is off
 void psoarch_flush(int wait);
-// Cumulative: lookups that hit / missed the loaded archive, pipelines added to the harvest archive
+// Cumulative: lookups that hit / missed the loaded archive, pipelines kept for the harvest
 void psoarch_stats(uint64_t *hit, uint64_t *miss, uint64_t *harvested);

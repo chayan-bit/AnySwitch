@@ -7,7 +7,9 @@
 # another chain version) are left out and counted: those compile on first use as before.
 # metal-tt reads only libraries linked by the metal driver (`xcrun metal x.air -o x.metallib`); the chain links with `metallib`, which leaves out the platform metadata metal-tt needs
 # ("cannot find private metadata"). So each needed library is rebuilt from its MSL (--msl: the Mac b-<V>/, which keeps <key>_b.metal) with the compile convention its json records
-# (chain_metal) and linked by the driver: the same AIR, so the same function hashes the app looks up. The rebuilt libraries stay in a temporary folder, the shipped ones are untouched.
+# (chain_metal) and linked by the driver: the same AIR, so for nearly every library the same function hashes the app looks up. The driver link folds the bitcode of shaders that only write
+# constants (iOS SDK 26: a fragment shader returning a fixed color, a vertex shader writing a fixed position), which gives their functions another hash: pipelines of such a library could never be
+# found, so they are left out and counted (they compile on first use as before). The rebuilt libraries stay in a temporary folder, the shipped ones are untouched.
 # Usage: dmsh_psoarch.py <harvest.metallib>... --libs <dir>... --target-libs <dir> --msl <dir> -o <out.metallib> [--platform ios|macos] [--arch applegpu_g16g ...]
 #   --platform: ios (default, the app) or macos (dmhost, tests); --arch: GPU architectures to build (default: every GPU of the platform; xcrun metal-arch prints this Mac's)
 # The output is game-derived (compiled game shaders): write it only under the gitignored build output
@@ -35,6 +37,12 @@ def scripts(harvest, work):
     found = glob.glob(os.path.join(out, '**', '*.mtlp-json'), recursive=True)
     if r.returncode or not found: sys.exit(f'[RED] {harvest}: no pipeline script inside (not a harvested archive?) {r.stderr}')
     return [json.load(open(p)) for p in found]
+
+
+def fn_hashes(path):
+    """The function hashes a metallib lists (HASH tags: 2-byte size, 32-byte sha256): what a binary archive keys its pipelines by"""
+    b = open(path, 'rb').read()
+    return [b[m.start() + 6:m.start() + 38] for m in re.finditer(b'HASH', b)]
 
 
 def merge(docs, names):
@@ -95,7 +103,13 @@ def main():
         rl = os.path.join(work, 'libs'); os.makedirs(rl)
         with cf.ThreadPoolExecutor(os.cpu_count()) as ex:
             paths = dict(zip(libs, ex.map(lambda n: relink(n, o.target_libs, o.msl, rl), libs.values())))
-        script['libraries']['paths'] = [{'label': l, 'path': p} for l, p in sorted(paths.items())]
+        moved = {l for l, p in paths.items() if fn_hashes(p) != fn_hashes(os.path.join(o.target_libs, libs[l]))}
+        if moved:
+            n0 = sum(len(v) for v in script['pipelines'].values())
+            script['pipelines'] = {k: [p for p in v if not set(ALIAS.findall(json.dumps(p))) & moved] for k, v in script['pipelines'].items()}
+            print(f'pipelines: {n0 - sum(len(v) for v in script["pipelines"].values())} left out, their library relinks to other function hashes than the shipped one ({len(moved)} libraries, '
+                  f'shaders writing only constants): they compile on first use')
+        script['libraries']['paths'] = [{'label': l, 'path': p} for l, p in sorted(paths.items()) if l not in moved]
         sp = os.path.join(work, 'pipelines.mtlp-json'); json.dump(script, open(sp, 'w'), indent=1)
         sdk, target = TARGET[o.platform]
         cmd = ['xcrun', '-sdk', sdk, 'metal-tt', '-target', target(), *[x for arch in o.arch for x in ('-arch', arch)], sp, '-o', o.o + '.tmp']
