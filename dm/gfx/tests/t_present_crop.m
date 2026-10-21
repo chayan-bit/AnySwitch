@@ -49,6 +49,9 @@ static void check(id<MTLTexture> src, const char *name, const int crop[4], int w
 
 int main(void) { @autoreleasepool {
     mtl_init();
+#ifndef CROP_LEGACY_HEADER
+    mtl_letterbox_set(0);   // this test pins the black bars; t_present_ambient covers the ambient fill
+#endif
     MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead;
     id<MTLTexture> src=[g_dev newTextureWithDescriptor:d];uint8_t px[8*8*4];
     for(int y=0;y<8;y++)for(int x=0;x<8;x++)memcpy(px+4*(y*8+x),colors[(x>=4)+2*(y>=4)],4);
