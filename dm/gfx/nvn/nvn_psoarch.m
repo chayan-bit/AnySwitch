@@ -7,15 +7,17 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PLOG(...) do { fprintf(stderr, "[dm] [pso-archive] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 enum { MISS_LOG_ALL = 32 };   // misses logged one by one; after that every 100th (a wholesale invalidation would otherwise log every pipeline of the game)
 
 static id<MTLDevice> g_dev;
 static id<MTLBinaryArchive> g_load, g_harv;
-static NSArray<id<MTLBinaryArchive>> *g_archs;   // passed to every descriptor: the loaded archive, and the harvest one (its fresh binaries make the following create free)
+static NSArray<id<MTLBinaryArchive>> *g_archs;   // passed to every descriptor: the loaded archive only, so the harvest archive is touched under g_harv_lock alone (harvest_write may replace it)
 static NSString *g_harv_path;
 static os_unfair_lock g_harv_lock = OS_UNFAIR_LOCK_INIT;   // adds and the serialize write share the harvest archive across the warm-up, prediction and submit threads
+static NSMutableArray<NSArray *> *g_pend;   // {descriptor, label} of the pipelines added since the last good write (harvest_write puts them back when a write fails)
 static _Atomic uint64_t g_hit, g_miss, g_harvested, g_harv_written;
 
 static id<MTLBinaryArchive> arch_new(NSString *path, NSError **e) {
@@ -40,10 +42,8 @@ void psoarch_open(id<MTLDevice> dev, NSString *load, NSString *harvest) {
         if (g_harv) PLOG("harvest on: every pipeline created is added to %s", harvest.UTF8String);
         else PLOG("[RED] cannot create a harvest archive (%s): harvest off", e.localizedDescription.UTF8String);
     }
-    NSMutableArray *a = [NSMutableArray array];
-    if (g_load) [a addObject:g_load];
-    if (g_harv) [a addObject:g_harv];
-    g_archs = a;
+    g_archs = g_load ? @[g_load] : @[];
+    g_pend = [NSMutableArray array];
 }
 
 static void miss_log(const char *what, const char *label) {
@@ -52,11 +52,18 @@ static void miss_log(const char *what, const char *label) {
                                                n == MISS_LOG_ALL ? "; further misses are logged every 100th" : "");
 }
 
+static BOOL arch_add(id<MTLBinaryArchive> a, id d, NSError **e) {
+    return [d isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:d error:e] : [a addComputePipelineFunctionsWithDescriptor:d error:e];
+}
+
 static void harvest_add(MTLRenderPipelineDescriptor *rd, MTLComputePipelineDescriptor *cd, const char *label) {
     if (!g_harv) return;
     NSError *e = nil; BOOL ok;
+    id d = rd ? [rd copy] : [cd copy];   // kept for harvest_write; a copy, as callers build each descriptor once but nothing promises they leave it alone
+    [d setBinaryArchives:nil];
     os_unfair_lock_lock(&g_harv_lock);
-    ok = rd ? [g_harv addRenderPipelineFunctionsWithDescriptor:rd error:&e] : [g_harv addComputePipelineFunctionsWithDescriptor:cd error:&e];
+    ok = arch_add(g_harv, d, &e);
+    if (ok) [g_pend addObject:@[d, @(label ? label : "-")]];
     os_unfair_lock_unlock(&g_harv_lock);
     if (ok) atomic_fetch_add(&g_harvested, 1);
     else PLOG("[RED] harvest: pipeline %s not added: %s", label ? label : "-", e.localizedDescription.UTF8String);
@@ -64,8 +71,8 @@ static void harvest_add(MTLRenderPipelineDescriptor *rd, MTLComputePipelineDescr
 
 id<MTLRenderPipelineState> psoarch_render(MTLRenderPipelineDescriptor *d, const char *label, NSError **err) {
     id<MTLDevice> dev = d.vertexFunction.device ?: MTLCreateSystemDefaultDevice();   // the function's own device, so this also works before psoarch_open; a missing function gets Metal's own error
-    if (!g_archs.count) return [dev newRenderPipelineStateWithDescriptor:d error:err];
-    d.binaryArchives = g_archs;
+    if (!g_load && !g_harv) return [dev newRenderPipelineStateWithDescriptor:d error:err];
+    if (g_load) d.binaryArchives = g_archs;
     id<MTLRenderPipelineState> ps = g_load ? [dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil] : nil;
     if (ps) atomic_fetch_add(&g_hit, 1);
     else { if (g_load) miss_log("render", label); ps = [dev newRenderPipelineStateWithDescriptor:d error:err]; }
@@ -75,10 +82,10 @@ id<MTLRenderPipelineState> psoarch_render(MTLRenderPipelineDescriptor *d, const 
 
 id<MTLComputePipelineState> psoarch_compute(id<MTLFunction> fn, const char *label, NSError **err) {
     id<MTLDevice> dev = fn.device ?: MTLCreateSystemDefaultDevice();
-    if (!g_archs.count) return [dev newComputePipelineStateWithFunction:fn error:err];
+    if (!g_load && !g_harv) return [dev newComputePipelineStateWithFunction:fn error:err];
     MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new];   // the descriptor equivalent of newComputePipelineStateWithFunction (only a descriptor can name archives)
     d.computeFunction = fn;
-    d.binaryArchives = g_archs;
+    if (g_load) d.binaryArchives = g_archs;
     id<MTLComputePipelineState> ps = g_load ? [dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil] : nil;
     if (ps) atomic_fetch_add(&g_hit, 1);
     else { if (g_load) miss_log("compute", label); ps = [dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:err]; }
@@ -86,20 +93,50 @@ id<MTLComputePipelineState> psoarch_compute(id<MTLFunction> fn, const char *labe
     return ps;
 }
 
-static void harvest_write(void) {
+// The pipelines of items that Metal writes to an archive: a scratch archive of them is written to the probe file, its halves are tried when that fails, and a single pipeline that fails is left out
+static NSArray<NSArray *> *harvest_writable(NSArray<NSArray *> *items, NSString *probe) {
+    if (!items.count) return items;
+    id<MTLBinaryArchive> a = arch_new(nil, nil); NSError *e = nil;
+    for (NSArray *it in items) arch_add(a, it[0], nil);
+    if ([a serializeToURL:[NSURL fileURLWithPath:probe] error:&e]) return items;
+    if (items.count == 1) { PLOG("[RED] harvest: pipeline %s left out, Metal cannot write it to an archive: %s", [items[0][1] UTF8String], e.localizedDescription.UTF8String); return @[]; }
+    NSUInteger h = items.count / 2;
+    return [harvest_writable([items subarrayWithRange:NSMakeRange(0, h)], probe) arrayByAddingObjectsFromArray:harvest_writable([items subarrayWithRange:NSMakeRange(h, items.count - h)], probe)];
+}
+
+static void harvest_write_(int repair) {
     os_unfair_lock_lock(&g_harv_lock);
     uint64_t n = atomic_load(&g_harvested);
     if (!g_harv || n == g_harv_written) { os_unfair_lock_unlock(&g_harv_lock); return; }
     // to a temporary file, then renamed over the archive: a kill mid-write (iOS, the 1.5 s exit fallback) leaves the previous archive intact
     NSString *tmp = [g_harv_path stringByAppendingString:@".tmp"]; NSError *e = nil;
     BOOL ok = [g_harv serializeToURL:[NSURL fileURLWithPath:tmp] error:&e] && !rename(tmp.fileSystemRepresentation, g_harv_path.fileSystemRepresentation);
+    NSArray *lost = g_pend;
     if (ok) g_harv_written = n;
+    if (ok || repair) g_pend = [NSMutableArray array];
     os_unfair_lock_unlock(&g_harv_lock);
-    if (ok) PLOG("harvest: %llu pipelines written to %s", (unsigned long long)n, g_harv_path.UTF8String);
-    else PLOG("[RED] harvest: writing %s failed: %s", g_harv_path.UTF8String, e ? e.localizedDescription.UTF8String : strerror(errno));
+    if (ok) { PLOG("harvest: %llu pipelines written to %s", (unsigned long long)n, g_harv_path.UTF8String); return; }
+    PLOG("[RED] harvest: writing %s failed: %s", g_harv_path.UTF8String, e ? e.localizedDescription.UTF8String : strerror(errno));
+    if (!repair) return;
+    // A failed write also drops from the archive the pipelines added since the last good write (iPadOS 26: Metal's GPU binary packer refuses one of them, "expecting 'fragment' stage in pipeline
+    // no. N", and the next write finds "Nothing to serialize"). So the archive is reopened from the last good file and those pipelines are added back, less the ones a probe write refuses
+    NSString *probe = [g_harv_path stringByAppendingString:@".probe"];
+    NSArray *keep = harvest_writable(lost, probe);
+    unlink(probe.fileSystemRepresentation);
+    NSError *le = nil; id<MTLBinaryArchive> a = arch_new([NSFileManager.defaultManager fileExistsAtPath:g_harv_path] ? g_harv_path : nil, &le);
+    if (!a) { PLOG("[RED] harvest: cannot reopen %s (%s): the pipelines since the last write are lost", g_harv_path.UTF8String, le.localizedDescription.UTF8String); return; }
+    os_unfair_lock_lock(&g_harv_lock);
+    for (NSArray *it in [keep arrayByAddingObjectsFromArray:g_pend]) arch_add(a, it[0], nil);   // g_pend: added while the probes ran
+    [g_pend insertObjects:keep atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, keep.count)]];
+    g_harv = a; g_harv_written = n - 1;   // anything but n: the write below goes ahead
+    os_unfair_lock_unlock(&g_harv_lock);
+    PLOG("harvest: %lu of the %lu pipelines since the last write put back", (unsigned long)keep.count, (unsigned long)lost.count);
+    harvest_write_(0);
 }
+static void harvest_write(void) { harvest_write_(1); }
 
 void psoarch_flush(int wait) {
+    if (wait && g_load) PLOG("%llu hits / %llu misses so far", (unsigned long long)g_hit, (unsigned long long)g_miss);   // suspend and exit (mtl_drain): how many pipelines still compiled at run time
     if (!g_harv || atomic_load(&g_harvested) == atomic_load(&g_harv_written)) return;
     if (wait) { harvest_write(); return; }
     static dispatch_queue_t q; static dispatch_once_t once;
