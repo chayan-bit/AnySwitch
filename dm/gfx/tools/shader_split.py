@@ -20,6 +20,7 @@
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
 #   · GFLXPACK (Game Freak, Pokémon Sword / Shield): BNSH inside the LZ4 files of the .gfpak packs, see gfpak_shaders
+#   · zlib streams in main (Silicon Studio's YEBIS post effects: GLSLC outputs inside a compressed TinyEffect object), see zlib_streams
 #   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
 #   · SPK (Capcom's MT Framework, The Great Ace Attorney Chronicles): the shader package inside an ARC archive (zlib entries), code area + control section per shader, see mtarc_members and mtspk_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
@@ -153,6 +154,23 @@ def glslc_shaders(d, label, need=True):
         if not st or check(label, st, ctl, code): continue
         out.append((f'{label}#GLSLC@{h:#x}', st, ctl, code))
     if not out and need: red(f'{label}: no GLSLC output')
+    return out
+
+def zlib_streams(d):
+    """Complete zlib streams embedded in a module image, as (offset, inflated bytes). Middleware can keep its compiled shaders compressed in main: Silicon Studio's YEBIS post effects
+    (Pokémon Sword: bloom, glare, tone map, final composite) hold one TinyEffect object (".tfxo file", 3,155 GLSLC outputs, 39.5 MB inflated) as a 3.2 MB zlib stream in the read-only segment,
+    which the game inflates at boot (CTinyEffect::CreateFromMemory). Every 2-byte zlib header is tried; a stream counts only when it ends with a valid Adler-32, so random bytes that start
+    like a header are dropped"""
+    import zlib
+    mv, at, out = memoryview(d), 0, []
+    for m in re.finditer(rb'\x78[\x01\x5e\x9c\xda]', d):
+        if m.start() < at: continue
+        z = zlib.decompressobj()
+        try:
+            if not z.decompress(mv[m.start():m.start() + 256]): continue
+            z = zlib.decompressobj(); data = z.decompress(mv[m.start():])
+        except zlib.error: continue
+        if z.eof: out.append((m.start(), data)); at = len(d) - len(z.unused_data)
     return out
 
 IDRK, ZCHUNKED = b'IDRK0000', 0x100000
@@ -701,8 +719,11 @@ def main():
             import unityfs
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # not a Unity game
-        found = []; scan_blob(img, 'main' + ('@' + tag if tag else ''), found)
-        found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''), need=False)
+        label = 'main' + ('@' + tag if tag else '')
+        found = []; scan_blob(img, label, found)
+        found += glslc_shaders(img, label, need=False)
+        for off, z in zlib_streams(img):   # shaders a middleware keeps compressed in main (zlib_streams)
+            scan_blob(z, f'{label}#zlib@{off:#x}', found); found += glslc_shaders(z, f'{label}#zlib@{off:#x}', need=False)
         # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE. A game needs them when main holds GLSL sources and
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')

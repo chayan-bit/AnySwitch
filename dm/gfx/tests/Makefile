@@ -103,6 +103,7 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	./t_pso_skey
 	MTL_DEBUG_LAYER=1 ./t_pfv
 	DM_GAME=$(GAME) python3 test_tbdr_budget.py   # tools/tbdr_budget.py names shaders from the game profile's shader_map.tsv
+	DM_GAME=$(GAME) python3 test_shader_split_zlib.py   # tools/shader_split.py zlib_streams: shaders compressed inside a module image
 	python3 test_psoarch.py   # runs t_psoarch: harvest -> lookup, then metal-tt archives (macOS looked up, iOS built)
 	MTL_DEBUG_LAYER=1 ./t_passgpu
 .PHONY: run

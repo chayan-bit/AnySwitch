@@ -134,6 +134,7 @@ The tests in `dm/gfx/tests` compile the production code in directly and need a M
 | `t_mip_extent` | Effective size when rendering to a mip level other than level 0 |
 | `t_fuse_check`, `t_reorder_chain`, `t_defer_chain`, `t_zskip`, `t_xv`, `t_ub`, `t_pfv`, `t_rt_range`, `t_rt_range_shape`, `t_rt_range_ro`, `t_rt_depth_ro` | Compile the replay layer `nvn_mtl.m` in directly and check the various optimization and diagnostic logic inside the replay layer |
 | `test_tbdr_budget.py` | The parsing in `tools/tbdr_budget.py` |
+| `test_shader_split_zlib.py` | `tools/shader_split.py` finds shaders compressed in a zlib stream inside a module image (middleware such as YEBIS keeps its shaders that way) |
 | `t_psoarch`, `test_psoarch.py` | Precompiled pipeline archive: harvest, lookup hits and misses, and `tools/dmsh_psoarch.py` archives built with `metal-tt` (no game files) |
 
 ## Common run-time switches
