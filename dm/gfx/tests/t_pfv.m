@@ -16,7 +16,7 @@ int main(void) {
     failed += tex_need_pfv(MTLPixelFormatRGBA8Unorm, MTLPixelFormatR32Uint) != 1;
     tex_t t = {.magic=MAGIC('T', 'E', 'X', 0), .serial = 70001};
     t.d.width = 4; t.d.height = 1; t.d.depth = 1; t.d.levels = 1; t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = NVN_FORMAT_RGBA8;
-    mtl_init();
+    mtl_init(); mtl_tex_init(&t);   // a live texture (TextureInitialize): replacements of a texture the game never initialized go to the dead-serial table (tex_put), not g_by_serial
     MTLTextureDescriptor *d = tex_desc(&t, 0);
     failed += (d.usage & MTLTextureUsagePixelFormatView) != 0;
     id<MTLTexture> base = [g_dev newTextureWithDescriptor:d];
