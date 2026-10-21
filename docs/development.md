@@ -37,6 +37,9 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --
 # a damaged NSP (files failing the NCA's hash check) stops the build after listing them; this packs those files as read
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --allow-damaged
 
+# apply community ExeFS patches (IPS, IPS32, .pchtxt in <name>/<build ID>.ips layout, a local folder, never committed) to the matching modules before the rewrite; see docs/exefs-patches.md
+python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --exefs-patches data/patches
+
 # a game without a profile: survey, provisional profile (a heap check on the Mac when the game needs one), best-effort IPA
 python3 scripts/build_ipa_from_nsp.py ~/Games/NewGame -k ~/keys/prod.keys
 
