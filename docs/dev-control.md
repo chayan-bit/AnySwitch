@@ -28,7 +28,10 @@ python3 scripts/checkpoint.py verify 0100ABF008968000 bedroom
 ```
 
 Import on the Mac deletes the target directory and its `.work` and `.new` leftovers, then copies the checkpoint in.
-Import on the iPad finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies the checkpoint over `Documents/save` with `--remove-existing-content true`, so no stale file survives.
+Import on the iPad first lists `Documents/save` and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
+It then finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies each checkpoint file to `Documents/save/<file>`.
+It lists `Documents/save` again and fails, without launching, unless every file is on the device with the checkpoint's size.
+Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to `Documents/save` with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches) on 2026-10-22.
 A running app is stopped first because it would commit its own save over the checkpoint.
 Export refuses `.work` directories, empty saves and an existing name without `--force`, and checks the copy against the source manifest.
 Import refuses a checkpoint whose files no longer match its manifest.
@@ -49,8 +52,10 @@ The iOS project takes the flag from the same compile command: run `dm/ios/tools/
 
 ### Security
 
-The socket binds to `127.0.0.1` port 47800 by default.
-`DM_DEVCTL_ADDR` may name another numeric local address (for example the device tunnel's), and `DM_DEVCTL_PORT` another port; the wildcard addresses `0.0.0.0` and `::` are refused.
+The socket binds one local address, port 47800: `127.0.0.1` on the Mac, and on iOS the device side of the CoreDevice tunnel, the link `devicectl` and Xcode use.
+A connection that comes through that tunnel arrives on the tunnel address, not on the iPad's loopback address, and a usbmux port forward (`ios forward`) reaches neither when the device is on the local network.
+The app finds the tunnel as the one `utun` interface with a unique local IPv6 address (`fd00::/8`), a /64 prefix and MTU 16000; VPN interfaces such as Tailscale's (`fd7a:115c:a1e0::/48`, MTU 1280) do not match, and two matches (a device paired to two Macs) turn the channel off.
+`DM_DEVCTL_ADDR` names another numeric local address or `tunnel`, and `DM_DEVCTL_PORT` another port; the wildcard addresses `0.0.0.0` and `::` are refused.
 At start the host draws a random 128-bit token and prints it in the log: `devctl: dev input channel listening on 127.0.0.1 port 47800, token <32 hex digits>`.
 On the iPad that log is `Documents/log.txt`.
 The first line of every connection must be `auth <token>` within 10 seconds; anything else gets `err auth`, a one-second delay and a closed connection.
@@ -111,11 +116,13 @@ scripts/dmctl --log data/run/host.log frame
 scripts/dmctl --log data/run/host.log run 'f1200:A wait(240) L(0,1)~3 A'
 scripts/dmctl --log data/run/host.log run -f route.txt      # one step list per file, # starts a comment
 scripts/dmctl --token <hex> --port 47800 frame             # or DMCTL_TOKEN=<hex>
+scripts/dmctl --device <udid> --bundle <bundle id> frame   # iOS dev build: tunnel address and token through devicectl
 ```
 
 `--log` takes the token from the last token line of a host log or a copied `Documents/log.txt`.
 It prints the host's reply and exits 0 for `ok`, `frame` and `done`, 1 for `err`, and 2 when it cannot connect or is refused.
 `--timeout` (default 600 s) bounds the wait for a `run` reply.
+`--device` connects to the device's `connectionProperties.tunnelIPAddress` from `devicectl device info details`, and `--bundle` reads the token from the app's `Documents/log.txt` with `devicectl device copy from`.
 
 ## Mac recipe
 
@@ -163,10 +170,17 @@ Frame dumps every 30 frames: 79 of 89 are identical pixel for pixel, including e
 Frame 1980 differs in 0.01 % of its pixels; from frame 2430 on, outdoors, frames differ in 4 to 38 % of pixels because ambient animation (foliage, sky) follows the wall clock.
 Those runs used the wall clock, because `DM_DETCLOCK` hangs Sword (next section).
 
+## iPad check (2026-10-22, iPad, iPadOS 26, local network)
+
+1. `checkpoint.py import ... postwick-outside --launch` stopped the app, copied `main`, found it on the device with the checkpoint's size, and launched.
+2. `dmctl --device <udid> --bundle <bundle id> frame` answered through the tunnel with the default bind; a wrong token got `err auth`.
+3. `A wait(400)` on the title loaded the save into the Postwick front garden, stick vectors walked the player down the path into Hop's greeting, and `A*30/50` played the dialogue out (WDA screenshots `data/stageA/shots/ipad_devctl_*.jpg`).
+4. An export straight after the import is byte-identical to the Mac checkpoint (`main`, SHA-256 `b48cdd41...`, 1,603,146 bytes).
+5. The game then saved on the iPad through the X menu (R, then A); that export (`ipad-postwick-after-hop`) loads on the Mac host on the same path below the house, so a save written by the iOS build and one written by the Mac build share one format.
+6. The device JSON fields the import uses (`result.apps[].url`, `result.runningProcesses[].executable` and `processIdentifier`, `result.files[].relativePath`, `metadata.size`, `resources.isDirectory`) match what `devicectl` printed on the device.
+
 ## Open items
 
 1. `DM_DETCLOCK` hangs Sword about 130 frames after a save loads into the field, with or without the channel (reproduced with `DM_KEYS=f1200:A` alone).
    The watchdog dump shows the main thread spinning in `SleepThread` (svc 0xb, 703,280 calls) under `main+0x1860344`, waiting on guest time, which advances only per present while it presents nothing.
    A fix belongs in the deterministic clock (advance it when the presenting thread sleeps instead of presenting), not in the channel.
-2. Device reachability: the app binds the channel to the iPad's loopback address; reaching it from the Mac relies on a usbmux or tunnel port forward (`ios forward --udid <udid> 47800 47800`), to be confirmed in the device step.
-3. The device JSON fields the import uses (`result.apps[].url`, `result.runningProcesses[].executable`, `processIdentifier`) are checked by unit tests against a fake device only, until the device step.

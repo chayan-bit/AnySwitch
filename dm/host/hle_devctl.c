@@ -1,6 +1,8 @@
 // Dev input channel server (docs/dev-control.md). Compiled only into dev builds (make DEVCTL=1 defines DM_DEVCTL; the iOS project takes the flag from the same compile command);
-// a product build carries none of this. A TCP socket on the loopback address (DM_DEVCTL_ADDR may name another local address such as the device tunnel's, never a wildcard),
-// port DM_DEVCTL_PORT (default 47800). A random token, printed in the log at start, must be the first line of every connection. One client at a time; line protocol:
+// a product build carries none of this. A TCP socket on one local address, never a wildcard: DM_DEVCTL_ADDR names it, "tunnel" means the device side of the
+// CoreDevice tunnel (the default on iOS: devicectl and Xcode reach the device through it, and a connection through it arrives on that address, not on loopback),
+// otherwise the default is the loopback address. Port DM_DEVCTL_PORT (default 47800).
+// A random token, printed in the log at start, must be the first line of every connection. One client at a time; line protocol:
 //   auth <token>   → "ok frame <N>"            (anything else first → "err auth", connection closed)
 //   frame          → "frame <N>"               (presented frames so far, dm_guest_frame)
 //   run <sequence> → "done start <S> end <E> frame <N>" once the game has reached frame E, or "err <why>" (devctl.c grammar)
@@ -15,6 +17,9 @@
 #include "devctl.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
@@ -23,6 +28,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <TargetConditionals.h>
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static devctl_ev g_q[DEVCTL_MAX_EV]; static int g_qn, g_qi;   // pending events g_q[g_qi .. g_qn), sorted by frame
@@ -108,9 +114,35 @@ static void *server_main(void *arg) {
         serve(fd); close(fd);
     }
 }
+// The device side of the CoreDevice tunnel, which devicectl prints as "Tunnel IP Address" (`devicectl device info details`): a unique local
+// IPv6 address (fd00::/8) with a /64 prefix on a utun interface whose MTU is 16000. VPNs also use utun interfaces with unique local addresses
+// (Tailscale: fd7a:115c:a1e0::/48, MTU 1280), so all three must hold, and more than one match (a device paired to two Macs) is refused.
+static int tunnel_addr(char *out, size_t n) {
+    struct ifaddrs *ifs, *i; int found = 0, s = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (s < 0) return 0;
+    if (getifaddrs(&ifs)) { close(s); return 0; }
+    for (i = ifs; i; i = i->ifa_next) {
+        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET6 || !i->ifa_netmask || strncmp(i->ifa_name, "utun", 4) || !(i->ifa_flags & IFF_UP)) continue;
+        const struct in6_addr *a = &((struct sockaddr_in6 *)i->ifa_addr)->sin6_addr, *m = &((struct sockaddr_in6 *)i->ifa_netmask)->sin6_addr;
+        int bits = 0; for (int k = 0; k < 16; k++) bits += __builtin_popcount(m->s6_addr[k]);
+        struct ifreq r = {0}; strlcpy(r.ifr_name, i->ifa_name, sizeof r.ifr_name);
+        if (a->s6_addr[0] != 0xfd || bits != 64 || ioctl(s, SIOCGIFMTU, &r) || r.ifr_mtu != 16000) continue;
+        char t[INET6_ADDRSTRLEN]; inet_ntop(AF_INET6, a, t, sizeof t);
+        LOG("devctl: CoreDevice tunnel candidate %s on %s", t, i->ifa_name);
+        if (!found++) strlcpy(out, t, n);
+    }
+    freeifaddrs(ifs); close(s);
+    if (found > 1) LOG("[RED] devctl: %d CoreDevice tunnel interfaces, set DM_DEVCTL_ADDR to the right one", found);
+    return found == 1;
+}
 void devctl_start(void) {
     const char *addr = getenv("DM_DEVCTL_ADDR"), *port_s = getenv("DM_DEVCTL_PORT");
-    if (!addr || !*addr) addr = "127.0.0.1";
+    if (!addr || !*addr) addr = TARGET_OS_IPHONE ? "tunnel" : "127.0.0.1";
+    char tun[INET6_ADDRSTRLEN];
+    if (!strcmp(addr, "tunnel")) {
+        if (!tunnel_addr(tun, sizeof tun)) { LOG("[RED] devctl: no single CoreDevice tunnel interface (launch from devicectl or Xcode, or set DM_DEVCTL_ADDR), channel off"); return; }
+        addr = tun;
+    }
     int port = port_s && *port_s ? atoi(port_s) : 47800;
     if (port <= 0 || port > 65535) { LOG("[RED] devctl: bad DM_DEVCTL_PORT %s, channel off", port_s); return; }
     struct sockaddr_storage ss = {0}; socklen_t sl; int fam;
