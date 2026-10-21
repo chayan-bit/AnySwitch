@@ -21,7 +21,7 @@ static void dims(const nvn_texdesc *d, unsigned l, uint32_t *rb, uint32_t *rows,
 
 // ---------- A round trip: first write different random data into every level / layer, then decode them all and compare (overlap between levels or between layers, or out-of-bounds, all fail) ----------
 static void roundtrip(const char *tag, int target, int fmt, uint32_t w, uint32_t h, uint32_t depth, uint32_t levels) {
-    nvn_texdesc d = {target, fmt, 0, 0, w, h, depth, levels, 0};
+    nvn_texdesc d = {target, fmt, 0, 0, w, h, depth, levels, 0, 0};
     nvn_texlayout L; nvn_tex_layout(&d, &L);
     size_t guard = 4096; uint8_t *st = malloc(L.size + guard); memset(st, 0, L.size); memset(st + L.size, 0xAB, guard);
     uint8_t *ref[64][16] = {{0}}; uint64_t bytes = 0;
@@ -126,6 +126,26 @@ int main(void) {
         d.flags = 0; nvn_tex_layout(&d, &L);   // the same texture not sparse keeps the packed layout
         CHECK(nvn_tex_level_offset(&d, 1) == 0x81000 && L.size == 0xBC400 && nvn_tex_level_gobs(&d, 0) == 43, "S not sparse: level 1 %#llx storage %#llx, expected 0x81000 / 0xbc400",
               (unsigned long long)nvn_tex_level_offset(&d, 1), (unsigned long long)L.size);
+    }
+
+    // ---------- L linear (flag LINEAR): already pitch-linear storage, copied row by row at the row pitch (stride, or the width rounded up to 32 bytes); the padding between rows is not touched ----------
+    printf("L linear storage (row copy at the row pitch)\n");
+    {
+        struct { uint32_t w, h, stride, pitch; } C[] = {{8, 4, 0, 32}, {5, 3, 64, 64}, {5, 3, 0, 32}};
+        for (unsigned i = 0; i < 3; i++) {
+            nvn_texdesc d = {1, 0x25, 0x10, 0, C[i].w, C[i].h, 1, 1, C[i].stride, 0}; nvn_texlayout L; nvn_tex_layout(&d, &L);
+            uint32_t rb = C[i].w * 4; uint8_t *st = malloc(L.size), *lin = malloc((size_t)rb * C[i].h), *out = malloc((size_t)rb * C[i].h);
+            memset(st, 0xAB, L.size); for (size_t j = 0; j < (size_t)rb * C[i].h; j++) lin[j] = rnd();
+            CHECK(L.size == (uint64_t)C[i].pitch * C[i].h, "L%u storage %llu expected %u", i, (unsigned long long)L.size, C[i].pitch * C[i].h);
+            CHECK(!nvn_swizzle(&d, 0, 0, lin, rb, st), "L%u write failed", i);
+            int ok = 1; for (uint32_t y = 0; y < C[i].h; y++) { ok &= !memcmp(st + (size_t)y * C[i].pitch, lin + (size_t)y * rb, rb); for (uint32_t x = rb; x < C[i].pitch; x++) ok &= st[(size_t)y * C[i].pitch + x] == 0xAB; }
+            CHECK(ok, "L%u rows not at the row pitch %u, or the padding was written", i, C[i].pitch);
+            CHECK(!nvn_deswizzle(&d, 0, 0, st, out, rb) && !memcmp(out, lin, (size_t)rb * C[i].h), "L%u read back differs", i);
+            printf("  L%u %u×%u RGBA8 stride %u: row pitch %u %s\n", i, C[i].w, C[i].h, C[i].stride, C[i].pitch, ok ? "✓" : "✗");
+            free(st); free(lin); free(out);
+        }
+        nvn_texdesc d = {1, 0x25, 0x10, 0, 8, 4, 1, 1, 0, 0}; uint8_t b[256] = {0};
+        CHECK(nvn_deswizzle(&d, 1, 0, b, b, 32) == -1 && nvn_deswizzle(&d, 0, 1, b, b, 32) == -1, "L a linear texture has one level and one layer");
     }
 
     printf("%s: %d/%d checks passed\n", fails ? "RED" : "all passed", checks - fails, checks);

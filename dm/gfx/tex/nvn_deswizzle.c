@@ -41,7 +41,21 @@ int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
     return 0;
 }
 
+// LINEAR storage is pitch-linear already: one level, one layer, rows at the row pitch nvn_tex_layout gives (stride, or the width rounded up to 32 bytes)
+static int move_linear(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *st, uint8_t *lin, size_t pitch, int to_linear) {
+    int bw, bh; uint32_t bpb = (uint32_t)nvn_fmt_bpb(d->format, &bw, &bh);
+    if (!bpb || level || layer || d->samples > 1 || (d->target != 0 && d->target != 1 && d->target != 7)) return -1;   // 1D / 2D / RECTANGLE
+    nvn_texlayout L; nvn_tex_layout(d, &L);
+    uint32_t row_bytes = (d->width + bw - 1) / bw * bpb, rows = d->target == 0 ? 1 : (d->height + bh - 1) / bh;
+    if (!rows || pitch < row_bytes || L.size / rows < row_bytes) return -1;
+    size_t sp = (size_t)(L.size / rows);
+    for (uint32_t y = 0; y < rows; y++)
+        if (to_linear) memcpy(lin + y * pitch, st + y * sp, row_bytes); else memcpy(st + y * sp, lin + y * pitch, row_bytes);
+    return 0;
+}
+
 static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *bl, uint8_t *lin, size_t pitch, int to_linear) {
+    if (d->flags & 0x10) return move_linear(d, level, layer, bl, lin, pitch, to_linear);
     uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) return -1;
     if (pitch < row_bytes) return -1;

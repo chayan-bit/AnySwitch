@@ -1571,8 +1571,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     }
     g_bp_up_bytes += total;
     void *mb; uint64_t mo;
-    int use_gpu = !sparse && g_nvn_deswz_gpu && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+    int lin = (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) != 0;   // a linear texture is a row copy (nvn_deswizzle), nothing for the GPU deswizzle to do
+    int use_gpu = !sparse && !lin && g_nvn_deswz_gpu && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !lin) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         up_begin();
@@ -1700,19 +1701,32 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
 static int clear_rect_zero(int i);
 // Linear textures (LINEAR) in a CPU-visible pool: the game writes the pool memory directly from the CPU (SMBW's glyph cache: 2048×8192 R8, IMAGE|LINEAR, pool CPU_UNCACHED|GPU_CACHED,
 // the font engine rasterizes glyphs into it on the CPU). A GPU-private texture never sees those writes → all menu / dialog text is blank. On unified memory, create a linear texture directly on the pool buffer (zero copy): the GPU reads the current content at execution time, same as NVN.
-static id<MTLTexture> tex_linear(const tex_t *t) {
+// Where a linear texture's storage sits in its pool buffer: 1 when a Metal texture can alias it there, -1 when the offset or row pitch is below this GPU's linear alignment
+// (minimumLinearTextureAlignmentForPixelFormat: 16 bytes on a Mac, 64 on an iPad; Pokemon Sword's 8-pixel RGBA8 rows of 32 bytes), 0 when it is not an aliasable linear texture at all
+static int linear_place(const tex_t *t, uint32_t *pf, size_t *row, void **mb, uint64_t *mo) {
     // LINEAR_RENDER_TARGET is a linear layout too (SMBW's sky colour ramps: four 64×1 RGBA16F, written by the CPU every frame). Also in a pool the CPU cannot access, whose buffer holds what
     //   its storage held at creation (see tex_init_fill): Rhythm Heaven Groove's 228 linear R8 textures (sprite masks), read from files into CPU_NO_ACCESS pools, were private textures of zeros
-    if (!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) || !t->mem || !t->pool) return nil;
-    if (t->d.target != NVN_TEXTURE_TARGET_2D || t->d.levels > 1 || t->d.samples > 1) return nil;
-    uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf || !bpb || bw != 1 || bh != 1) return nil;
-    size_t row = t->d.stride ? t->d.stride : (size_t)t->d.width * bpb;
-    void *mb; uint64_t mo;
-    if (!mtl_addr((uint64_t)t->mem, (uint64_t)row * (t->d.height ? t->d.height : 1), &mb, &mo)) { RED_ONCE(64, "linear texture storage is not in a memory pool (%ux%u format %#x)", t->d.width, t->d.height, t->d.format); return nil; }
+    if (!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) || !t->mem || !t->pool) return 0;
+    if (t->d.target != NVN_TEXTURE_TARGET_2D || t->d.levels > 1 || t->d.samples > 1) return 0;
+    uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); *pf = 0;
+    if (!nvn_fmt_to_mtl(t->d.format, pf, swz) || !*pf || !bpb || bw != 1 || bh != 1) return 0;
+    *row = t->d.stride ? t->d.stride : (size_t)t->d.width * bpb;
+    if (!mtl_addr((uint64_t)t->mem, (uint64_t)*row * (t->d.height ? t->d.height : 1), mb, mo)) { RED_ONCE(64, "linear texture storage is not in a memory pool (%ux%u format %#x)", t->d.width, t->d.height, t->d.format); return 0; }
+    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)*pf];
+    return *mo % al || *row % al ? -1 : 1;
+}
+// A linear texture the CPU writes and Metal cannot alias (linear_place -1, CPU-visible pool, not written by the GPU): it takes the packaged path, uploaded by a row copy and re-uploaded when its pages change
+static int linear_upload(const tex_t *t) {
+    if ((t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_IMAGE)) != NVN_TEXTURE_FLAGS_LINEAR || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) return 0;
+    uint32_t pf; size_t row; void *mb; uint64_t mo;
+    return linear_place(t, &pf, &row, &mb, &mo) < 0;
+}
+static id<MTLTexture> tex_linear(const tex_t *t) {
+    uint32_t pf; size_t row; void *mb; uint64_t mo; int k = linear_place(t, &pf, &row, &mb, &mo);
+    if (!k) return nil;
+    // Not aliasable: a private texture, filled from its CPU_NO_ACCESS pool by tex_init_fill (a row copy); a CPU-written one went the packaged way (linear_upload), so what is left here is written by the GPU
+    if (k < 0) { RED_ONCE(65, "linear texture offset %#llx / row pitch %zu not aligned to %lu bytes; created as a private texture", (unsigned long long)mo, row, (unsigned long)[g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]); return nil; }
     id<MTLBuffer> b = (__bridge id<MTLBuffer>)mb;
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
-    if (mo % al || row % al) { RED_ONCE(65, "linear texture offset %#llx / row pitch %zu not aligned to %lu bytes; created as a private texture (CPU writes invisible)", (unsigned long long)mo, row, (unsigned long)al); return nil; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width ? t->d.width : 1 height:t->d.height ? t->d.height : 1 mipmapped:NO];
     d.resourceOptions = b.resourceOptions;
     d.usage = MTLTextureUsageShaderRead | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0) | (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET ? MTLTextureUsageRenderTarget : 0);
@@ -1788,6 +1802,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
     }
     id have = tex_get(t->serial);
+    if (!packaged && (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && t->mem && (!have || [have isKindOfClass:[NvPkg class]])) packaged = linear_upload(t);   // (looked up once: an aliased one is then a plain texture)
     if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged

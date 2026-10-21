@@ -42,6 +42,6 @@ make -C dm/gfx/tex/tests run       # run t_fmt_mtl and t_tex
 
 ## Limitations
 
-- `nvn_deswizzle()` does not support multisampled textures, textures with the LINEAR flag (which are linear to begin with) or the BUFFER target; it returns -1 when it encounters them.
+- `nvn_deswizzle()` copies a texture with the LINEAR flag (linear to begin with) row by row at its row pitch, one level and one layer; it does not support multisampled textures or the BUFFER target and returns -1 when it encounters them.
 - Cubes and cube arrays are handled as layered textures.
 - The component bit order of the 16-bit packed formats (565 / 5551 / 4444) is mapped according to the format names and has not been checked with real data; they are marked as "substitute" in the format table.
