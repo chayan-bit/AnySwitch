@@ -170,8 +170,12 @@ int nvn_dirty_tracked(const void *addr, size_t len) {
 // The tracked range holding [addr, addr+len), as a handle a caller keeps (packaged textures: the scan over every range ran twice per texture lookup). NULL = untracked
 const void *nvn_dirty_span(const void *addr, size_t len) { return len ? find_span((uintptr_t)addr, len) : NULL; }
 // Set read-only: mark the pages BUSY first and mark them PROT only after mprotect has landed (for the order and the invariant see the state notes at the top of the file)
-void nvn_dirty_protect(const void *addr, size_t len) {
-    range_t *r = len ? find_span((uintptr_t)addr, len) : NULL;
+void nvn_dirty_protect(const void *addr, size_t len) { nvn_dirty_protect_span(NULL, addr, len); }
+// Through a kept handle (see nvn_dirty_since_span): the scan over every range cost more than the mprotect when a packaged texture re-arms a few pages
+void nvn_dirty_protect_span(const void *span, const void *addr, size_t len) {
+    range_t *r = (range_t *)span; uintptr_t a0 = (uintptr_t)addr;
+    if (!len) return;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a0 < r->base || a0 + len > r->end) r = find_span(a0, len);
     if (!r) return;
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     // Consecutive pages are merged into one mprotect (per-page calls reach thousands per frame on the first upload of large textures; character select page startup frame 5: 4888 calls).
@@ -195,6 +199,25 @@ int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_
     return 0;
 }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { return nvn_dirty_since_span(NULL, addr, len, stamp); }
+// The pages of [addr, addr+len) written after stamp, merged into runs of byte offsets from addr clipped to the span (packaged textures compare only these against their snapshot).
+// Returns the number of such pages; -1 when untracked or when they make more than max runs
+int nvn_dirty_runs(const void *span, const void *addr, size_t len, uint64_t stamp, size_t (*run)[2], int max, int *nrun) {
+    *nrun = 0;
+    if (!len) return 0;
+    range_t *r = (range_t *)span; uintptr_t a = (uintptr_t)addr;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a < r->base || a + len > r->end) r = find_span(a, len);
+    if (!r) return -1;
+    uintptr_t p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift; int pages = 0, n = 0, open = 0;
+    for (uintptr_t i = p; i <= q; i++) {
+        if (atomic_load(&r->gen[i]) <= stamp) { open = 0; continue; }
+        pages++;
+        uintptr_t lo = r->base + (i << g_shift), hi = lo + g_pg; size_t o = lo > a ? lo - a : 0, e = hi - a < len ? hi - a : len;
+        if (open) { run[n - 1][1] = e; continue; }
+        if (n == max) return -1;
+        run[n][0] = o; run[n][1] = e; n++; open = 1;
+    }
+    *nrun = n; return pages;
+}
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
     int n = atomic_load(&g_nr), active = 0;
     for (int i = 0; i < n; i++) active += live_at(i) != 0;
