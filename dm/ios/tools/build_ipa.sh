@@ -52,6 +52,13 @@ else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ ||
 # PSO_HARVEST = harvest files separated by ':', default every $W/build/pso_harvest*.metallib: copy a device harvest (Documents/pso_harvest.metallib) there under its own name, for example
 # pso_harvest_ipad.metallib, and it is merged with the Mac one. No archive is no error: pipelines then compile on first use, as before
 MSL_MAC=${MSL_MAC:-$W/build/cache/metal_shader_cache}
+# Pipeline expansion (docs/stageB-pipeline-expansion.md): PSO_EXPAND = pso_user.tsv files of harvest runs separated by ':'; dmsh_psoexpand.py adds the pipelines their learned states give
+# other shader pairs and replays them through the host's warm-up on this Mac into $W/build/pso_harvest_expand.metallib, merged below like any harvest. PSO_EXPAND_ARGS = more flags (--max-bytes ...)
+if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ]; then
+  IFS=: read -ra PE <<< "$PSO_EXPAND"; t "pipeline expansion of ${PE[*]}"
+  DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_psoexpand.py" "${PE[@]}" --map "$GD/shader_map.tsv" --refl "$MSL_MAC/b-$V" \
+    ${PSO_EXPAND_ARGS:-} --build "$W/build/pso_harvest_expand.metallib" || t "[RED] pipeline expansion failed above: the archive holds the harvests only"
+fi
 HV=(); if [ -n "${PSO_HARVEST:-}" ]; then IFS=: read -ra HV <<< "$PSO_HARVEST"; else for h in "$W"/build/pso_harvest*.metallib; do [ -f "$h" ] && HV+=("$h"); done; fi
 for h in ${HV[@]+"${HV[@]}"}; do [ -f "$h" ] || die "no pipeline harvest $h (PSO_HARVEST)"; done
 if [ -n "${PSO_ARCHIVE:-}" ]; then cp "$PSO_ARCHIVE" Gen/dm/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"

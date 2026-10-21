@@ -50,3 +50,5 @@ t_psoarch
 t_psoarch.dSYM/
 t_passgpu
 t_passgpu.dSYM/
+pso_replay
+pso_replay.dSYM/
