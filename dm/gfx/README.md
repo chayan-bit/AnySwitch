@@ -159,7 +159,7 @@ Logging and capture:
 | `DM_NVN_SHOT_OUT=WxH` | Makes the screenshot above capture the picture after upscaling to this resolution instead |
 | `DM_NVN_TEXDUMP=frame:path` | Saves each color render target used in that frame as an image |
 | `DM_NVN_PASSDUMP=frame` or `start-end` | Writes each render pass's attachments, samples and presentation for these frames to standard error entry by entry, for analysis by `tools/tbdr_*.py`; additionally setting `DM_NVN_PASSDUMP_ALL` logs every draw |
-| `DM_NVN_PASSGPU=file` | Per-pass GPU time (requires device support for counter sampling at stage boundaries) |
+| `DM_NVN_PASSGPU=0` / `1` / `file` | Per-pass GPU time from Metal 4 timestamp counter heaps, on by default (`DM_PERF=0` or `DM_NVN_PASSGPU=0` turns it off, `file` also writes every pass there); see [perf-profiling-qos.md](../../docs/perf-profiling-qos.md) |
 | `DM_NVN_PROF=1` | Wraps the implemented NVN functions in a timing wrapper and collects the time each function takes during recording |
 
 Comparison and testing:
