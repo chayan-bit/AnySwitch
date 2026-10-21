@@ -25,3 +25,7 @@ obj/
 .iosdd_*/
 .DS_Store
 __pycache__/
+# Precompiled pipeline archives (dm/gfx/tools/dmsh_psoarch.py, DM_PSO_HARVEST): compiled game shaders. Never tracked.
+pso_archive*.metallib*
+pso_harvest*.metallib*
+*.mtlp-json
