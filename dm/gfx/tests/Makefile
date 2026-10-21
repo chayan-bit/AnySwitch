@@ -100,6 +100,6 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	DM_NVN_UNWRITTEN_DC=0 MTL_DEBUG_LAYER=1 ./t_rt_range --sample-attachment --both-flags
 	./t_pso_skey
 	MTL_DEBUG_LAYER=1 ./t_pfv
-	python3 test_tbdr_budget.py
+	DM_GAME=$(GAME) python3 test_tbdr_budget.py   # tools/tbdr_budget.py names shaders from the game profile's shader_map.tsv
 	python3 test_psoarch.py   # runs t_psoarch: harvest -> lookup, then metal-tt archives (macOS looked up, iOS built)
 .PHONY: run
