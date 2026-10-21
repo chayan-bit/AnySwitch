@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include "game_profile.h"   // game profile constants (the RomFS marker path)
+#import "DmSettings.h"
 
 int dm_main(int argc, char **argv);   // dm/host/main.c compiled in with -Dmain=dm_main
 void dm_host_preload_start(int argc, char **argv);
@@ -47,6 +48,7 @@ static int boot_env(void) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
+    dm_settings_boot();   // Documents/settings.json (the in-app settings screen) and the Info.plist defaults, for every key env.txt did not set: DmSettings.m
     // DM_CLEAR_SHADER_CACHE=1: start with the empty Metal shader cache of a fresh install (Library/Caches/<bundle id>/com.apple.metal and its siblings), to measure first-launch pipeline compiles
     // without reinstalling (a reinstall also drops Documents: game files, saves). Pair it with a fresh DM_PSO_USER file so no learned warm-up list hides the compiles either
     if (getenv("DM_CLEAR_SHADER_CACHE") && atoi(getenv("DM_CLEAR_SHADER_CACHE"))) {

@@ -24,16 +24,19 @@
 #include "dm_input.h"
 #include "front.h"
 #include "game_profile.h"
+#import "DmPadBits.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
 enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int g_capturing;   // the settings screen holds the controller (dm_gamepad_set_capture): the game sees nothing
 static uint64_t g_touch_btn, g_pad_btn, g_shake_btn;
 static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry;
 static int tilted(int32_t x, int32_t y) { return (int64_t)x * x + (int64_t)y * y > (int64_t)4000 * 4000; }
 static void publish(void) {
     pthread_mutex_lock(&g_mu);
+    if (g_capturing) { dm_input_set(0, 0, 0, 0, 0); pthread_mutex_unlock(&g_mu); return; }   // the settings screen is open
     int32_t lx = g_touch_lx, ly = g_touch_ly, rx = g_touch_rx, ry = g_touch_ry;
     if (tilted(g_pad_lx, g_pad_ly)) { lx = g_pad_lx; ly = g_pad_ly; }   // a tilted physical stick wins
     if (tilted(g_pad_rx, g_pad_ry)) { rx = g_pad_rx; ry = g_pad_ry; }
@@ -93,16 +96,24 @@ static const CGFloat
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
 static const CGFloat
     K_BAR_EDGE = 20,                                // bars mode: the bottom controls keep this far from the screen edge (the rounded corners; over the picture they hug it)
-    K_BAR_PAD = 5, K_BAR_PAD_MAX = 2,               // bars mode: margin inside the bottom bar above the diamond / stick at scale 1, and the least margin any scale may leave (never over the picture)
-    K_BAR_SCALE_MIN = 0.75, K_BAR_SCALE_MAX = 1.6,  // DM_CONTROLS_SCALE range: below 0.75 the face keys' touch circles drop under 44 pt (1.25 x radius, 22 pt floor); above the bar's limit the size stops growing
-    K_BAR_FACE_R = 0.45, K_BAR_FACE_GY = 0.55, K_BAR_FACE_GX = 1.1,   // bars mode: the diamond is flattened to the bar: key radius and up / down and left / right key distance, as fractions of the stick's radius (the bar's height limits it, its width does not)
+    K_SCALE_MIN = 0.75, K_SCALE_MAX = 2.5,          // DM_CONTROLS_SCALE range: the bottom controls (stick, diamond, D-pad) grow past the bar over the picture; at 0.75 the face keys' touch circles are still 44 pt (1.25 x radius, 22 pt floor)
+    K_BAR_REF_H = 1024, K_BAR_UNIT = 7.0 / 6,       // bars mode: the unit bu of the bottom controls = K_BAR_UNIT x (screen height / K_BAR_REF_H) x scale: at scale 1 on a 13-inch iPad the stick is 180 pt across, the A / B / X / Y keys 75 pt, the D-pad 112 pt
+    K_BAR_FACE_U = 32,                              // bars mode: face key radius in bu (overlay: K_FACE_R); the diamond keeps K_FACE_GAP, so neighbouring keys stay 8 pt apart at scale 1
+    K_BAR_LOW_X = 220,                              // bars mode: D-pad centre from the outer edge in bu: right of the stick (3D layout)
     K_FACE_HIT = 1.25, K_HIT_MIN = 22,              // touch circle: times the key radius, never under 22 pt (44 pt across)
     K_BAR_MIN_BOTTOM = 108, K_BAR_MIN_TOP = 60,     // bars mode needs bars at least this tall (points): the diamond at 0.65 u gives 44 pt hit circles, the top row needs 44 pt plus margins
     K_BAR_L_DX = 64,                                // bars mode: L / R centre from ZL / ZR (in u, along the bar)
     K_BAR_CLICK_X = 165,                            // bars mode: L3 / R3 centre from the outer edge (in u): inward of L / R
-    K_HUD_W = 64, K_HUD_H = 22;                     // the frame-rate counter's size (front_ios.m)
+    K_HUD_W = 64, K_HUD_H = 22,                     // the frame-rate counter's size (front_ios.m)
+    K_OVERLAY_SCALE_MAX = 1.35,                     // over the picture (overlay layout) DM_CONTROLS_SCALE stops here: the bottom controls must not reach the top row
+    K_CHORD_S = 0.8;                                // + and - held together this long open the settings screen (dm_gamepad_set_chord)
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
-static CGFloat g_scale = 1;   // dm_gamepad_scale: size of the bottom controls in the bars (1 = fill the bar with a K_BAR_PAD margin)
+static CGFloat g_scale = 1, g_opacity = 1;   // dm_gamepad_scale: size of the bottom controls, 1 = the default; dm_gamepad_opacity: how solid every control is
+static void (^g_capture)(uint64_t, int32_t, int32_t);   // main thread: the physical controller's buttons (DMB_* bits) and left stick while captured
+static void (^g_chord)(void);                            // main thread: + and - held together
+static uint64_t g_chord_gen;
+_Static_assert(B_A == DMB_A && B_B == DMB_B && B_X == DMB_X && B_Y == DMB_Y && B_LS == DMB_LS && B_RS == DMB_RS && B_L == DMB_L && B_R == DMB_R && B_ZL == DMB_ZL && B_ZR == DMB_ZR
+    && B_PLUS == DMB_PLUS && B_MINUS == DMB_MINUS && B_LEFT == DMB_LEFT && B_UP == DMB_UP && B_RIGHT == DMB_RIGHT && B_DOWN == DMB_DOWN, "DmPadBits.h and the B_* enum must agree");
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
 
 @interface DmGamepad : UIView
@@ -192,22 +203,25 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 - (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
 - (CGFloat)u { return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
-- (CGFloat)barFH { CGFloat h = _bot.size.height / 2; return MIN(g_scale * (h - K_BAR_PAD), h - K_BAR_PAD_MAX); }   // bars: the stick's radius = half the height the bottom controls use (the scale, never more than the bar)
-- (CGFloat)bu { return _bars ? MIN(self.u, self.barFH / K_STICK_R) : self.u; }   // the bottom controls' unit: the stick and the D-pad fit the bar
-- (CGFloat)padY:(CGFloat)overlayFromBottom { CGRect s = self.corner; return _bars ? CGRectGetMidY(_bot) : CGRectGetMaxY(s) - overlayFromBottom * self.u; }   // the bottom controls' centre line
+- (CGFloat)bu {   // the bottom controls' unit (stick, diamond, D-pad): over the picture the overlay unit times the scale; in the bars from the screen height, so a 13-inch iPad gets thumb-sized controls whatever the bars' height
+    return _bars ? K_BAR_UNIT * fmax(0.55, fmin(self.bounds.size.height / K_BAR_REF_H, 1.25)) * g_scale : self.u * fmin(g_scale, K_OVERLAY_SCALE_MAX);
+}
+- (CGFloat)padY:(CGFloat)overlayFromBottom { CGRect s = self.corner;   // the bottom controls' centre line; bars mode: the diamond's lowest key and the stick's ring (aligned, via the D-pad's offset) sit K_BAR_EDGE above the screen's bottom, extending up from the bar over the picture
+    if (!_bars) return CGRectGetMaxY(s) - overlayFromBottom * self.bu;
+    CGFloat bu = self.bu, y = CGRectGetMaxY(self.bounds) - K_BAR_EDGE - (K_FACE_GAP + K_BAR_FACE_U) * bu;
+    return overlayFromBottom == K_LOW_Y ? y + (K_STICK_X - K_DPAD_R) * bu : y; }
 - (CGFloat)topY:(CGFloat)overlayFromTop { return _bars ? CGRectGetMidY(_top) : CGRectGetMinY(self.safe) + overlayFromTop * self.u; }   // the top controls' centre line
 static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
-- (CGPoint)faceCenter { CGRect s = self.corner; return side(s, 1, _bars ? K_BAR_EDGE + self.faceGap + self.faceR : K_FACE_X * self.bu, [self padY:K_PAD_Y]); }
-- (CGFloat)faceGap { return _bars ? K_BAR_FACE_GX * K_STICK_R * self.bu : K_FACE_GAP * self.bu; }   // A / Y distance from the centre (bars: wider than X / B)
-- (CGFloat)faceGapY { return _bars ? K_BAR_FACE_GY * K_STICK_R * self.bu : K_FACE_GAP * self.bu; }   // X / B distance from the centre
-- (CGFloat)faceR { return _bars ? K_BAR_FACE_R * K_STICK_R * self.bu : K_FACE_R * self.bu; }
-- (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap, gy = self.faceGapY;
-    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + gy); case B_X: return CGPointMake(c.x, c.y - gy); default: return CGPointMake(c.x - g, c.y); } }
+- (CGPoint)faceCenter { CGRect s = self.corner; return side(s, 1, _bars ? K_BAR_EDGE + (K_FACE_GAP + K_BAR_FACE_U) * self.bu : K_FACE_X * self.bu, [self padY:K_PAD_Y]); }
+- (CGFloat)faceGap { return K_FACE_GAP * self.bu; }
+- (CGFloat)faceR { return (_bars ? K_BAR_FACE_U : K_FACE_R) * self.bu; }
+- (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
 - (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_PAD_Y]); }   // the left stick's ring centre
 - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
 - (CGFloat)stickR:(int)i { return i ? K_RSTICK_R * self.u : K_STICK_R * self.bu; }
 - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
-- (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, K_LOW_X * self.bu + (_bars ? K_BAR_EDGE : 0), [self padY:K_LOW_Y]); }
+- (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, _bars ? K_BAR_EDGE + K_BAR_LOW_X * self.bu : K_LOW_X * self.bu, [self padY:K_LOW_Y]); }
 - (CGFloat)dpadR { return K_DPAD_R * self.bu; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
@@ -436,7 +450,14 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     gloss(_swap, _bars); gloss(_ring, _bars);
     _ring.strokeColor = (_bars ? k_lineBar : k_line).CGColor; _ring.fillColor = (_bars ? k_ringBar : k_ringFill).CGColor;
     [CATransaction commit];
+    [self applyOpacity];
     [self refresh];
+}
+- (void)applyOpacity {   // per layer, so a full opacity needs no extra compositing pass
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    for (int b = 0; b < B_N; b++) _key[b].opacity = g_opacity;
+    _swap.opacity = _ring.opacity = _knob.opacity = g_opacity;
+    [CATransaction commit];
 }
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
 - (void)refresh {   // pressed state → fill, sticks → knob position
@@ -465,8 +486,19 @@ static void read_pad(GCExtendedGamepad *g) {
     pthread_mutex_lock(&g_mu);
     g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
     g_pad_rx = axis(g.rightThumbstick.xAxis.value); g_pad_ry = axis(g.rightThumbstick.yAxis.value);
+    int32_t lx = g_pad_lx, ly = g_pad_ly;
     pthread_mutex_unlock(&g_mu);
     publish();
+    uint64_t both = 1ull << B_PLUS | 1ull << B_MINUS;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_capture) g_capture(m, lx, ly);
+        if ((m & both) != both) { g_chord_gen++; return; }
+        uint64_t gen = ++g_chord_gen;   // held together: the chord fires K_CHORD_S after the last change, unless a key came up meanwhile
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(K_CHORD_S * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gen != g_chord_gen) return;
+            g_chord_gen++; if (g_chord) g_chord();
+        });
+    });
 }
 - (void)padsChanged {
     BOOL any = NO;
@@ -481,9 +513,19 @@ static void read_pad(GCExtendedGamepad *g) {
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars) { return [g_view setContent:content allowBars:allowBars]; }   // main thread: the picture's rectangle; YES when the controls moved into the bars around it
-void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size in the bars, clamped to the usable range (the bar's height still caps it)
-    g_scale = fminf(fmaxf(s, K_BAR_SCALE_MIN), K_BAR_SCALE_MAX); [g_view setNeedsLayout]; }
+void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size (stick, A / B / X / Y, D-pad), clamped to K_SCALE_MIN...K_SCALE_MAX
+    g_scale = fminf(fmaxf(s, K_SCALE_MIN), K_SCALE_MAX); [g_view setNeedsLayout]; }
 CGRect dm_gamepad_hud_frame(void) { return g_view && [g_view inBars] ? [g_view hudFrame] : CGRectNull; }   // the frame-rate counter's place in the bars (CGRectNull: keep the overlay place)
+void dm_gamepad_opacity(float o) { g_opacity = fminf(fmaxf(o, 0.3f), 1.f); [g_view applyOpacity]; }   // main thread: every control's opacity, 0.3...1
+// The settings screen takes the physical controller: while a handler is set the game gets no input (touches are covered by the screen itself), and the handler is called on the main thread with the
+// buttons (DmPadBits.h) and the left stick at once and on every change. NULL gives the controller back
+void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly)) {
+    g_capture = [handler copy]; g_capturing = handler != nil;
+    [g_view reset];
+    publish();
+    if (handler) { pthread_mutex_lock(&g_mu); uint64_t m = g_pad_btn; int32_t lx = g_pad_lx, ly = g_pad_ly; pthread_mutex_unlock(&g_mu); handler(m, lx, ly); }
+}
+void dm_gamepad_set_chord(void (^handler)(void)) { g_chord = [handler copy]; }   // main thread: called once when + and - have been held together for 0.8 s
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
     pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_shake_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();

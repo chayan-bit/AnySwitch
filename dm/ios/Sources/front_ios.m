@@ -1,12 +1,15 @@
 // iOS front end (the iOS implementation of front.h): the Metal view + a full-screen virtual gamepad layer (DmGamepad.m).
 // The picture is the game's 16:9 frame fitted into the screen. With letterbox=ambient (default) the Metal view is the whole screen and the present stage fills the bars with the blurred live frame (dm/gfx/nvn/nvn_ambient.h);
 // with letterbox=black the view is just the 16:9 rectangle on a black screen, as before. Controls sit in the bars when they are tall enough (controls layout auto), else over the picture (DmGamepad.m).
-// Settings: DM_LETTERBOX = ambient | black, DM_CONTROLS_LAYOUT = auto | overlay; in Documents/env.txt, else the Info.plist keys DMLetterbox / DMControlsLayout (project.yml), else the defaults (ambient, auto)
+// Settings (DmSettings.m, the in-app settings screen DmSettingsVC.m; gear button at the top, the + and - buttons held together, or Cmd-,): DM_LETTERBOX = ambient | black, DM_CONTROLS_LAYOUT = auto | overlay, DM_CONTROLS_SCALE, DM_CONTROLS_OPACITY, DM_AMBIENT_LEVEL, DM_SHOW_FPS.
+// Precedence: Documents/env.txt, then the player's choice in Documents/settings.json, then the Info.plist keys (project.yml), then the defaults. Changes in the screen apply at once (settingChanged:).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <AVFAudio/AVFAudio.h>
+#import "DmSettings.h"
+#import "DmSettingsVC.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -16,27 +19,27 @@ UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
 void dm_gamepad_scale(float s);
+void dm_gamepad_opacity(float o);
+void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
+void dm_gamepad_set_chord(void (^handler)(void));
+void mtl_letterbox_set(int ambient);
+void mtl_ambient_level_set(float v);
 CGRect dm_gamepad_hud_frame(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 
 static CAMetalLayer *g_layer;
 static BOOL g_ambient = YES, g_controls_auto = YES;
-static float g_controls_scale = 1;
-// One setting: the environment variable (env.txt) wins, then the Info.plist key; a plist value is exported as the variable too, because the graphics layer reads DM_LETTERBOX itself
-static NSString *front_setting(const char *env, NSString *plistKey) {
-    const char *e = getenv(env);
-    if (e && *e) return @(e);
-    id p = [NSBundle.mainBundle objectForInfoDictionaryKey:plistKey];
-    if ([p isKindOfClass:NSString.class] && [p length] && ![p hasPrefix:@"$"]) { setenv(env, [p UTF8String], 0); return p; }
-    return nil;
-}
+static float g_controls_scale = 1, g_controls_opacity = 1;
+static int g_settings_open;   // the settings screen is up: the game stays out of focus (front_ios_focus_event)
+// The start-up values come from the settings store (environment, the player's file, Info.plist, defaults: DmSettings.m); the graphics layer is told here, the same way a change in the screen tells it
 static void front_ios_settings(void) {
-    NSString *l = front_setting("DM_LETTERBOX", @"DMLetterbox"), *c = front_setting("DM_CONTROLS_LAYOUT", @"DMControlsLayout");
-    g_ambient = !([l isEqualToString:@"black"] || [l isEqualToString:@"0"]);
-    g_controls_auto = !([c isEqualToString:@"overlay"] || [c isEqualToString:@"0"]);
-    NSString *z = front_setting("DM_CONTROLS_SCALE", @"DMControlsScale"); g_controls_scale = z.length ? z.floatValue : 1;   // 0.75-1.6, clamped in DmGamepad.m
-    LOG("front end: letterbox %s, controls layout %s, controls scale %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale);
+    DmSettings *s = DmSettings.shared;
+    g_ambient = [[s valueForKey:@"DM_LETTERBOX"] isEqualToString:@"ambient"];
+    g_controls_auto = [[s valueForKey:@"DM_CONTROLS_LAYOUT"] isEqualToString:@"auto"];
+    g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
+    mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
+    LOG("front end: letterbox %s, controls layout %s, controls scale %.2f, opacity %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale, g_controls_opacity);
 }
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
@@ -66,6 +69,8 @@ static UILabel *front_ios_fps_label(void);
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
+@property (nonatomic, strong) UIButton *gear;
+@property (nonatomic, strong) DmSettingsVC *settings;
 @end
 @implementation DmRootVC
 - (void)viewDidLoad {
@@ -85,11 +90,61 @@ static UILabel *front_ios_fps_label(void);
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
     self.pad = dm_gamepad_view(self.view.bounds);
-    dm_gamepad_scale(g_controls_scale);
+    dm_gamepad_scale(g_controls_scale); dm_gamepad_opacity(g_controls_opacity);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
-    self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
-    if (self.fps) [self.view addSubview:self.fps];
+    if ([DmSettings.shared boolForKey:@"DM_SHOW_FPS"]) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; }   // above the pad, which hides while a controller is connected
+    self.gear = [self makeGear]; [self.view addSubview:self.gear];
+    [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
+    __weak DmRootVC *w = self; dm_gamepad_set_chord(^{ [w toggleSettings]; });   // + and - held together on a controller
+}
+- (UIButton *)makeGear {   // right of the frame-rate counter: a 44 pt target with a 32 pt translucent disc
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    UIButtonConfiguration *c = [UIButtonConfiguration plainButtonConfiguration];
+    c.image = [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]];
+    c.baseForegroundColor = [UIColor colorWithWhite:1 alpha:0.9];
+    c.background.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42]; c.background.cornerRadius = 16; c.background.backgroundInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
+    c.background.strokeColor = [UIColor colorWithWhite:1 alpha:0.28]; c.background.strokeWidth = 1;
+    b.configuration = c; b.accessibilityLabel = @"Settings";
+    [b addTarget:self action:@selector(toggleSettings) forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+// The settings screen sits over everything as a child view; while it is up the game is out of focus (the pause hook) and the physical controller belongs to it
+- (void)toggleSettings { if (self.settings) [self closeSettings]; else [self openSettings]; }
+- (void)openSettings {
+    if (self.settings || !self.game) return;
+    DmSettingsVC *vc = [[DmSettingsVC alloc] initWithSettings:DmSettings.shared size:self.view.bounds.size];
+    __weak DmRootVC *w = self; vc.onClose = ^{ [w closeSettings]; };
+    self.settings = vc; [self addChildViewController:vc];
+    vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
+    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self];
+    g_settings_open = 1; dm_focus_set(2);
+    dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [vc padState:m lx:lx ly:ly]; });
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ vc.view.alpha = 1; vc.view.transform = CGAffineTransformIdentity; } completion:nil];
+}
+- (void)closeSettings {
+    DmSettingsVC *vc = self.settings; if (!vc) return;
+    self.settings = nil;
+    dm_gamepad_set_capture(nil); g_settings_open = 0; dm_focus_set(1);
+    [vc willMoveToParentViewController:nil];
+    [UIView animateWithDuration:0.14 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.98, 0.98); }
+                     completion:^(BOOL f) { (void)f; [vc.view removeFromSuperview]; [vc removeFromParentViewController]; }];
+}
+// A setting changed in the screen: apply it at once
+- (void)settingChanged:(NSNotification *)n {
+    NSString *k = n.object, *v = n.userInfo[@"value"];
+    if ([k isEqualToString:@"DM_LETTERBOX"]) { g_ambient = [v isEqualToString:@"ambient"]; mtl_letterbox_set(g_ambient); [self.view setNeedsLayout]; }
+    else if ([k isEqualToString:@"DM_CONTROLS_LAYOUT"]) { g_controls_auto = [v isEqualToString:@"auto"]; [self.view setNeedsLayout]; }
+    else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
+    else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
+    else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
+    else if ([k isEqualToString:@"DM_SHOW_FPS"]) {
+        BOOL want = [v isEqualToString:@"1"];
+        if (want && !self.fps) { self.fps = front_ios_fps_label(); [self.view insertSubview:self.fps belowSubview:self.gear]; [self.view setNeedsLayout]; }
+        else if (!want && self.fps) { [self.fps removeFromSuperview]; self.fps = nil; }
+    }
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -100,12 +155,13 @@ static UILabel *front_ios_fps_label(void);
     self.game.frame = g_ambient ? b : content;   // ambient: the drawable is the whole screen and the present stage letterboxes the picture inside it (the same fit, so the rectangles agree)
     self.pad.frame = b;
     BOOL bars = dm_gamepad_layout(content, g_controls_auto);
-    CGRect hud = bars ? dm_gamepad_hud_frame() : CGRectNull;
-    if (self.fps && !CGRectIsNull(hud)) self.fps.frame = hud;   // the counter joins the top bar
-    else if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
+    CGRect hud = bars ? dm_gamepad_hud_frame() : CGRectNull;   // the counter joins the top bar
+    if (CGRectIsNull(hud)) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
-        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+        hud = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
+    if (self.fps) self.fps.frame = hud;
+    self.gear.frame = CGRectMake(CGRectGetMaxX(hud) + 4, CGRectGetMidY(hud) - 22, 44, 44);   // the counter's place stays reserved while it is off, so nothing moves when it is switched
 }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot(); }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
@@ -132,18 +188,17 @@ static void front_ios_power_watch(void) {
 }
 
 // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
-// On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
+// Shown when the DM_SHOW_FPS setting is on (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist is its default; env.txt and the settings screen override that without a rebuild)
 uint64_t mtl_present_count(void);
 static UILabel *front_ios_fps_label(void) {
-    const char *e = getenv("DM_SHOW_FPS");
-    if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;
     UILabel *l = [UILabel new];
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
     l.text = @"-- fps";
-    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
-    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
-        (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
+    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime(); __weak UILabel *wl = l;
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {   // ends with the label (the screen can switch the counter off and on)
+        UILabel *l = wl; if (!l) { [t invalidate]; return; }
+        uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
         if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
         n0 = n; t0 = now;
     }];
@@ -245,6 +300,6 @@ void front_ios_focus_event(int ev) {
             UIApplication.sharedApplication.idleTimerDisabled = YES;
             if (g_audio_intr) { LOG("audio session: active again with no interruption-ended notice; resuming"); g_audio_intr = 0; g_session_off = 1; }
             if (g_session_off) front_ios_audio_session();
-            front_ios_audio_apply(); dm_focus_set(1); break;
+            front_ios_audio_apply(); dm_focus_set(g_settings_open ? 2 : 1); break;   // the settings screen keeps the game out of focus
     }
 }

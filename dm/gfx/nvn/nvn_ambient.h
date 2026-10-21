@@ -24,6 +24,8 @@ static int amb_on(void) {
     return g_amb_mode;
 }
 void mtl_letterbox_set(int ambient) { g_amb_mode = ambient ? 1 : 0; }   // for tests and the front end; takes effect on the next present
+static float g_amb_dark = AMB_DARK;   // brightness of the bars' blurred colour (1 = the picture's own)
+void mtl_ambient_level_set(float v) { g_amb_dark = fminf(fmaxf(v, 0.f), 1.f); }   // the iOS settings screen; takes effect on the next present
 
 static NSString *const k_amb_msl = @
     "#include <metal_stdlib>\nusing namespace metal;\n"
@@ -93,7 +95,7 @@ static void amb_fill(amb_u *u, NSUInteger srcW, NSUInteger srcH, NSUInteger cx, 
     d = u->bar;
     d[0] = (float)vp.originX; d[1] = (float)vp.originY; d[2] = (float)(vp.originX + vp.width); d[3] = (float)(vp.originY + vp.height);
     d[4] = (float)dw; d[5] = (float)dh; d[6] = 1.f / dw; d[7] = 1.f / dh;
-    d[8] = AMB_DARK; d[9] = AMB_SAT; d[10] = AMB_SHADOW; d[11] = (float)fmax(12.0, 0.012 * fmin((double)dw, (double)dh));
+    d[8] = g_amb_dark; d[9] = AMB_SAT; d[10] = AMB_SHADOW; d[11] = (float)fmax(12.0, 0.012 * fmin((double)dw, (double)dh));
     d[12] = (float)u->bw; d[13] = (float)u->bh; d[14] = 1.f / u->bw; d[15] = 1.f / u->bh;
     // the bars: top and bottom full width, left and right between them (together they tile everything outside the picture)
     NSUInteger x0 = (NSUInteger)vp.originX, y0 = (NSUInteger)vp.originY, x1 = MIN(dw, (NSUInteger)(vp.originX + vp.width)), y1 = MIN(dh, (NSUInteger)(vp.originY + vp.height));
