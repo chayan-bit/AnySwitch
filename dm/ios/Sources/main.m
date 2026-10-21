@@ -47,6 +47,17 @@ static int boot_env(void) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
+    // DM_CLEAR_SHADER_CACHE=1: start with the empty Metal shader cache of a fresh install (Library/Caches/<bundle id>/com.apple.metal and its siblings), to measure first-launch pipeline compiles
+    // without reinstalling (a reinstall also drops Documents: game files, saves). Pair it with a fresh DM_PSO_USER file so no learned warm-up list hides the compiles either
+    if (getenv("DM_CLEAR_SHADER_CACHE") && atoi(getenv("DM_CLEAR_SHADER_CACHE"))) {
+        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier];
+        for (NSString *d in @[@"com.apple.metal", @"com.apple.gpuarchiver", @"com.apple.metalfe"]) {
+            NSString *p = [caches stringByAppendingPathComponent:d]; NSError *e = nil;
+            if (![fm fileExistsAtPath:p]) continue;
+            if (![fm removeItemAtPath:p error:&e]) fprintf(stderr, "boot: [RED] could not clear the shader cache %s: %s\n", p.fileSystemRepresentation, e.localizedDescription.UTF8String);
+            else fprintf(stderr, "boot: shader cache %s cleared (DM_CLEAR_SHADER_CACHE)\n", d.UTF8String);
+        }
+    }
     NSString *romfs = romfs_locate();
     if (!romfs) { fprintf(stderr, "boot: game files not found (<App>/romfs or Documents/romfs)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
