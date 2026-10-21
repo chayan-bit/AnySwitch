@@ -41,6 +41,8 @@ targets:
         DMLetterbox: ${DM_LETTERBOX}        # ambient / black bars around a picture that does not fill the screen (front_ios.m; build_ipa.sh defaults it to ambient, DM_LETTERBOX in env.txt overrides)
         DMControlsLayout: ${DM_CONTROLS_LAYOUT}   # auto = touch controls in the bars when they fit, overlay = over the picture (front_ios.m; build_ipa.sh defaults it to auto)
         DMControlsScale: ${DM_CONTROLS_SCALE}   # size of the A/B/X/Y keys, the left stick and the D-pad in the bars, 0.75-2.5 (front_ios.m; build_ipa.sh defaults it to 1, DM_CONTROLS_SCALE in env.txt overrides)
+        DMControlsOpacity: ${DM_CONTROLS_OPACITY}   # touch control opacity 0.3-1 (DmSettings.m; unset = the registry default, the settings screen and env.txt override)
+        DMAmbientLevel: ${DM_AMBIENT_LEVEL}   # brightness of the ambient bars 0.2-1 (DmSettings.m; unset = the registry default)
         LSSupportsGameMode: true
         GCSupportsControllerUserInteraction: true   # Physical controllers (GameController)
         GCSupportedGameControllers:

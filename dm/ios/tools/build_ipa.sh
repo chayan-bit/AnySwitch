@@ -47,6 +47,8 @@ cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHE
 if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
 else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" Gen/dm/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
+# The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes dm/settings.json in the app
+if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
 # Precompiled pipelines (docs/stageB-pipeline-archives.md) as dm/pso_archive.metallib, where the host looks each pipeline up before compiling it: PSO_ARCHIVE=a finished archive, taken as is;
 # else the harvests (DM_PSO_HARVEST runs on the Mac or the device) are compiled together by dmsh_psoarch.py with metal-tt for the iOS GPUs (PSO_ARCHS=architectures to keep it small,
 # default every iOS GPU) against this chain's iOS libraries; MSL_MAC = the Mac libraries (their MSL is rebuilt with the driver link metal-tt reads).
