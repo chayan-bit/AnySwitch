@@ -28,6 +28,7 @@ BUNDLE_ID = ''                          # the app's bundle ID (empty = org.nxnat
 KEEP_EXTRACTED = True                   # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files); False deletes them
 DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
 SHOW_FPS = False                        # True shows the game's frame rate on the iPhone (frames on screen per second, top left); DM_SHOW_FPS=0 / 1 in the app's Documents/env.txt changes it without a rebuild
+EXEFS_PATCHES = ''                      # optional: a folder of community ExeFS patches (Atmosphere exefs_patches layout: <name>/<build ID>.ips, IPS32, .pchtxt) applied to matching modules before the rewrite; empty = none, see docs/exefs-patches.md
 SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
 PROFILE_OUT = ''                        # where a provisional profile goes (empty = <NSP folder>/<title ID>_build/profile; the profile is <this>/<title ID>/)
 ALLOW_DAMAGED = False                   # a damaged NSP (files failing the NCA's hash check: an incomplete copy or a broken download) stops the build; True writes those files as read and goes on
@@ -623,6 +624,16 @@ def check_build(d, name, g):   # every module's build ID must be the one registe
         if got != bid: raise BuildError(f'{m} build ID {got} is not the {name} registered in game profile {g.id} ({bid})')
 
 
+def report_exefs_patches(out, mods):   # which community patch files were applied to which module / build ID (patch_nso.py's <module>.exefs_patches.tsv)
+    for m in mods:
+        t = out / f'{m}.exefs_patches.tsv'
+        if not t.is_file(): continue
+        rows = [l.split('\t') for l in t.read_text().splitlines()]
+        hits = [r for r in rows[1:] if r[0] != '#']
+        for label, n, nbytes in hits: say(f'exefs patch {label}: {m} build {rows[0][1]}, {n} records, {nbytes} bytes')
+        if not hits: say(f'exefs patches: none match {m} build {rows[0][1]}')
+
+
 def rewrite(py, repo, exe_dir, out, env, logs, g):
     """patch_nso.py on every code module at once (each writes its own <module>.* files, all the same build_src.sha256 line), each with its log.
     Reused when the modules, patch_nso.py (with nso_code.py), its switch and capstone are as at the last successful rewrite (Monster Hunter Rise's main alone takes 5.5 min)"""
@@ -630,7 +641,10 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     mods = g.words('modules')
     PROG.stage('rewrite', step='checking the inputs')
     kf = out.with_name(out.name + '.key')
-    key = fingerprint(('files', [repo / 'dm/tools/patch_nso.py', repo / 'dm/tools/nso_code.py'] + [exe_dir / m for m in mods]), mods, capstone.__version__, {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
+    pdir = env.get('DM_EXEFS_PATCHES')   # patches change the output: their files (and the rewriter's reader of them) join the key only when in use, so builds without them keep their cache
+    pfiles = sorted(p for p in Path(pdir).rglob('*') if p.is_file() and p.suffix.lower() in ('.ips', '.pchtxt')) if pdir else []
+    key = fingerprint(('files', [repo / 'dm/tools/patch_nso.py', repo / 'dm/tools/nso_code.py'] + [exe_dir / m for m in mods]), mods, capstone.__version__, {k: env.get(k) for k in ('DM_PATCH_FRONT',)},
+                      *([('files', [repo / 'dm/tools/exefs_patches.py'] + pfiles), [str(p.relative_to(pdir)) for p in pfiles]] if pdir else []))
     if all((out / f'{m}.patched.bin').is_file() for m in mods) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}, reused (inputs unchanged)'); return
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
@@ -1132,6 +1146,7 @@ def parse_args(argv):
     ap.add_argument('--keep-extracted', action=argparse.BooleanOptionalAction, help='keep the extracted game files after the IPA is built, for the next build (default: the KEEP_EXTRACTED setting, on)')
     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, off)')
+    ap.add_argument('--exefs-patches', help='folder of community ExeFS patches (<name>/<build ID>.ips, IPS32 or .pchtxt, Atmosphere layout) applied before the rewrite to the modules whose build ID they name (default: the EXEFS_PATCHES setting, none)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check): write them as read and go on instead of stopping')
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
@@ -1194,6 +1209,11 @@ def main(args=None):
     xlate = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
     # DM_GAME picks the profile; DM_ROOT / WORK point at <id>_build: the tools' default paths and temporary directories all stay inside it
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
+    if args.exefs_patches or EXEFS_PATCHES:
+        pd = Path(os.path.expanduser(args.exefs_patches or EXEFS_PATCHES)).resolve()
+        if not pd.is_dir(): raise BuildError(f'not a folder: {pd}')
+        env['DM_EXEFS_PATCHES'] = str(pd); say(f'ExeFS patches from {pd} (docs/exefs-patches.md: frame-rate patches can change game speed)')
+    else: env.pop('DM_EXEFS_PATCHES', None)   # opt-in per build, by the option or the setting
     logs = work / 'logs'
     check_prereqs(env, xlate)
     picks = pick_nsps(fam, versions)
@@ -1234,6 +1254,7 @@ def main(args=None):
 
     patched = work / f'patched_{pkg_ver}'
     rewrite(py, repo, game / 'ExeFS', patched, env, logs, g)
+    if 'DM_EXEFS_PATCHES' in env: report_exefs_patches(patched, g.words('modules'))
     if provisional:   # the keys that need the rewritten modules, then the heap check (both only change keys the host is built with, not the rewrite or the shader steps)
         provisional_prep(py, repo, env, logs, g)
         g = refine_after_rewrite(g, game, patched)
