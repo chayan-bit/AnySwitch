@@ -131,6 +131,7 @@ The tests in `dm/gfx/tests` compile the production code in directly and need a M
 | `t_refl`, `t_hmap`, `t_cover`, `t_pace`, `t_pso_skey`, `t_dirty_slots` | Reflection parsing, hash table, full-coverage proof, pacer, pipeline manifest key, dirty page tracking |
 | `t_deswz_gpu` | GPU deswizzling |
 | `t_present_crop` | Presentation cropping |
+| `t_present_ambient` | Ambient letterbox fill: bar colours, pillarbox, resize reuse, Metal 4 versus screenshot path, GPU cost under 0.3 ms; `DM_AMB_OUT=dir` also writes before / after PNGs |
 | `t_mip_extent` | Effective size when rendering to a mip level other than level 0 |
 | `t_fuse_check`, `t_reorder_chain`, `t_defer_chain`, `t_zskip`, `t_xv`, `t_ub`, `t_pfv`, `t_rt_range`, `t_rt_range_shape`, `t_rt_range_ro`, `t_rt_depth_ro` | Compile the replay layer `nvn_mtl.m` in directly and check the various optimization and diagnostic logic inside the replay layer |
 | `test_tbdr_budget.py` | The parsing in `tools/tbdr_budget.py` |
@@ -177,7 +178,32 @@ Comparison and testing:
 | `DM_NVN_FUSE_CHECK=1` | Same-frame check of pass merging; logs the comparison result every time |
 | `DM_FPS=30` or `60` | Pins the target frame rate |
 | `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/agents/04-graphics.md](../../docs/agents/04-graphics.md) section 7 |
+| `DM_LETTERBOX=ambient` or `black` | What the bars show when the picture does not fill the screen: `ambient` (default) the blurred live frame, `black` plain black bars; see "Letterbox" below |
+| `DM_CONTROLS_LAYOUT=auto` or `overlay` | iOS only: `auto` (default) puts the touch controls in the letterbox bars when they are tall enough, `overlay` keeps them over the picture |
 | `DM_PRESENT_HZ=N` | The frequency of presentation pacing (default 60); 0 means no frame limit and is for performance profiling only |
+
+## Letterbox
+
+When the game picture does not fill the drawable, the present stage (`nvn/nvn_ambient.h`, included by `nvn_mtl.m`) fills the bars with the live frame instead of black.
+That is a 16:9 game on a 4:3 iPad, a taller game pillarboxed, or a resized Mac window; the picture itself keeps its exact aspect and is drawn sharp on top.
+The frame is cover-scaled to the drawable and blurred in two small passes (drawable / 8 with four bilinear taps, then / 64 with sixteen), into RGBA16F targets that are made once per ring slot and size and reused every frame.
+The bars read the result through a cubic B-spline (four bilinear fetches), darken it by 50 percent, desaturate it slightly, dither it (8 bits would band) and add a soft shadow at the picture edge.
+`DM_LETTERBOX=black` skips all of it; on iOS the Info.plist key `DMLetterbox` sets the same switch (`Documents/env.txt` wins).
+The whole-window screenshot and `DM_NVN_SHOT_OUT` use the same shaders through the old command buffer path, so they show what the screen shows.
+GPU cost comes from the same counter-heap timestamps as `DM_NVN_PASSGPU` (on by default): a log line `[ambient]` every 300 presents gives both blur passes and the drawable's pass.
+On an M4 (10 cores) at 2752x2064 the ambient fill costs 0.11 to 0.23 ms per frame, the best of eight batches on a shared machine; `t_present_ambient` fails above 0.3 ms.
+The iOS front end (`dm/ios/Sources/front_ios.m`) makes the Metal view the whole screen in ambient mode, so the drawable is the full panel; a later change that presents at the game's resolution has to scale the whole drawable, bars included.
+Before and after pictures of a generated scene are in `docs/images/letterbox/`.
+
+### Touch controls in the bars (iOS)
+
+With `DM_CONTROLS_LAYOUT=auto` and bars that are at least 108 pt (bottom) and 60 pt (top) tall, `DmGamepad.m` moves the controls into them.
+The top bar holds ZL, L, (L3 in the 3D layout), then minus, the 2D / 3D button, plus and the frame-rate counter, then (R3,) R and ZR.
+The bottom bar holds the left stick, the D-pad in the 3D layout, and the A / B / X / Y diamond; the right stick has no drawn control.
+The bottom controls shrink to fit the bar and every hit target stays at least 44 pt.
+The keys are semi-transparent with a lighter fill, a bright rim and a soft top-lit gloss, which reads as frosted glass over the blurred bars without a live backdrop blur (that would cost compositor time every frame).
+On an 13-inch iPad (4:3) the bars are 129 pt tall in landscape and the controls fit; on an 11-inch iPad (about 16:10) the bottom bar is 78 pt, so the layout falls back to the overlay.
+Touches on the bars that no control takes are not sent to the game's touch screen.
 
 ## Known limitations
 
