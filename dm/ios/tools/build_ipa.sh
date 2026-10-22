@@ -87,7 +87,8 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
 # accelerator rules and the same-variation table, then the interface pairs. PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
-# app ships, so it is built from the packed libraries once those are packed
+# app ships, so it is built from the packed libraries once those are packed. It is built for every iOS GPU family with Metal 4, each holding its own copy of every pipeline, and the
+# cap holds for all of them (measured on a one-architecture build); PSO_ARCHS=architectures of the devices installed on (the app's log line "this GPU: ...") fits that many more pipelines
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
   if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp "$PSO_FLEX_ARCHIVE" Gen/dm/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else

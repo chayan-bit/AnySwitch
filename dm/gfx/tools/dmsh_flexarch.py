@@ -8,9 +8,14 @@
 #   2. accelerator pairs: --pairs lines whose rules are not iface alone (split, tfx) and the same-variation table (shader_pairs.tsv);
 #   3. interface pairs: --pairs lines found by the generic iface rule alone.
 #   A pair becomes a record with no vertex or colour state: the unspecialized pipeline of that pair with no vertex layout, exact for draws whose layout is empty.
-#   The cap counts records at the measured archive size per pipeline (KB_EACH); the size written is printed, a [RED] line when it is over.
+#   Every GPU architecture holds its own copy of every pipeline, so the archive's size is its size for one architecture times the architectures built. The records are first chosen at
+#   an estimated size per record and architecture (KB_EACH); then the archive is built for one architecture and measured, and while that times the architectures is over the cap the
+#   record list is cut in proportion (records differ a lot: a few hundred pairs of large shaders can weigh more than thousands of small ones) and measured again. The size written is
+#   printed, a [RED] line when it is still over.
+# Architectures (--arch): default every GPU family with Metal 4 (metal-tt -gpu-family metal4), the GPUs that can open the archive at all (nvn_flexpso.m needs MTL4Compiler).
+#   Naming only the families of the devices installed on fits more pipelines under the same cap.
 # --check: replays the records against the archive written (a macOS archive, --platform macos) and prints the hit rate, the archive's open time and memory footprint; --check-only skips the build.
-# Usage: dmsh_flexarch.py --records <tsv>... [--pairs <tsv>...] [--max-mb 300] --msl <Mac b-V dir> --target-libs <dir> -o <out.metallib> [--platform ios|macos] [--arch applegpu_g16g ...] [--check]
+# Usage: dmsh_flexarch.py --records <tsv>... [--pairs <tsv>...] [--max-mb 300] --msl <Mac b-V dir> --target-libs <dir> -o <out.metallib> [--platform ios|macos] [--arch <GPU arch> ...] [--check]
 #   Environment: DM_NVN_SHMAP (shader map), DM_MSL_DIR (the Mac library root holding b-<V>), as for pso_flexbench. The output is game-derived: write it only under the gitignored build output
 import os, re, sys, json, glob, argparse, tempfile, subprocess, concurrent.futures as cf
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +24,7 @@ import dmsh_psoarch as A
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.join(HERE, '../tests/pso_flexbench')
 SKEY = 432   # sizeof(pso_skey) on arm64 (nvn_pso_skey.h; tests/t_pso_skey checks the layout)
-KB_EACH = {'ios': 34, 'macos': 21}   # archive KB per record, measured for applegpu_g16g; library sharing between records makes it an upper bound
+KB_EACH = 34   # archive KB per record and GPU architecture: 31.6 measured over 9029 records for one iOS and 31.8 over 9063 for one macOS architecture, rounded up
 TIERS = ('harvested and learned', 'accelerator pairs', 'interface pairs')
 
 
@@ -48,13 +53,41 @@ def tiers(o):
     return t
 
 
+MEASURE_TRIES, TRIM_MARGIN = 4, 0.9   # one-architecture builds to fit the cap; the share of the proportional cut kept (per-record sizes vary)
+# ponytail: cuts only, never grows back, so a cut can undershoot the cap a lot (the costly records come first in tier 2); a bisection if the fill ever matters
+
+
+def trim(n, mb_one, narch, max_mb):
+    """Records to keep of n when one architecture measured mb_one MB and narch are built: n when it fits the cap (or there is none), else n cut in proportion with a margin"""
+    if not max_mb or mb_one * narch <= max_mb: return n
+    return max(0, min(n - 1, int(n * max_mb / (mb_one * narch) * TRIM_MARGIN)))
+
+
+def arch_flags(archs):
+    """metal-tt flags for --arch: the named architectures, else every GPU family with Metal 4"""
+    return [x for a in archs for x in ('-arch', a)] if archs else ['-gpu-family', 'metal4']
+
+
+def target_archs(platform, archs):
+    """The GPU architectures metal-tt builds for these flags: an empty pipelines script compiled with them (milliseconds), its slices listed"""
+    sdk, target = A.TARGET[platform]
+    with tempfile.TemporaryDirectory() as w:
+        sp, out = os.path.join(w, 'empty.mtlp-json'), os.path.join(w, 'empty.metallib')
+        json.dump({'version': {'major': 0, 'minor': 3, 'sub_minor': 0}, 'libraries': {'paths': []}, 'pipelines': {'render_pipelines': []}}, open(sp, 'w'))
+        r = subprocess.run(['xcrun', '-sdk', sdk, 'metal-tt', '-target', target(), *arch_flags(archs), sp, '-o', out], capture_output=True, text=True)
+        found = subprocess.run(['xcrun', 'metal-lipo', out, '-archs'], capture_output=True, text=True).stdout.split() if not r.returncode else []
+    if not found: sys.exit(f'[RED] metal-tt names no GPU architecture for {" ".join(arch_flags(archs))}: {r.stderr[-1000:]}')
+    return found
+
+
 def records(o):
-    """(records in tier order up to the cap, how many are harvested), printing what each tier gives"""
-    cap = o.max_mb * 1024 // KB_EACH[o.platform] if o.max_mb else float('inf')
+    """(records in tier order up to the cap, how many are harvested), printing what each tier gives. o.archs: the GPU architectures built, each holding every record"""
+    cap = o.max_mb * 1024 // (KB_EACH * len(o.archs)) if o.max_mb else float('inf')
+    print(f'{len(o.archs)} GPU architectures ({" ".join(o.archs)})' + (f': {int(cap)} records fit {o.max_mb} MB' if o.max_mb else ''))
     out, nh = [], None
     for name, rs in zip(TIERS, tiers(o)):
         take = rs[:max(0, int(min(len(rs), cap - len(out))))]
-        print(f'tier {name}: {len(take)} of {len(rs)} records' + ('' if len(take) == len(rs) else f' (cap {o.max_mb} MB reached)'))
+        print(f'tier {name}: {len(take)} of {len(rs)} records' + ('' if len(take) == len(rs) else f' (cap {o.max_mb} MB reached' + (', fewer GPU architectures (--arch) fit more)' if len(o.archs) > 1 else ')')))
         out += take; nh = len(take) if nh is None else nh
     return out, nh
 
@@ -68,7 +101,7 @@ def bench(manifest, env):
     return line
 
 
-def build(script, msl, target_libs, out, platform, archs):
+def build(script, msl, target_libs, out, platform, archs):   # archs: the --arch list (empty: arch_flags' default)
     """metal-tt over a Metal 4 pipelines script, libraries relinked (dmsh_psoarch.relink); returns (pipelines kept, left out)"""
     d = json.load(open(script))
     shas = {}
@@ -93,7 +126,7 @@ def build(script, msl, target_libs, out, platform, archs):
         d['libraries'] = [{'label': l, 'path': p} for l, p in sorted(paths.items()) if l not in moved]
         sp = os.path.join(w, 'pipelines.mtl4-json'); json.dump(d, open(sp, 'w'))   # metal-tt takes a Metal 4 script by this extension only
         sdk, target = A.TARGET[platform]
-        cmd = ['xcrun', '-sdk', sdk, 'metal-tt', '-target', target(), *[x for a in archs for x in ('-arch', a)], sp, '-o', out + '.tmp']
+        cmd = ['xcrun', '-sdk', sdk, 'metal-tt', '-target', target(), *arch_flags(archs), sp, '-o', out + '.tmp']
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode: sys.exit(f'[RED] metal-tt failed ({" ".join(cmd)}):\n{r.stderr[-3000:]}')
         os.replace(out + '.tmp', out)
@@ -104,24 +137,33 @@ def main():
     a = argparse.ArgumentParser(description=__doc__)
     a.add_argument('--records', nargs='*', default=[]); a.add_argument('--pairs', nargs='*', default=[])
     a.add_argument('--msl', required=True); a.add_argument('--target-libs', required=True); a.add_argument('-o', required=True)
-    a.add_argument('--platform', choices=A.TARGET, default='ios'); a.add_argument('--arch', nargs='*', default=[]); a.add_argument('--check', action='store_true')
+    a.add_argument('--platform', choices=A.TARGET, default='ios'); a.add_argument('--check', action='store_true')
+    a.add_argument('--arch', nargs='*', default=[], help='GPU architectures to build (default: every GPU family with Metal 4)')
     a.add_argument('--max-mb', type=int, default=300, help='archive size cap in MB, filled tier by tier (0 = no cap)')
     a.add_argument('--check-only', action='store_true', help='only replay the records against the existing -o archive')
     o = a.parse_args()
     if not os.access(BENCH, os.X_OK): sys.exit(f'[RED] build {BENCH} first: make -C dm/gfx/tests GAME=<id> pso_flexbench')
+    o.archs = target_archs(o.platform, o.arch)
     recs, nh = records(o)
     if not recs: sys.exit('[RED] no records (--records / --pairs)')
     with tempfile.TemporaryDirectory() as w:
         man, script = os.path.join(w, 'records.tsv'), os.path.join(w, 'pipelines.mtlp-json')
         open(man, 'w').write('\n'.join(recs) + '\n')
         if o.check_only: print('check:', bench(man, {'BENCH_ARCHIVE': o.o})); return
-        print(f'records: {nh} harvested, {len(recs) - nh} shader pairs; serializing their unspecialized pipelines (pso_flexbench)')
-        print(bench(man, {'BENCH_SCRIPT': script}))
-        kept, left = build(script, o.msl, o.target_libs, o.o, o.platform, o.arch)
+        one = o.archs[:1] if len(o.archs) > 1 else o.arch   # the measuring build: one architecture (the final one already when only one is built)
+        for i in range(MEASURE_TRIES):
+            print(f'records: {nh} harvested, {len(recs) - nh} shader pairs; serializing their unspecialized pipelines (pso_flexbench)')
+            print(bench(man, {'BENCH_SCRIPT': script}))
+            kept, left = build(script, o.msl, o.target_libs, o.o, o.platform, one)
+            mb_one = os.path.getsize(o.o) / 1048576; n = trim(len(recs), mb_one, len(o.archs), o.max_mb)
+            if n == len(recs) or not n or i == MEASURE_TRIES - 1: break
+            print(f'measured {mb_one:.1f} MB for one GPU architecture, {mb_one * len(o.archs):.0f} MB for {len(o.archs)}: over the {o.max_mb} MB cap, keeping the first {n} of {len(recs)} records')
+            recs, nh = recs[:n], min(nh, n); open(man, 'w').write('\n'.join(recs) + '\n')
+        if len(o.archs) > 1: kept, left = build(script, o.msl, o.target_libs, o.o, o.platform, o.arch)
         archs = subprocess.run(['xcrun', 'metal-lipo', o.o, '-archs'], capture_output=True, text=True).stdout.split()
         mb = os.path.getsize(o.o) / 1048576
         print(f'wrote {o.o} ({mb:.1f} MB, {" ".join(archs)}): {kept} pipelines, {left} left out (constant-only libraries: compiled on a worker at run time)'
-              + (f' [RED] over the {o.max_mb} MB cap: lower KB_EACH' if o.max_mb and mb > o.max_mb else ''))
+              + (f' [RED] over the {o.max_mb} MB cap: fewer GPU architectures (--arch) or a higher cap' if o.max_mb and mb > o.max_mb else ''))
         if o.check: print('check:', bench(man, {'BENCH_ARCHIVE': o.o}))
 
 

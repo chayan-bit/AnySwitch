@@ -305,7 +305,10 @@ A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (
 2. accelerator pairs: `split` and `tfx` pairs and the profile's same-variation table (`shader_pairs.tsv`);
 3. interface pairs.
 
-The build prints what each tier gave and the size written.
+The archive is built for every iOS GPU family with Metal 4 (the GPUs that can open it), and each architecture holds its own copy of every pipeline, so the cap holds for the records times the architectures.
+The records are first chosen at an estimate (about 34 KB per pipeline per architecture); the archive is then built for one architecture and measured, and while that size times the architectures is over the cap the list is cut in proportion and measured again, since pipelines differ a lot in size.
+`PSO_ARCHS` (architecture names, as the app's `[pso-flex]` load line prints them) builds only those, which fits that many more pipelines under the same cap.
+The build prints the architectures, how many records fit, what each tier gave, any cut and the size written.
 Before that, `ios/tools/pull_pso_user.py` copies the pipeline log (`Documents/pso_user.tsv`) from every reachable device that has the app installed (`PSO_PULL=0` skips it); the app always writes that log, off the render thread.
 `PSO_FLEX=0` skips the archive and `PSO_FLEX_ARCHIVE=path` takes a finished one.
 The archive names the libraries the app ships, so it is built from the final (packed) libraries.
