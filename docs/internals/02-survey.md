@@ -1,4 +1,4 @@
-# 02 — Surveying a new title
+# 02 - Surveying a new title
 
 Do this before touching the host. Every item answers "what will break, and how much work is it".
 

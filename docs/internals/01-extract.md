@@ -1,11 +1,11 @@
-# 01 — Extracting an NSP
+# 01 - Extracting an NSP
 
 ## Keys
 
-- Needs the user's own `prod.keys` and the title key from the NSP's ticket. Keep both under the work folder, e.g. `$W/build/keys/.switch/{prod,title}.keys`, and run hactool with `HOME` pointed there so it never reads anything else:
+- Needs your own `prod.keys` and the title key from the NSP's ticket. Keep both under the work folder, e.g. `$W/build/keys/.switch/{prod,title}.keys`, and run hactool with `HOME` pointed there so it never reads anything else:
 
   ```bash
-  # $W/build/keys/ht — hactool with a private key home
+  # $W/build/keys/ht - hactool with a private key home
   HOME="$(cd "$(dirname "$0")" && pwd)" exec "$(dirname "$0")/../../tools/hactool/hactool" --disablekeywarns "$@"
   ```
 
@@ -32,7 +32,7 @@ ht -t nca --exefsdir=$W/data/v0/ExeFS --romfsdir=$W/data/v0/RomFS $W/build/nsp/<
 
 ## Workspace layout used so far
 
-The work folder `$W` sits in the game's NSP folder, beside the NSP script's `<title>_build/`, never in the home folder:
+The work folder `$W` sits in the game's NSP folder, beside the NSP script's `<title>_build/`, never inside the repository:
 
 ```
 <NSP folder>/<title>-work/

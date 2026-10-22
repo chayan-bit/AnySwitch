@@ -1,5 +1,5 @@
 # OCTOPATH TRAVELER 0: Square Enix, Unreal Engine 5 (the paged global distance field shaders and the LowLevelTasks task system; mobile renderer, SF_GLSL_SWITCH_MOBILE shaders), SDK 19.3.13, NVN, CRIWARE sound and movies; update 1.0.5.
-# Started from the NSP script's provisional profile (dm/games/profile_guess.py) and brought up on the Mac (docs/agents)
+# Started from the NSP script's provisional profile (dm/games/profile_guess.py) and brought up on the Mac (docs/internals)
 
 # ---- Identity ----
 title_id	01005270232F2000

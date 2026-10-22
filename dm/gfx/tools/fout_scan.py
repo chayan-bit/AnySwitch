@@ -3,7 +3,7 @@
 # The translator declares every colour output float4; a Maxwell pixel shader that writes an integer target stores the integer bits into the output register.
 # An output whose every written component is `as_type<float>(_N)` with `_N = uint(...)` / `int(...)` (an F2I conversion) holds integer values: no float target is written that way.
 # Prints shader_facts_manual.tsv rows (`<key>\t{"fout":{"<slot>":"uint"|"sint"}}`); after adding them, the shader split merges them and the shader build retranslates those shaders.
-# Only conversions count: plain bit moves stay out (register reuse keeps float bits in integer variables, see docs/agents/04-graphics.md "Integer fragment outputs").
+# Only conversions count: plain bit moves stay out (register reuse keeps float bits in integer variables, see docs/internals/04-graphics.md "Integer fragment outputs").
 import glob, os, re, sys
 
 OUT = re.compile(r'float4 (m_\d+) \[\[color\((\d)\)\]\]')
