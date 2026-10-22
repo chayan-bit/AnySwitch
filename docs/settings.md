@@ -54,6 +54,15 @@ The built-in entries are:
 | Controls | Controls opacity | `DM_CONTROLS_OPACITY` | 30 to 100 percent | 100 percent |
 | Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off |
 
+### Shake threshold (`DM_SHAKE_G`)
+
+Shaking the device (iPhone or iPad) shakes the controller in games that read its motion.
+The accelerometer in `DmGamepad.m` counts a flick as a shake when its acceleration, beyond a slowly followed gravity, exceeds `DM_SHAKE_G`.
+The default is 1.5 G.
+This one is not on the screen: set it with a line `DM_SHAKE_G=1.0` in `Documents/env.txt`, which is read at launch.
+A lower value makes the shake easier to trigger and suits the heavier iPad; a higher one needs a sharper flick.
+The log says which threshold is in use (`front end: shaking the device (iPhone or iPad) shakes the controller (threshold ... G)`) and the peak of each detected shake.
+
 ### Per-game sections
 
 A game profile can add its own categories with a `dm/games/<title id>/settings.json` file, which `tools/build_ipa.sh` copies to `dm/settings.json` in the app.
