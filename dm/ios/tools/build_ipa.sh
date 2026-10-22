@@ -5,6 +5,9 @@
 # Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden
 #   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
 #   IPA_ROMFS=0 leaves the RomFS out of the IPA (it is still read for the control data and the icon): the app then needs it at Documents/romfs (main.m looks there first, then at DmIOS.app/romfs), for a build that updates an install which already has the game files
+#   IPA_ROMFS=store leaves it out too and builds a chunk store of it (dm/tools/romstore/romstore.py: deduplicated, compressed, random access) at ROMSTORE (default $W/build/romfs.dmstore;
+#   an existing one is reused, ROMSTORE_REBUILD=1 rebuilds it, ROMSTORE_TRACE = DM_FSLOG files separated by ':' order it by first read); install it with
+#   romstore.py install, and the app reads Documents/romfs.dmstore before Documents/romfs
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the app version is the display version in the packed game's control data (the one next to the RomFS:
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.anyswitch.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
 #   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
@@ -142,7 +145,8 @@ xcodegen generate -q > /dev/null || die "xcodegen"
 
 t "xcodebuild (Release, unsigned, iPhone + iPad)"
 mkdir -p "$O"
-xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+# XCODE_JOBS = how many compile jobs xcodebuild runs at once (default: its own choice, one per core)
+xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" ${XCODE_JOBS:+-jobs "$XCODE_JOBS"} \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build > "$O/build.log" 2>&1 \
   || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
 # When Xcode's Locations setting is a custom location, products ignore -derivedDataPath: take the actual path from this build's log
@@ -161,7 +165,17 @@ if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pac
   [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-if [ "${IPA_ROMFS:-1}" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
+if [ "${IPA_ROMFS:-1}" = store ]; then
+  ROMSTORE=${ROMSTORE:-$W/build/romfs.dmstore}
+  if [ -f "$ROMSTORE" ] && [ "${ROMSTORE_REBUILD:-0}" != 1 ]; then t "chunk store: reusing $ROMSTORE (ROMSTORE_REBUILD=1 rebuilds it)"
+  else
+    TR=(); if [ -n "${ROMSTORE_TRACE:-}" ]; then IFS=: read -ra TRS <<< "$ROMSTORE_TRACE"; for f in "${TRS[@]}"; do TR+=(--trace "$f"); done; fi
+    RC=(python3 "$DM/tools/romstore/romstore.py" build "$ROMFS" "$ROMSTORE" ${TR[@]+"${TR[@]}"})
+    t "chunk store: building $ROMSTORE from $ROMFS (romstore.py, 2 threads)"
+    if python3 -c 'import zstandard' 2> /dev/null; then "${RC[@]}"; else nix-shell -p 'python3.withPackages(ps:[ps.zstandard])' --run "$(printf '%q ' "${RC[@]}")"; fi || die "romstore.py build"
+  fi
+  t "RomFS not packed (IPA_ROMFS=store): after installing the app, copy the store with: python3 $DM/tools/romstore/romstore.py install $ROMSTORE --device <udid> --bundle $DM_BUNDLE_ID"
+elif [ "${IPA_ROMFS:-1}" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"
 python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

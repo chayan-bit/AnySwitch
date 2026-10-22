@@ -20,6 +20,7 @@ The license files sit next to the code they cover and must stay there.
 | `dm/third_party/libvpx/` | libvpx VP9 decoder | BSD 3-Clause, with a patent grant | `dm/third_party/libvpx/LICENSE`, `dm/third_party/libvpx/PATENTS` |
 | `dm/third_party/stb_vorbis/` | stb_vorbis Ogg Vorbis decoder | MIT or public domain | `dm/third_party/stb_vorbis/LICENSE` |
 | `dm/third_party/vulkan-headers/` | Khronos Vulkan headers | Apache-2.0 or MIT | `dm/third_party/vulkan-headers/LICENSE.md` |
+| `dm/third_party/zstd/` | Zstandard (zstd) 1.5.7 compression library: the decompressor reads the chunk store, the compressor is used by its unit test | BSD (dual-licensed BSD or GPLv2) | `dm/third_party/zstd/LICENSE` |
 | `dm/third_party/flip/` | NVIDIA FLIP image difference metric (verification only) | BSD 3-Clause | `dm/third_party/flip/LICENSE` |
 | `dm/third_party/macnativegames/` | Code adapted from MacNativeGames: the GPU widening of 8-bit indices and the in-pass clear triangles in `dm/gfx/nvn/nvn_mtl.m` | MIT | `dm/third_party/macnativegames/LICENSE` |
 | `dm/gfx/nvn/include/nvn.h` | NVN C header by h1k421 | MIT | the header of the file |

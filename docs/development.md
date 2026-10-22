@@ -134,6 +134,10 @@ GAME=$G W=$W dm/ios/tools/build_ipa.sh [out.ipa]
 Notes on these steps:
 - `dmsh_build.py` compiles each shader's Metal source through a cache keyed by that source, the compile flags and the compiler (`dm/gfx/tools/dmsh_mtlcache.py`, in `<cache>/cas/metallib/`). A chain change that leaves a shader's MSL unchanged, such as a translator fix, costs that shader no Metal compile. Before building, the cache takes the libraries of the earlier `b-*/` folders beside its output (and beside `IOSOUT`), and of `DMSH_PREFILL=<Mac root>[=<iOS root>]` (several separated by `:`). It takes a folder only when its recorded flags are the current ones and a fresh compile of a few of its shaders reproduces their libraries byte for byte. The summary line `Metal cache:` shows reused, compiled and filled counts per target.
 - `build_ipa.sh` takes the rewritten modules from `$W/build/patched_<package>` and the RomFS from `$W/data/<package>/RomFS`; `PATCHED` and `ROMFS` override them. The shader libraries, the RomFS and the add-on content never go through Xcode: `pack_ipa.py` packs them into the IPA beside the app Xcode built, as `DmIOS.app/msl/b-<chain version>`, `romfs` and `aoc`.
+- `IPA_ROMFS=store` packs no RomFS and builds a chunk store of it instead (`dm/tools/romstore/romstore.py`: content-defined chunks, deduplicated by SHA-256, each compressed with zstd and a trained dictionary, readable at any offset).
+  Copy it to the device with `romstore.py install <store> --device <udid> --bundle <id>`; the app reads `Documents/romfs.dmstore` before `Documents/romfs`.
+  On the Mac, `DM_ROMFS` may name a store file instead of a RomFS folder; `romstore.py verify <store> <RomFS>` reads every file back through the host's reader and compares it with the original.
+  `DM_ROMSTORE_CACHE_MB` (default 16) sizes the reader's cache of decompressed chunks.
 - It also bundles a standard font (macOS's Arial Unicode, `STD_FONT=` overrides it) and the generated `nintendo_ext.ttf`.
 - The icon is the `icon.jpg` that `nx_extract` saves next to `RomFS/`; `DM_ICON=` points at another image.
 - `DM_ENV_FILE=` bakes environment switches into the app, and `DM_DISPLAY_NAME=` renames it.
