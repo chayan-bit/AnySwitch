@@ -151,7 +151,11 @@ static void timing(int dw, int dh, int sw, int sh) {
         cost = best[1][0] + best[1][1] + best[1][2] - best[0][2];
     }
     printf("GPU time %dx%d drawable, %dx%d source (best of %d interleaved batches each): blur passes %.3f + %.3f ms, final pass %.3f ms with ambient bars versus %.3f ms with black bars: ambient costs %.3f ms per frame\n", dw, dh, sw, sh, ROUNDS, best[1][0], best[1][1], best[1][2], best[0][2], cost);
-    char nm[160]; snprintf(nm, sizeof nm, "GPU cost of the ambient fill at %dx%d is under 0.3 ms (%.3f ms)", dw, dh, cost); CHECK(nm, timed == ROUNDS * BATCH && cost < 0.3);
+    // When other jobs slow the whole GPU, even the minima scale (the black-bar pass alone measured 0.45 ms against 0.15-0.2 ms on a quiet GPU), so the budget also passes
+    // when the cost stays under 1.5 times the black-bar final pass of the same run (0.8 to 1.2 times in every run so far): a slower ambient fill still fails both.
+    double ratio = best[0][2] > 0 ? cost / best[0][2] : 1e9;
+    char nm[200]; snprintf(nm, sizeof nm, "GPU cost of the ambient fill at %dx%d is under 0.3 ms or 1.5x the black-bar pass (%.3f ms, %.2fx)", dw, dh, cost, ratio);
+    CHECK(nm, timed == ROUNDS * BATCH && (cost < 0.3 || ratio < 1.5));
 }
 static void shots(const char *dir) {
     static const int sz[][2] = {{2752, 2064}, {1376, 1032}};
