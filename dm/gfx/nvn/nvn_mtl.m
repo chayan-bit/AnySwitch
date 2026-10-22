@@ -24,7 +24,8 @@
 #include "nvn_refl.h"
 #include "nvn_cover.h"
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
-#include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready
+#include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready (or waiting, nvn_rthist.h)
+#include "nvn_rthist.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree (in the game profile folder, -I from the Makefile)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
 extern int g_mtl_rk_on;   // record-time kick (defined with it, below)
@@ -2007,8 +2008,11 @@ static void rr_reset(void);
 static id<MTL4RenderCommandEncoder> g_enc;
 static int enc_open(void) { return g_enc != nil; }
 // Target info of the current render pass: determined once from the attachments at rp_begin and shared by all draws in the pass (pipeline key, depth-stencil, viewport / scissor all depend only on it)
-static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs; NSUInteger tw, th; uint64_t serial, reg_gen, ser_gen, range_dirty; int range_external, range_depth_nonro, layered; __unsafe_unretained id<MTLTexture> range_color, range_depth; } g_pass;
+static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs, steady; NSUInteger tw, th; uint64_t serial, reg_gen, ser_gen, range_dirty; int range_external, range_depth_nonro, layered; __unsafe_unretained id<MTLTexture> range_color, range_depth; } g_pass;
 static int g_rp_layered;   // the pass about to open is for a vertex shader that writes the layer (draw → rp_begin_ex)
+// steady (DM_PSO_FLEX skip-draw): every target of the pass was also rendered the previous frame, so a draw whose pipeline is not ready may be skipped; otherwise it waits (nvn_rthist.h).
+// Stamped once per pass begin on the replay thread; the draws read the flag only
+static nvn_rthist g_rth = {.m = {.klen = 8}, .next_prune = RTH_PRUNE_EVERY};
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // Already set on this encoder (not set again if identical)
 // Dynamic state already sent on the open render encoder: each draw used to send all nine (stencil reference, viewport, scissor, cull, winding, fill, depth bias, depth clip, blend colour);
 // now a value is sent only when it differs. g_ed.ok holds one bit per item and is cleared for every new encoder and after a clear triangle (which sets its own)
@@ -2563,6 +2567,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         g_pass.dfmt = g_pass.hd ? (uint32_t)dt.pixelFormat : 0; g_pass.sfmt = stt ? (uint32_t)stt.pixelFormat : 0;
         if (dt || stt) g_pass.samples = (uint32_t)(dt ? dt : stt).sampleCount;
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
+        if (flexpso_on()) { uint64_t ts[9]; int nt = 0;
+            for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) ts[nt++] = R.rt.color[i]->serial;
+            if (dt || stt) ts[nt++] = R.rt.depth->serial;
+            g_pass.steady = rth_pass(&g_rth, ts, nt, atomic_load(&g_cur_frame)); }
         if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
@@ -3928,16 +3936,18 @@ static void pso_ukey_fill(const pso_key *k, NvShader *vs, pso_ukey *u) {
     memset(u->k.cfmt, 0, sizeof u->k.cfmt); u->k.dfmt = u->k.sfmt = 0; u->k.blend_en = u->k.chmask = 0; memset(u->k.blend, 0, sizeof u->k.blend);
     u->layer_out = vs->layer_out;
 }
-static id<MTLRenderPipelineState> pso_flex_get(const pso_key *k, NvShader *vs, NvShader *fs, int *pending) {
+// may_skip: every target of the pass was rendered the previous frame (g_pass.steady, nvn_rthist.h); otherwise the draw waits for its pipeline (time in *wait_ns)
+static id<MTLRenderPipelineState> pso_flex_get(const pso_key *k, NvShader *vs, NvShader *fs, int may_skip, int *pending, uint64_t *wait_ns) {
     pso_ukey u; pso_ukey_fill(k, vs, &u); char lb[64]; snprintf(lb, sizeof lb, "vertex %s fragment %s", vs->key, fs ? fs->key : "-");
-    return flexpso_get(k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(k, vs, fs, nil, 0); }, pending);
+    return flexpso_get(k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(k, vs, fs, nil, 0); }, may_skip, pending, wait_ns);
 }
-// DM_PSO_SKIPLOG=path: one line per skipped draw, <present count> <TAB> <key hash>, for the skip measurement (dm/gfx/README.md, pipeline coverage)
-static void pso_skip_log(const pso_key *k) {
+// DM_PSO_SKIPLOG=path: one line per draw whose pipeline was not ready, for the skip measurement (dm/gfx/README.md, pipeline coverage):
+// <present count> <TAB> <key hash> <TAB> skip | wait <TAB> <wait in us> <TAB> <vertex shader key> <TAB> <fragment shader key>
+static void pso_skip_log(const pso_key *k, NvShader *vs, NvShader *fs, int waited, uint64_t wait_ns) {
     static FILE *f; static int init; if (!init) { init = 1; const char *p = getenv("DM_PSO_SKIPLOG"); if (p && (f = fopen(p, "w"))) setvbuf(f, NULL, _IOLBF, 0); }   // line-buffered: the process may be killed
     if (!f) return;
     uint64_t h = 1469598103934665603ull; const uint8_t *b = (const uint8_t *)k; for (size_t i = 0; i < sizeof *k; i++) h = (h ^ b[i]) * 1099511628211ull;
-    fprintf(f, "%llu\t%016llx\n", (unsigned long long)mtl_present_count(), (unsigned long long)h);
+    fprintf(f, "%llu\t%016llx\t%s\t%llu\t%s\t%s\n", (unsigned long long)mtl_present_count(), (unsigned long long)h, waited ? "wait" : "skip", (unsigned long long)(wait_ns / 1000), vs->key, fs ? fs->key : "-");
 }
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
@@ -3991,11 +4001,12 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     pw_first_draw(vs, fs);
     id<MTLRenderPipelineState> ps = nil;
     NSError *e = nil; uint64_t bt = bp_now();
-    int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw is skipped until then; merged passes and specialized fragments as before
+    int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw skipped until then when its targets are redrawn every frame, else waited for (nvn_rthist.h); merged passes and specialized fragments as before
     if (flex) {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // first miss in this submission: ask for the later ones too
-        int pending; ps = pso_flex_get(&k, vs, fs, &pending);
-        if (!ps && pending) { pso_skip_log(&k); return nil; }
+        int pending; uint64_t wns = 0; ps = pso_flex_get(&k, vs, fs, g_pass.steady, &pending, &wns);
+        if (!ps && pending) { pso_skip_log(&k, vs, fs, 0, 0); return nil; }
+        if (wns) pso_skip_log(&k, vs, fs, 1, wns);
     }
     if (!ps) ps = flex || g_pso_lmap || ms_fn ? nil : pso_pend_take(&k);
     if (ps) g_pp_taken += !flex;
