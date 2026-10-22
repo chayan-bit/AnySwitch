@@ -24,6 +24,7 @@ The license files sit next to the code they cover and must stay there.
 | `dm/third_party/macnativegames/` | Code adapted from MacNativeGames: the GPU widening of 8-bit indices and the in-pass clear triangles in `dm/gfx/nvn/nvn_mtl.m` | MIT | `dm/third_party/macnativegames/LICENSE` |
 | `dm/gfx/nvn/include/nvn.h` | NVN C header by h1k421 | MIT | the header of the file |
 | `dm/gfx/nvn/nvn_tex.c` | Texture layout size algorithm ported from deko3d | zlib | the header of the file |
+| `dm/gfx/nvn/nvn_upscale.h` | AMD FidelityFX Super Resolution 1 (EASU and RCAS from `ffx_fsr1.h` v1.20210629), ported to Metal from the copy Ryujinx vendors | MIT | the header of the file |
 
 ## References and tools (not shipped here)
 

@@ -209,9 +209,19 @@ Comparison and testing:
 | `DM_FPS=30` or `60` | Pins the target frame rate |
 | `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/internals/04-graphics.md](../../docs/internals/04-graphics.md) section 7 |
 | `DM_LETTERBOX=ambient` or `black` | What the bars show when the picture does not fill the screen: `ambient` (default) the blurred live frame, `black` plain black bars; see "Letterbox" below |
+| `DM_UPSCALE=bilinear` or `sharp`, `DM_UPSCALE_SHARPNESS=0..1` | How the picture is enlarged to the drawable: `bilinear` (default) the plain stretch, `sharp` AMD FSR 1 with RCAS at the given strength (default 0.8); see "Upscale" below |
 | `DM_CONTROLS_LAYOUT=auto` or `overlay` | iOS only: `auto` (default) puts the touch controls in the letterbox bars when they are tall enough, `overlay` keeps them over the picture |
 | `DM_CONTROLS_SCALE=0.75..2.5` | iOS only, controls in the bars: size of the A / B / X / Y keys, the left stick and the D-pad (default 1; Info.plist key `DMControlsScale`); they grow upward from the bar over the picture |
 | `DM_PRESENT_HZ=N` | The frequency of presentation pacing (default 60); 0 means no frame limit and is for performance profiling only |
+
+## Upscale
+
+`DM_UPSCALE=sharp` (the iOS setting Display > Upscaling) draws the picture with AMD FidelityFX Super Resolution 1 instead of the bilinear stretch (`nvn/nvn_upscale.h`).
+EASU, an edge-adaptive 12-tap filter, enlarges the valid source rectangle into an RGBA8 target the size of the picture's viewport; RCAS then sharpens it into the drawable inside the same pass that draws the letterbox bars, at `DM_UPSCALE_SHARPNESS` (0 = EASU alone, 1 = AMD's maximum; default 0.8).
+Only an enlargement uses it: a same-size or smaller picture stays bilinear, and so does any failure to build the pipelines or the target.
+The live present keeps one target and reuses it every frame; screenshots and `DM_NVN_SHOT_OUT` run the same shaders through the old command buffer path and match the screen to within 2 levels per channel.
+Against an analytic scene rendered at both sizes, 1920x1080 to 2752x1548 lowers the error from RMSE 12.5 (bilinear) to 10.1 and raises edge energy from 0.55 to 0.82 of the truth, the same as the MetalFX spatial scaler (10.2, 0.84); RCAS on a bilinear stretch reaches only 12.0 and 0.63.
+On an Apple silicon Mac (10-core GPU) the sharp path costs 0.95 to 1.55 ms of GPU time per frame at 2752x2064 over the bilinear draw (a threadgroup-tiled compute EASU was only 6% faster: the filter is ALU-bound); `t_present_scale` holds it under 2 ms and checks the rest.
 
 ## Precompiled pipeline archives
 

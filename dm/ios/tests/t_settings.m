@@ -39,8 +39,9 @@ int main(void) { @autoreleasepool {
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) { CHECK(![seen containsObject:st.key], "%s twice", st.key.UTF8String); [seen addObject:st.key]; n++; CHECK([st normalized:st.def] != nil, "default of %s", st.key.UTF8String); CHECK(st.label.length, "label"); }
       NSUInteger want = 0; for (NSDictionary *d in builtin) want += [d[@"settings"] count];
       CHECK(n == want, "%lu of %lu entries parsed", (unsigned long)n, (unsigned long)want);
-      for (NSString *k in @[@"DM_LETTERBOX", @"DM_AMBIENT_LEVEL", @"DM_CONTROLS_LAYOUT", @"DM_CONTROLS_SCALE", @"DM_CONTROLS_OPACITY", @"DM_SHOW_FPS"]) CHECK([seen containsObject:k], "missing %s", k.UTF8String);
-      EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient"); EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1"); EQ([s valueForKey:@"DM_SHOW_FPS"], @"0"); EQ([s valueForKey:@"DM_AMBIENT_LEVEL"], @"0.5"); }
+      for (NSString *k in @[@"DM_LETTERBOX", @"DM_AMBIENT_LEVEL", @"DM_CONTROLS_LAYOUT", @"DM_CONTROLS_SCALE", @"DM_CONTROLS_OPACITY", @"DM_SHOW_FPS", @"DM_UPSCALE", @"DM_UPSCALE_SHARPNESS"]) CHECK([seen containsObject:k], "missing %s", k.UTF8String);
+      EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient"); EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1"); EQ([s valueForKey:@"DM_SHOW_FPS"], @"0"); EQ([s valueForKey:@"DM_AMBIENT_LEVEL"], @"0.5");
+      EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear"); EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"0.8"); }   // bilinear stays the default until the sharp path is measured on a device
 
     // 2. precedence: environment > user > plist > default
     { NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile();
@@ -266,6 +267,14 @@ int main(void) { @autoreleasepool {
       DmSettings *vp = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{@"DMLetterbox": @"black"}); CHECK(![vp isEnabled:find(vp, @"DM_AMBIENT_LEVEL")], "the Info.plist's black bars count");
       DmSettings *ev = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"black"} mutableCopy], @{}); CHECK(![ev isEnabled:find(ev, @"DM_AMBIENT_LEVEL")], "so does the environment");
       DmSettings *al = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"0"} mutableCopy], @{}); CHECK(![al isEnabled:find(al, @"DM_AMBIENT_LEVEL")], "an alias of the option counts as the option");
+      DmSetting *up = find(s, @"DM_UPSCALE"), *us = find(s, @"DM_UPSCALE_SHARPNESS");   // the upscaler: a Display choice, its sharpening only under Sharp
+      EQ(up.label, @"Upscaling"); CHECK(up.type == DmSettingChoice && !up.restart && !us.restart, "both apply live"); EQ([up displayValue:@"sharp"], @"Sharp"); EQ([up displayValue:@"bilinear"], @"Bilinear"); EQ([us displayValue:@"0.8"], @"80%");
+      EQ(us.enabledWhenKey, @"DM_UPSCALE"); EQ(us.enabledEquals, @"sharp"); CHECK(![s isEnabled:us], "bilinear: sharpening does nothing"); EQ([s disabledNote:us], @"Has no effect unless Upscaling is Sharp");
+      CHECK([s setValue:@"Sharp" forKey:@"DM_UPSCALE"], "sharp accepted (case does not matter)"); CHECK([s isEnabled:us], "sharp: sharpening is live"); EQ(env[@"DM_UPSCALE"], @"sharp");   // exported for the graphics layer
+      CHECK(![s setValue:@"fsr" forKey:@"DM_UPSCALE"], "an unknown upscaler is refused"); EQ([s valueForKey:@"DM_UPSCALE"], @"sharp");
+      [s setValue:@"1.7" forKey:@"DM_UPSCALE_SHARPNESS"]; EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"1"); [s setValue:@"0.33" forKey:@"DM_UPSCALE_SHARPNESS"]; EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"0.35"); EQ(env[@"DM_UPSCALE_SHARPNESS"], @"0.35");   // clamped, snapped to the 5% step
+      DmSetting *ul = nil; for (DmSection *sec in s.sections) if ([sec.ident isEqualToString:@"display"]) for (DmSetting *st in sec.settings) if (st == up) ul = st; CHECK(ul == up, "on the Display page");
+      [s setValue:@"bilinear" forKey:@"DM_UPSCALE"]; CHECK(![s isEnabled:us], "bilinear again"); EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"0.35");
       DmSetting *vib = find(s, @"DM_VIBRATION"), *vs = find(s, @"DM_VIBRATION_STRENGTH");
       EQ(vs.enabledWhenKey, @"DM_VIBRATION"); EQ(vs.enabledEquals, @"1"); EQ(vs.enabledNotEquals, nil); CHECK(vib.enabledWhenKey == nil, "the toggle itself is always live");
       CHECK([s isEnabled:vs] && [s disabledNote:vs] == nil, "vibration on (default): strength is live");

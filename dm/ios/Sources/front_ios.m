@@ -26,6 +26,7 @@ void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_
 void dm_gamepad_set_chord(void (^handler)(void));
 void mtl_letterbox_set(int ambient);
 void mtl_ambient_level_set(float v);
+void mtl_upscale_set(int sharp, float amount);
 CGRect dm_gamepad_hud_frame(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
@@ -41,6 +42,7 @@ static void front_ios_settings(void) {
     g_controls_auto = [[s valueForKey:@"DM_CONTROLS_LAYOUT"] isEqualToString:@"auto"];
     g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
+    mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
     dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
     s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
@@ -145,6 +147,7 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
     else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
+    else if ([k isEqualToString:@"DM_UPSCALE"] || [k isEqualToString:@"DM_UPSCALE_SHARPNESS"]) { DmSettings *s = DmSettings.shared; mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]); }
     else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);
     else if ([k isEqualToString:@"DM_VOLUME"]) dm_audio_volume(v.doubleValue);
     else if ([k isEqualToString:@"DM_VIBRATION"]) dm_haptics_enable([v isEqualToString:@"1"]);
