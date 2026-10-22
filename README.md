@@ -96,7 +96,6 @@ Test reports for a title or a build go in a [compatibility report](https://githu
 - Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
 - Fire Emblem: Three Houses: small square patches on the ground where decals land.
 - Super Mario Galaxy and Super Mario Galaxy 2: effects drawn as points or lines come out one pixel wide.
-- Pokémon Sword is experimental: it has not been verified end to end.
 
 ## Requirements
 
