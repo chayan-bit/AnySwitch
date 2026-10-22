@@ -2,7 +2,7 @@
 // Foundation only, so the registry and the precedence order run in a plain Mac test (dm/ios/tests/t_settings.m).
 // Precedence, highest first: the environment (Documents/env.txt, which main.m turns into environment variables, or a real one: the developer's override, shown locked in the screen),
 // then the user's choice (Documents/settings.json, not the save folder), then the Info.plist default (the key named by the entry's plistKey),
-// then the game's own default (the "defaults" of dm/settings.json), then the default the game's frame rate target gives it (`defaultAtFps`), then the entry's own default.
+// then the game's own default (the "defaults" of the bundled pack's profile/settings.json), then the default the game's frame rate target gives it (`defaultAtFps`), then the entry's own default.
 // An entry with `requires` is shown only when the build has that capability (DmSettings.capabilities, set by the app from what the loaded game provides).
 #import <Foundation/Foundation.h>
 
@@ -47,7 +47,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 @end
 
 @interface DmSettings : NSObject
-+ (instancetype)shared;   // the app's store: Documents/settings.json, the process environment, the main bundle's Info.plist and dm/settings.json (per-game entries and defaults)
++ (instancetype)shared;   // the app's store: Documents/settings.json, the process environment, the main bundle's Info.plist and pack/profile/settings.json (per-game entries and defaults)
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
 // gameDefaults: {key: value} replacing the registry default for this game; caps: whether the build has a capability (nil: every row is shown)
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *capability))caps storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
@@ -72,7 +72,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 - (void)applyToEnvironment;                                // exports user, plist and game-default values for the keys the environment does not set (code that reads DM_* itself sees the effective value)
 + (NSArray<NSDictionary *> *)builtinSections;
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes;      // the Internal resolution row's detail: with a memory note on devices with 8 GB or less (NSProcessInfo.physicalMemory)
-+ (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // dm/settings.json of the game profile: {"sections": [...]} in the same form; empty when absent or invalid (logged)
++ (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // profile/settings.json of the bundled pack: {"sections": [...]} in the same form; empty when absent or invalid (logged)
 + (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {"DM_KEY": "value"}}; empty when absent or invalid (logged)
 @end
 

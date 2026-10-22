@@ -1,9 +1,10 @@
 #!/bin/bash
-# Build one unsigned all-in-one IPA: the rewritten modules compiled into the executable, iOS shader libraries at DmIOS.app/msl, and the game files (RomFS) at DmIOS.app/romfs.
+# Build one unsigned all-in-one IPA: the rewritten modules compiled into the executable, and everything else as a game pack at DmIOS.app/pack (docs/development.md "Game packs": profile/,
+# msl/ios/, pso/ios/, font/, aoc/, meta/ and manifest.json, without code/, which the executable embeds, and without the RomFS store, which goes to Documents; IPA_ROMFS=1 puts loose files at DmIOS.app/romfs).
 # Xcode builds only the app; tools/pack_ipa.py then packs it with the shader libraries, the add-on content and the RomFS straight from where they are (no Payload/ copy, nothing through the home disk). At install time a signing tool (AltStore / Sideloadly etc.) swaps in your own certificate and bundle ID.
 # Prerequisites: the rewriter (patched directory) and the iOS shader build (IOSOUT) have been run as in the README; Xcode and xcodegen are installed.
 # Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden
-#   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
+#   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/pack/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
 #   IPA_ROMFS=store (the default) leaves the RomFS out of the IPA and builds a chunk store of it (dm/tools/romstore/romstore.py: deduplicated, compressed, random access, about 46% of the loose size) at ROMSTORE (default $W/build/romfs.dmstore;
 #   an existing one is reused, ROMSTORE_REBUILD=1 rebuilds it, ROMSTORE_TRACE = DM_FSLOG files separated by ':' order it by first read); install it with
 #   romstore.py install, and the app reads Documents/romfs.dmstore before Documents/romfs
@@ -18,7 +19,7 @@
 #   (dm/tools/pack_manifest.py); big files enter as APFS clones (cp -c: no extra disk on the same volume), and nothing is built with Xcode
 set -u
 cd "$(dirname "$0")/.." || exit 1
-IOS=$PWD; DM=$(cd .. && pwd)
+DM=$(cd .. && pwd)
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
 ROMFS_MODE=${IPA_ROMFS:-store}   # store (default): a chunk store beside the IPA; 1: loose files in the IPA; 0: none
 case $ROMFS_MODE in store|1|0) ;; *) die "IPA_ROMFS must be store, 1 or 0, not $ROMFS_MODE" ;; esac
@@ -50,7 +51,7 @@ else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || 
 # <key>_b.metallib / .json they hold; SHADER_PACKS=0 ships the loose libraries. Pipelines replayed on this Mac for the archive must use the Mac packs then ($MSL_MAC/b-$V/pack, same --per-pack)
 PACKS=0; if [ "$GFXAPI" = nvn ] && [ "${SHADER_PACKS:-1}" != 0 ] && [ -f "$MSL_IOS/b-$V/pack/index.tsv" ]; then PACKS=1; fi
 
-# Destinations: the app's Gen/dm (IPA), or the pack's profile/, pso/ios/ and font/ (PACK)
+# Destinations: the pack's profile/, pso/ios/ and font/, in Gen/pack (IPA: the app's DmIOS.app/pack) or in the pack folder (PACK)
 if [ -n "${PACK:-}" ]; then
   [ ! -e "$PACK" ] || [ -f "$PACK/manifest.json" ] || die "PACK=$PACK exists and is not a game pack: give a new folder"
   PW=$PACK.partial; t "game pack: $PACK (built in $PW, moved in place when complete)"
@@ -59,19 +60,19 @@ if [ -n "${PACK:-}" ]; then
 else
   t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)$([ $DM_SHOW_FPS = YES ] && echo ', frame-rate counter on')"
   t "generate Gen/ (host sources, embedded modules, tables)"
-  rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
+  rm -rf Gen && mkdir -p Gen/pack/profile Gen/pack/pso/ios Gen/pack/meta || die "mkdir Gen"
   python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
   F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"
   echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
-  DMO=Gen/dm; PSO_O=Gen/dm; FONT_O=Gen/dm/font
+  DMO=Gen/pack/profile; PSO_O=Gen/pack/pso/ios; FONT_O=Gen/pack/font
 fi
 cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv "$DMO"/ || die "copy rewriter tables"
 if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$DMO"/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
 else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" "$DMO"/ || die "copy shader tables"
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" "$DMO"/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
-# The game profile the host reads at boot (main.m loads dm/game.json before anything else)
+# The game profile the host reads at boot (profile/game.json)
 python3 "$DM/games/game.py" json "$GAME" "$DMO" || die "game.json"
-# The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes dm/settings.json in the app
+# The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes profile/settings.json
 if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" "$DMO"/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
 # GPU architectures both pipeline archives below are built for (each holds one copy of every pipeline per architecture): PSO_ARCHS (names as the app's log line "this GPU: ..." prints
 # them), else the connected devices' own, read from their chip IDs by tools/device_gpu.py (read-only: lists devices, installs nothing), else every iOS GPU family with Metal 4
@@ -124,9 +125,9 @@ if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
       ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" "$PSO_O"/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
   fi
 fi
-# Diagnostic build: DM_ENV_FILE=file → dm/env.txt in the bundle (main.m sets one environment variable per line at boot)
+# Diagnostic build: DM_ENV_FILE=file → profile/env.txt in the bundled pack (main.m sets one environment variable per line at boot)
 if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" "$DMO"/env.txt || die "copy DM_ENV_FILE"; t "env: $(grep -v '^#' "$DM_ENV_FILE" | tr '\n' ' ')"; fi
-# The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
+# The shader libraries go into the archive as DmIOS.app/pack/msl/ios/<folder> (dm_boot_env sets DM_MSL_DIR to the pack's msl/ios)
 if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
 # Guard: an app without its shader libraries boots to a blank clear colour (0 draws), so a missing or nearly empty library folder is an error, never a warning:
 # it needs at least one shader and, when the Mac libraries of the same chain are present, 90% of their count. A shader counts once whether it ships in a shader pack
@@ -191,6 +192,10 @@ if [ -f "$ICON" ]; then
   echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
   t "app icon: $ICON"
 else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
+# The bundled pack's own parts: icon and control data, then manifest.json (pack_manifest.py --bundled: the code is the executable's own and the app's signature seals the files, so no inventory)
+if [ -f "$ICON" ]; then cp "$ICON" Gen/pack/meta/icon.jpg || die "copy $ICON"; fi
+if [ -f "$VNACP" ]; then cp "$VNACP" Gen/pack/meta/control.nacp || die "copy $VNACP"; fi
+python3 "$DM/tools/pack_manifest.py" write Gen/pack --title "$GAME" --chain "$V" --display-version "$DM_APP_VERSION" --bundled > /dev/null || die "pack_manifest.py"
 xcodegen generate -q > /dev/null || die "xcodegen"
 
 t "xcodebuild (Release, unsigned, iPhone + iPad)"
@@ -204,21 +209,21 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app; [ -d "$APP" ] || APP=$(grep -
 [ -n "$APP" ] && [ -d "$APP" ] || die "no built app"; t "app: $APP"
 
 # Straight from the sources: the app without its signature, and without the folders an app built before pack_ipa.py still has (DerivedData keeps resources that left the project;
-# msl/ is also deleted there, it took 1.5 GB of the home disk), then the shader libraries, the add-on content (the RomFS extracted from the player's DLC NSPs, one folder per index:
+# msl/ is also deleted there, it took 1.5 GB of the home disk; dm/ and the top-level msl/ and aoc/ are the layout before the bundled pack), then the shader libraries, the add-on content (the RomFS extracted from the player's DLC NSPs, one folder per index:
 # the app sets DM_AOC_DIR at launch, the host reports them as owned and mounts them from it) and the RomFS
-rm -rf "$APP/msl" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
-P=Payload/DmIOS.app; MAPS=("$P=$APP" "$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR")
+rm -rf "$APP/msl" "$APP/aoc" "$APP/dm" "$APP/pack/msl" "$APP/pack/aoc" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
+P=Payload/DmIOS.app; PM=$P/pack/msl/ios/$MSLDIR; MAPS=("$P=$APP" "$PM=$MSL_IOS/$MSLDIR")
 SKIPS=$O/pack_skip.txt; : > "$SKIPS" || die "write $SKIPS"
 if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pack holds stay out
-  echo "$P/msl/$MSLDIR/pack/.air" > "$SKIPS"; awk -F'\t' -v d="$P/msl/$MSLDIR/" '!/^#/ { print d $1 ".metallib"; print d $1 ".json" }' "$MSL_IOS/$MSLDIR/pack/index.tsv" >> "$SKIPS"
+  echo "$PM/pack/.air" > "$SKIPS"; awk -F'\t' -v d="$PM/" '!/^#/ { print d $1 ".metallib"; print d $1 ".json" }' "$MSL_IOS/$MSLDIR/pack/index.tsv" >> "$SKIPS"
   t "shader packs: $(ls "$MSL_IOS/$MSLDIR/pack/"*.metallib | wc -l | tr -d ' ') packs for $(grep -vc '^#' "$MSL_IOS/$MSLDIR/pack/index.tsv") shaders replace their loose libraries"
   [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
-if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
+if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/pack/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
 if [ "$ROMFS_MODE" = store ]; then
   romstore_ready
   t "RomFS not packed (IPA_ROMFS=store): after installing the app, copy the store with: python3 $DM/tools/romstore/romstore.py install $ROMSTORE --device <udid> --bundle $DM_BUNDLE_ID"
 elif [ "$ROMFS_MODE" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"
-python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
+python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/pack/msl --skip $P/pack/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

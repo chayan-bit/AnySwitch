@@ -153,7 +153,7 @@ The host itself defaults to off (the Mac host, its tests and tools), so the entr
 
 ### Per-game files
 
-A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `dm/settings.json` in the app.
+A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `pack/profile/settings.json` in the app.
 It holds two optional keys:
 
 - `"defaults": {"DM_KEY": "value"}` replaces the registry default for that game, for any registered key.
@@ -173,7 +173,7 @@ From highest to lowest priority:
    This is the developer's override, so the screen shows the row dimmed with "Set in env.txt" and refuses changes.
 2. The player's choice in `Documents/settings.json` (not the save folder, so a save restore never touches it).
 3. The Info.plist default (`plistKey`, written by `project.yml` and `build_ipa.sh`).
-4. The game's own default (`"defaults"` in `dm/settings.json`).
+4. The game's own default (`"defaults"` in `pack/profile/settings.json`).
 5. The default for the game's frame rate target (`defaultAtFps`, only the entries that have one).
 6. The registry default.
 

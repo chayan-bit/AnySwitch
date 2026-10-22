@@ -4436,7 +4436,7 @@ static void rk_new(const rk_state *r) {
     rk_state st = *r;
     bgq_async(pw_slots(), ^{ @autoreleasepool { rk_kick(&st, vk, fk); } });
 }
-// Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map: the app's dm/, put there by build_ipa.sh);
+// Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map; a game pack sets it to its pso/<platform>/, dm_boot_env);
 // DM_PSO_HARVEST=path, or 1 for pso_harvest.metallib beside pso_user.tsv (Documents on iOS): every pipeline created is recorded for tools/dmsh_psoarch.py
 static void pso_archive_open(void) {
     const char *a = getenv("DM_PSO_ARCHIVE"), *h = getenv("DM_PSO_HARVEST");

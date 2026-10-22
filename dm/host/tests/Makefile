@@ -82,11 +82,14 @@ $(B)/t_profile: t_profile.m ../profile.m ../profile.h ../dm_abi.h | $(B)
 	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_profile.m ../profile.m -framework Foundation
 # The pack version contract (boot.m dm_pack_check): scratch packs built from one profile's game.json
 PACK_ID = $(firstword $(PROFILES))
-pack-check: $(B)/t_pack ../../games/game.py
+pack-check: $(B)/t_pack $(B)/t_pack_embedded ../../games/game.py
 	@python3 ../../games/game.py json $(PACK_ID) $(B)/pack_profile
 	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID) 2>/dev/null
+	TMPDIR="$(abspath $(B))" $(B)/t_pack_embedded $(B)/pack_profile $(PACK_ID) 2>/dev/null
 $(B)/t_pack: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
 	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
+$(B)/t_pack_embedded: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
+	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -DEMBED_TITLE='"$(PACK_ID)"' -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
 .PHONY: run tsan profile-schema pack-check
 tsan: $(B)/t_audio_spsc_tsan $(B)/t_sync_tsan
 	$(B)/t_audio_spsc_tsan

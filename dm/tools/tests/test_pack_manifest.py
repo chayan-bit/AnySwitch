@@ -45,6 +45,13 @@ def main():
             m2 = dict(m, abi=dict(m['abi'], code=m['abi']['code'] + 1)); (r / 'manifest.json').write_text(json.dumps(m2)); return lambda: None
         bad(stale, f'code {ABI["DM_CODE_ABI"] + 1}, this engine {ABI["DM_CODE_ABI"]}')
         assert run('write', str(r), '--title', 'nope').returncode != 0
+        # bundled in the IPA: no inventory, the code embedded (platforms ios), the numbers still checked
+        (r / 'files.tsv').unlink()
+        assert run('write', str(r), '--title', '0100abf008968000', '--bundled').returncode == 0
+        mb = json.loads((r / 'manifest.json').read_text())
+        assert mb['inventory'] is None and mb['platforms'] == ['ios'] and not (r / 'files.tsv').exists(), mb
+        assert run('verify', str(r)).returncode == 0
+        bad(stale, f'code {ABI["DM_CODE_ABI"] + 1}, this engine {ABI["DM_CODE_ABI"]}')
     print('test_pack_manifest: ok')
 
 

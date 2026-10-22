@@ -1,11 +1,18 @@
 // The pack version contract (boot.m): a scratch pack with each number off by one in turn (pack format, profile schema, code ABI, shader ABI, the code dylib's own stamp), a missing part,
 // a foreign title and a broken profile are each refused with the expected reason, and dm_pack_require exits with 78; the correct pack passes. Then the environment contract (dm_boot_env, dm_boot_game).
+// The parts a caller may supply itself (DM_ROMFS, DM_CODE) and, built with EMBED_TITLE (t_pack_embedded), a pack without a code dylib booted from the code this executable embeds.
 // Run: make -C dm/host/tests pack-check (t_pack <folder with a valid game.json> <its title id>)
 #import <Foundation/Foundation.h>
 #include <sys/wait.h>
 #include "dm.h"
 #include "dm_abi.h"
 #include "boot.h"
+
+#ifdef EMBED_TITLE   // the stamp gen_embed.py links into the per-game IPA's executable
+#define STR_(x) #x
+#define STR(x) STR_(x)
+__attribute__((used, section("__DATA,__dminfo"))) static const char embedded_stamp[] = "code_abi " STR(DM_CODE_ABI) "\ntitle " EMBED_TITLE "\nmodule main 00\n";
+#endif
 
 static char root[1024], tmp[1024], profile[1024], title[17];
 static int fails, n;
@@ -83,6 +90,7 @@ int main(int argc, char **argv) {
     snprintf(profile, sizeof profile, "%s", argv[1]); snprintf(title, sizeof title, "%s", argv[2]);
     snprintf(tmp, sizeof tmp, "%s/t_pack.%d", getenv("TMPDIR") ?: "/tmp", getpid()); snprintf(root, sizeof root, "%s/pack", tmp);
     sh("mkdir -p '%s'", tmp);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);   // the caller's shell must not supply parts
     char p[1100];
     snprintf(p, sizeof p, "%s/ok.dylib", tmp); dylib(p, DM_CODE_ABI, title);
     snprintf(p, sizeof p, "%s/abi.dylib", tmp); dylib(p, DM_CODE_ABI + 1, title);
@@ -97,9 +105,22 @@ int main(int argc, char **argv) {
     valid_pack(); sh("cp '%s/abi.dylib' '%s/code/macos.dylib'", tmp, root); expect("dylib code ABI + 1", "code/macos.dylib code ABI 2, this engine 1");
     valid_pack(); sh("cp '%s/other.dylib' '%s/code/macos.dylib'", tmp, root); expect("dylib of another title", "code/macos.dylib is for title 0100000000000000");
     valid_pack(); sh(": > '%s/code/macos.dylib'", root); expect("empty dylib", "has no __dminfo");
-    valid_pack(); sh("rm '%s/code/macos.dylib'", root); expect("no dylib", "no code/macos.dylib");
+#ifdef EMBED_TITLE
+    valid_pack(); sh("rm '%s/code/macos.dylib'", root); expect("no dylib: the code this executable embeds", NULL);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    setenv("DM_ROMFS", "/caller/romfs.dmstore", 1); dm_boot_env(root);
+    check("defaults: no DM_CODE without a dylib (the loader maps this executable)", env_is("DM_CODE", NULL), NULL);
+    unsetenv("DM_ROMFS");
+    sh("rm -rf '%s'", tmp);
+    printf("t_pack (embedded code): %d cases, %d failed\n", n, fails);
+    return fails != 0;
+#endif
+    valid_pack(); sh("rm '%s/code/macos.dylib'", root); expect("no dylib, nothing embedded", "no code/macos.dylib (this platform's part) and this executable embeds no code");
+    char other[1100]; snprintf(other, sizeof other, "%s/other.dylib", tmp);
+    valid_pack(); setenv("DM_CODE", other, 1); expect("DM_CODE set by the caller is the code checked", "other.dylib is for title 0100000000000000"); unsetenv("DM_CODE");
     valid_pack(); sh("rm -r '%s/msl/macos'", root); expect("no shaders", "no msl/macos");
     valid_pack(); sh("rm '%s/romfs.dmstore'", root); expect("no RomFS store", "no romfs.dmstore");
+    valid_pack(); sh("rm '%s/romfs.dmstore'", root); setenv("DM_ROMFS", "/caller/romfs.dmstore", 1); expect("no RomFS store, DM_ROMFS set by the caller", NULL); unsetenv("DM_ROMFS");
     valid_pack(); sh("rm '%s/manifest.json'", root); expect("no manifest", "no manifest.json");
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, "0100000000000000"); sh("cp '%s/other.dylib' '%s/code/macos.dylib'", tmp, root);
     expect("profile of another title", "profile/game.json is for title");

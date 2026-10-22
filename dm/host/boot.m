@@ -5,6 +5,8 @@
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
 #include <mach-o/loader.h>
 #include "dm.h"
 #include "dm_abi.h"
@@ -53,6 +55,16 @@ out:
     return found;
 }
 
+// The same stamp in this executable (the per-game IPA links the code in: gen_embed.py without --dylib). 1 = found
+static int embedded_info(char *out, size_t n) {
+    unsigned long z = 0;
+    const uint8_t *d = getsectiondata(&_mh_execute_header, "__DATA", "__dminfo", &z);
+    if (!d || !z) return 0;
+    if (z > n - 1) z = n - 1;
+    memcpy(out, d, z); out[z] = 0;
+    return 1;
+}
+
 static int check(NSString *r, char *why, size_t n) {
     NSData *d = [NSData dataWithContentsOfFile:[r stringByAppendingPathComponent:@"manifest.json"]];
     if (!d) return fail(why, n, "pack %s: no manifest.json, not a game pack: %s", r.UTF8String, REBUILD);
@@ -73,18 +85,25 @@ static int check(NSString *r, char *why, size_t n) {
         int v = whole(abi[@(nums[i].key)]);
         if (v != nums[i].want) return fail(why, n, "pack %s: %s %d, this engine %d: %s (%s)", id, nums[i].what, v, nums[i].want, REBUILD, nums[i].stage);
     }
-    // This platform's parts
+    // This platform's parts. The game files: the pack's chunk store, or DM_ROMFS when the caller set it (the app's Documents/romfs.dmstore, installed beside an IPA)
+    NSFileManager *fm = NSFileManager.defaultManager;
     char code[32], msl[32]; snprintf(code, sizeof code, "code/%s.dylib", PLATFORM); snprintf(msl, sizeof msl, "msl/%s", PLATFORM);
-    const char *parts[] = {"profile/game.json", code, msl, "romfs.dmstore"};
+    const char *parts[] = {"profile/game.json", msl, getenv("DM_ROMFS") ? NULL : "romfs.dmstore"};
     for (size_t i = 0; i < sizeof parts / sizeof *parts; i++)
-        if (![NSFileManager.defaultManager fileExistsAtPath:[r stringByAppendingPathComponent:@(parts[i])]]) return fail(why, n, "pack %s: no %s (this platform's part): %s", id, parts[i], REBUILD);
-    // The code dylib's own stamp: the manifest can go stale, the signed binary cannot
-    char info[1024]; int cabi = -1; char ctitle[17] = "";
-    if (!dylib_info([r stringByAppendingPathComponent:@(code)].fileSystemRepresentation, info, sizeof info))
-        return fail(why, n, "pack %s: %s has no __dminfo, not a code dylib from gen_embed.py: %s (rewrite stage)", id, code, REBUILD);
+        if (parts[i] && ![fm fileExistsAtPath:[r stringByAppendingPathComponent:@(parts[i])]]) return fail(why, n, "pack %s: no %s (this platform's part): %s", id, parts[i], REBUILD);
+    // The code and its own stamp (the manifest can go stale, the signed binary cannot): DM_CODE when the caller set it, else the pack's code/<platform>.dylib, else the code this
+    // executable embeds (a pack bundled in the per-game IPA)
+    char info[1024], cname[1100]; int cabi = -1; char ctitle[17] = "";
+    NSString *cpath = getenv("DM_CODE") ? @(getenv("DM_CODE")) : [r stringByAppendingPathComponent:@(code)];
+    snprintf(cname, sizeof cname, "%s", getenv("DM_CODE") ?: code);
+    if (getenv("DM_CODE") || [fm fileExistsAtPath:cpath]) {
+        if (!dylib_info(cpath.fileSystemRepresentation, info, sizeof info))
+            return fail(why, n, "pack %s: %s has no __dminfo, not a code dylib from gen_embed.py: %s (rewrite stage)", id, cname, REBUILD);
+    } else if (embedded_info(info, sizeof info)) snprintf(cname, sizeof cname, "the code in this executable");
+    else return fail(why, n, "pack %s: no %s (this platform's part) and this executable embeds no code: %s", id, code, REBUILD);
     for (char *l = info; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) { sscanf(l, "code_abi %d", &cabi); sscanf(l, "title %16[0-9A-Fa-f]", ctitle); }
-    if (cabi != DM_CODE_ABI) return fail(why, n, "pack %s: %s code ABI %d, this engine %d: %s (rewrite stage)", id, code, cabi, DM_CODE_ABI, REBUILD);
-    if (strcasecmp(ctitle, id)) return fail(why, n, "pack %s: %s is for title %s: %s", id, code, ctitle, REBUILD);
+    if (cabi != DM_CODE_ABI) return fail(why, n, "pack %s: %s code ABI %d, this engine %d: %s (rewrite stage)", id, cname, cabi, DM_CODE_ABI, REBUILD);
+    if (strcasecmp(ctitle, id)) return fail(why, n, "pack %s: %s is for title %s: %s", id, cname, ctitle, REBUILD);
     // The profile parses (every key checked) and is this title's
     struct dm_profile p = {0}; char pw[512];   // ponytail: the parsed strings are not freed (a few hundred bytes per check), free them if a menu ever checks packs in a loop
     if (dm_profile_parse([r stringByAppendingPathComponent:@"profile"].fileSystemRepresentation, &p, pw, sizeof pw)) return fail(why, n, "pack %s: profile: %s: %s (profile)", id, pw, REBUILD);
@@ -108,7 +127,7 @@ int dm_boot_env(const char *root) {
         NSString *code = [NSString stringWithFormat:@"code/%s.dylib", PLATFORM], *msl = [NSString stringWithFormat:@"msl/%s", PLATFORM], *pso = [NSString stringWithFormat:@"pso/%s", PLATFORM];
         static const int REQUIRED = 1, OPTIONAL = 0;
         struct { const char *env; NSString *rel; int required; const char *without; } d[] = {
-            {"DM_PROFILE_DIR", @"profile", REQUIRED, NULL}, {"DM_CODE", code, REQUIRED, NULL}, {"DM_ROMFS", @"romfs.dmstore", REQUIRED, NULL},
+            {"DM_PROFILE_DIR", @"profile", REQUIRED, NULL}, {"DM_CODE", code, OPTIONAL, "the code this executable embeds"}, {"DM_ROMFS", @"romfs.dmstore", REQUIRED, NULL},
             {"DM_NVN_SHMAP", @"profile/shader_map.tsv", REQUIRED, NULL}, {"DM_MSL_DIR", msl, REQUIRED, NULL},
             {"DM_PSO_ARCHIVE", [pso stringByAppendingPathComponent:@"pso_archive.metallib"], OPTIONAL, "pipelines compile on first use"},
             {"DM_PSO_FLEX_ARCHIVE", [pso stringByAppendingPathComponent:@"pso_flex.metallib"], OPTIONAL, "flexible pipelines compile on workers"},

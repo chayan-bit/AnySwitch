@@ -139,7 +139,8 @@ GAME=$G W=$W dm/ios/tools/build_ipa.sh [out.ipa]
 
 Notes on these steps:
 - `dmsh_build.py` compiles each shader's Metal source through a cache keyed by that source, the compile flags and the compiler (`dm/gfx/tools/dmsh_mtlcache.py`, in `<cache>/cas/metallib/`). A chain change that leaves a shader's MSL unchanged, such as a translator fix, costs that shader no Metal compile. Before building, the cache takes the libraries of the earlier `b-*/` folders beside its output (and beside `IOSOUT`), and of `DMSH_PREFILL=<Mac root>[=<iOS root>]` (several separated by `:`). It takes a folder only when its recorded flags are the current ones and a fresh compile of a few of its shaders reproduces their libraries byte for byte. The summary line `Metal cache:` shows reused, compiled and filled counts per target.
-- `build_ipa.sh` takes the rewritten modules from `$W/build/patched_<package>` and the RomFS from `$W/data/<package>/RomFS`; `PATCHED` and `ROMFS` override them. The shader libraries, the RomFS and the add-on content never go through Xcode: `pack_ipa.py` packs them into the IPA beside the app Xcode built, as `DmIOS.app/msl/b-<chain version>`, `romfs` and `aoc`.
+- `build_ipa.sh` takes the rewritten modules from `$W/build/patched_<package>` and the RomFS from `$W/data/<package>/RomFS`; `PATCHED` and `ROMFS` override them. The shader libraries, the RomFS and the add-on content never go through Xcode: `pack_ipa.py` packs them into the IPA beside the app Xcode built, as `DmIOS.app/pack/msl/ios/b-<chain version>`, `DmIOS.app/romfs` and `DmIOS.app/pack/aoc`.
+  The app's data is a game pack at `DmIOS.app/pack` (see [Game packs](#game-packs)), which the app boots like `dmhost` boots one on the Mac; its code stays in the app's executable.
 - `IPA_ROMFS=store` (the default; `1` packs the loose files into the IPA, `0` neither) packs no RomFS and builds a chunk store of it instead (`dm/tools/romstore/romstore.py`: content-defined chunks, deduplicated by SHA-256, each compressed with zstd and a trained dictionary, readable at any offset).
   Copy it to the device with `romstore.py install <store> --device <udid> --bundle <id>`; the app reads `Documents/romfs.dmstore` before `Documents/romfs`.
   On the Mac, `DM_ROMFS` may name a store file instead of a RomFS folder; `romstore.py verify <store> <RomFS>` reads every file back through the host's reader and compares it with the original.
@@ -160,23 +161,30 @@ The engine holds no game-specific code; everything that differs per game is in t
 <pack root>/
   manifest.json      title_id, the four version numbers (abi), platforms, module build ids, and the inventory's count, size and sha256 (small: the engine reads it before every boot)
   files.tsv          the inventory: path, size and sha256 of every other file (dm/tools/pack_manifest.py verify reads it)
-  profile/           game.json (the resolved dm/games profile), <module>.fixups / .gates / .cuts / .obs / .sites.tsv, shader_map.tsv, c1_full.tsv, cb_extent.tsv, pso_manifest.tsv, settings.json
+  profile/           game.json (the resolved dm/games profile), env.txt (IPA diagnostic builds, DM_ENV_FILE), <module>.fixups / .gates / .cuts / .obs / .sites.tsv, shader_map.tsv, c1_full.tsv, cb_extent.tsv, pso_manifest.tsv, settings.json
   code/              ios.dylib, macos.dylib (the rewritten modules, dm/ios/tools/gen_embed.py --dylib)
   msl/<platform>/    shader libraries (b-<chain>/...)
   pso/<platform>/    pso_archive.metallib, pso_flex.metallib (optional)
   romfs.dmstore      the game files as a chunk store
   aoc/<index>/       add-on content (optional)
   font/              shared-font stand-ins (optional)
+  meta/              icon.jpg, control.nacp (optional)
 ```
 
 `scripts/build_ipa_from_nsp.py <NSP folder> --pack [DIR]` writes a pack (default `<title ID>_build/pack`) instead of an IPA, from the same inputs; `dm/ios/tools/build_ipa.sh` does the layout when given `PACK=<new folder>`.
 Big files (shader libraries, the chunk store, add-on content) enter as APFS clones, so a pack on the build's own volume costs almost no extra disk.
 `python3 dm/tools/pack_manifest.py verify <pack>` re-reads every file against the manifest, for example after copying a pack to another machine.
+With `--mac-only` as well, the converter also writes `<title ID>_build/mac_run.json` and records the pack there (`pack`), so `scripts/compat_run.py` boots `dmhost <pack>`; a later `--mac-only` run without `--pack` rewrites the file without it.
+
+The per-game IPA bundles the same layout at `DmIOS.app/pack`, with two parts elsewhere: the code is linked into the app's executable (no `code/`), and the game files go to the app's `Documents/romfs.dmstore` (no `romfs.dmstore`; `IPA_ROMFS=1` puts loose files at `DmIOS.app/romfs`).
+Its manifest is written with `pack_manifest.py write --bundled`: platforms `ios` and no inventory, since the app's code signature seals every file it holds.
 
 ### Version contract
 
 `dm/host/dm_abi.h` holds four numbers, each bumped by hand in the commit that breaks compatibility: `DM_PACK_FORMAT` (this layout and the manifest keys), `DM_PROFILE_SCHEMA` (the keys of `game.json`), `DM_CODE_ABI` (what the rewritten code shares with the loader), `DM_SHADER_ABI` (what the host expects from the shader stages).
-`dm_pack_check` (`dm/host/boot.m`) compares the manifest's numbers with the engine's, reads the code dylib's own `__dminfo` stamp (code ABI and title id), checks that this platform's parts are present and parses the profile.
+`dm_pack_check` (`dm/host/boot.m`) compares the manifest's numbers with the engine's, reads the code's own `__dminfo` stamp (code ABI and title id), checks that this platform's parts are present and parses the profile.
+The code is `DM_CODE` when the caller set it, else the pack's `code/<platform>.dylib`, else the code the running executable embeds (the per-game IPA); with none of them the pack is refused.
+The game files are the pack's `romfs.dmstore`, or `DM_ROMFS` when the caller set it (the iOS app sets it to the store or folder it finds in `Documents`).
 It has no side effects, so a menu can call it for every pack.
 A refused pack does not boot: `dmhost` prints a `[RED]` line that names the mismatch and the stage to re-run, and exits with code 78.
 
@@ -188,8 +196,8 @@ A refused pack does not boot: `dmhost` prints a `[RED]` line that names the mism
 | Variable | Default from the pack | Absent |
 | --- | --- | --- |
 | `DM_PROFILE_DIR` | `<root>/profile` (also where the rewriter tables are read) | refused by the check |
-| `DM_CODE` | `<root>/code/<platform>.dylib` | refused by the check |
-| `DM_ROMFS` | `<root>/romfs.dmstore` | refused by the check |
+| `DM_CODE` | `<root>/code/<platform>.dylib` | logged; the code the executable embeds, else refused by the check |
+| `DM_ROMFS` | `<root>/romfs.dmstore` | refused by the check unless the caller set it |
 | `DM_NVN_SHMAP` | `<root>/profile/shader_map.tsv` | |
 | `DM_MSL_DIR` | `<root>/msl/<platform>` | refused by the check |
 | `DM_PSO_ARCHIVE` | `<root>/pso/<platform>/pso_archive.metallib` | logged; pipelines compile on first use |
