@@ -4,10 +4,11 @@
 # Prerequisites: the rewriter (patched directory) and the iOS shader build (IOSOUT) have been run as in the README; Xcode and xcodegen are installed.
 # Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden
 #   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
-#   IPA_ROMFS=0 leaves the RomFS out of the IPA (it is still read for the control data and the icon): the app then needs it at Documents/romfs (main.m looks there first, then at DmIOS.app/romfs), for a build that updates an install which already has the game files
-#   IPA_ROMFS=store leaves it out too and builds a chunk store of it (dm/tools/romstore/romstore.py: deduplicated, compressed, random access) at ROMSTORE (default $W/build/romfs.dmstore;
+#   IPA_ROMFS=store (the default) leaves the RomFS out of the IPA and builds a chunk store of it (dm/tools/romstore/romstore.py: deduplicated, compressed, random access, about 46% of the loose size) at ROMSTORE (default $W/build/romfs.dmstore;
 #   an existing one is reused, ROMSTORE_REBUILD=1 rebuilds it, ROMSTORE_TRACE = DM_FSLOG files separated by ':' order it by first read); install it with
 #   romstore.py install, and the app reads Documents/romfs.dmstore before Documents/romfs
+#   IPA_ROMFS=1 packs the loose RomFS files into the IPA (DmIOS.app/romfs): one self-contained IPA that needs no extra copy, the way builds worked before the store became the default
+#   IPA_ROMFS=0 leaves the RomFS out and builds no store (it is still read for the control data and the icon): the app then needs it at Documents/romfs (main.m looks there first, then at DmIOS.app/romfs), for a build that updates an install which already has the game files
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the app version is the display version in the packed game's control data (the one next to the RomFS:
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.anyswitch.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
 #   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
@@ -16,6 +17,8 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 IOS=$PWD; DM=$(cd .. && pwd)
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
+ROMFS_MODE=${IPA_ROMFS:-store}   # store (default): a chunk store beside the IPA; 1: loose files in the IPA; 0: none
+case $ROMFS_MODE in store|1|0) ;; *) die "IPA_ROMFS must be store, 1 or 0, not $ROMFS_MODE" ;; esac
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
 export GAME; GD=$(python3 "$DM/games/game.py" dir "$GAME") || die "no game profile $GAME"   # dm/games/<id>, or a profile in DM_GAMES_DIR (the NSP script's provisional one); the make that gen_build.py runs uses the same GAME
 gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }   # read a key of the game profile
@@ -92,7 +95,7 @@ elif [ "$GFXAPI" = nvn ] && [ ${#HV[@]} -gt 0 ]; then
 else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pipeline archive, pipelines compile on first use"; fi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
-# accelerator rules and the same-variation table, then the interface pairs. PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
+# accelerator rules and the same-variation table, then the interface pairs. Built by default (the app's Flexible pipelines setting is on by default and uses it); PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
 # app ships, so it is built from the packed libraries once those are packed. The cap holds for all the architectures above (measured on a one-architecture build), so every
 # architecture fewer fits that many more pipelines
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
@@ -165,7 +168,7 @@ if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pac
   [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-if [ "${IPA_ROMFS:-1}" = store ]; then
+if [ "$ROMFS_MODE" = store ]; then
   ROMSTORE=${ROMSTORE:-$W/build/romfs.dmstore}
   if [ -f "$ROMSTORE" ] && [ "${ROMSTORE_REBUILD:-0}" != 1 ]; then t "chunk store: reusing $ROMSTORE (ROMSTORE_REBUILD=1 rebuilds it)"
   else
@@ -175,7 +178,7 @@ if [ "${IPA_ROMFS:-1}" = store ]; then
     if python3 -c 'import zstandard' 2> /dev/null; then "${RC[@]}"; else nix-shell -p 'python3.withPackages(ps:[ps.zstandard])' --run "$(printf '%q ' "${RC[@]}")"; fi || die "romstore.py build"
   fi
   t "RomFS not packed (IPA_ROMFS=store): after installing the app, copy the store with: python3 $DM/tools/romstore/romstore.py install $ROMSTORE --device <udid> --bundle $DM_BUNDLE_ID"
-elif [ "${IPA_ROMFS:-1}" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
+elif [ "$ROMFS_MODE" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"
 python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

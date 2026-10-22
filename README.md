@@ -173,6 +173,8 @@ The first build takes 30 to 60 minutes, later ones about 10.
 All options with examples: [docs/development.md](docs/development.md#the-packing-script-in-detail).
 
 **5. Install the IPA** with your sideloading tool.
+By default the build packs the game files into a compressed chunk store next to the IPA instead of into the IPA (about 46% of their size); the script prints the command that copies it to the device once, after the app is installed.
+`IPA_ROMFS=1 python3 scripts/build_ipa_from_nsp.py ...` packs the files into the IPA instead, one self-contained file that needs no copy.
 The app gets the game's name, icon and version (the update's version when there is an update, else the base game's).
 It runs on iPad and iPhone alike.
 With a free Apple ID the signature lasts seven days, and the app has to be installed again after that.

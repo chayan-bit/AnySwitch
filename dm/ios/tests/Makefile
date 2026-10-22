@@ -7,6 +7,7 @@ run: t_settings t_haptics
 	./t_settings
 	./t_haptics
 	python3 -I test_device_gpu.py   # tools/device_gpu.py chip IDs -> GPU architectures and the fallback
+	python3 -I test_build_defaults.py   # tools/build_ipa.sh: chunk store by default, flexible pipeline archive on by default
 clean:
 	rm -rf t_settings t_settings.dSYM t_haptics t_haptics.dSYM
 .PHONY: run clean

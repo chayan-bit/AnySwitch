@@ -84,7 +84,9 @@ When the output goes to a file or a pipe, the script prints a plain line instead
 Everything it writes stays in the NSP folder: intermediate files and logs in `<id>_build/`, the IPA next to the NSPs. The extracted game files stay in `<id>_build/extract/` for the next build; `--no-keep-extracted` (`KEEP_EXTRACTED = False` in Spyder) deletes them at the end. It exits with 0 when done and 1 on an error. The app's bundle ID is `org.anyswitch.<base game title ID>` (for example `org.anyswitch.0100a6301214e000`), and its version is the game's display version: the update's when an update is packed, else the base game's (Engage 2.0.0); `--app-name` / `--bundle-id` (or `APP_NAME` / `BUNDLE_ID` in Spyder) override the name and ID.
 
 On the device, environment switches go in `Documents/env.txt` (one `KEY=VALUE` per line), and game files are also accepted at `Documents/romfs`.
-`IPA_ROMFS=0` in the environment of `build_ipa.sh` leaves the RomFS out of the IPA, which suits an update of an install that already has it in `Documents/romfs` (the app looks there first).
+`build_ipa.sh` leaves the RomFS out of the IPA by default and builds a chunk store of it instead (`IPA_ROMFS=store`, see "Notes on these steps" below): copy `romfs.dmstore` to the device once with `dm/tools/romstore/romstore.py install`, and the app reads it at `Documents/romfs.dmstore`.
+`IPA_ROMFS=1` in the environment packs the loose RomFS files into the IPA instead (one self-contained IPA, which is what a plain sideload needs).
+`IPA_ROMFS=0` leaves the RomFS out and builds no store, which suits an update of an install that already has it in `Documents/romfs` (the app looks there first).
 
 ## Port another game
 
@@ -134,7 +136,7 @@ GAME=$G W=$W dm/ios/tools/build_ipa.sh [out.ipa]
 Notes on these steps:
 - `dmsh_build.py` compiles each shader's Metal source through a cache keyed by that source, the compile flags and the compiler (`dm/gfx/tools/dmsh_mtlcache.py`, in `<cache>/cas/metallib/`). A chain change that leaves a shader's MSL unchanged, such as a translator fix, costs that shader no Metal compile. Before building, the cache takes the libraries of the earlier `b-*/` folders beside its output (and beside `IOSOUT`), and of `DMSH_PREFILL=<Mac root>[=<iOS root>]` (several separated by `:`). It takes a folder only when its recorded flags are the current ones and a fresh compile of a few of its shaders reproduces their libraries byte for byte. The summary line `Metal cache:` shows reused, compiled and filled counts per target.
 - `build_ipa.sh` takes the rewritten modules from `$W/build/patched_<package>` and the RomFS from `$W/data/<package>/RomFS`; `PATCHED` and `ROMFS` override them. The shader libraries, the RomFS and the add-on content never go through Xcode: `pack_ipa.py` packs them into the IPA beside the app Xcode built, as `DmIOS.app/msl/b-<chain version>`, `romfs` and `aoc`.
-- `IPA_ROMFS=store` packs no RomFS and builds a chunk store of it instead (`dm/tools/romstore/romstore.py`: content-defined chunks, deduplicated by SHA-256, each compressed with zstd and a trained dictionary, readable at any offset).
+- `IPA_ROMFS=store` (the default; `1` packs the loose files into the IPA, `0` neither) packs no RomFS and builds a chunk store of it instead (`dm/tools/romstore/romstore.py`: content-defined chunks, deduplicated by SHA-256, each compressed with zstd and a trained dictionary, readable at any offset).
   Copy it to the device with `romstore.py install <store> --device <udid> --bundle <id>`; the app reads `Documents/romfs.dmstore` before `Documents/romfs`.
   On the Mac, `DM_ROMFS` may name a store file instead of a RomFS folder; `romstore.py verify <store> <RomFS>` reads every file back through the host's reader and compares it with the original.
   `DM_ROMSTORE_CACHE_MB` (default 16) sizes the reader's cache of decompressed chunks.
