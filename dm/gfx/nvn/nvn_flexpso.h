@@ -18,9 +18,12 @@ void flexpso_specialize(MTL4RenderPipelineDescriptor *s, MTLRenderPipelineDescri
 // Render thread, never blocks (beyond DM_PSO_FLEX_WAIT_US). Returns the pipeline once a worker made it (once: the caller caches it). Otherwise starts it the first time it is asked for
 // (mk builds the classic descriptor, only then) and returns nil with *pending = 1: skip the draw. nil with *pending = 0: the flexible path could not make it, make it as before
 id<MTLRenderPipelineState> flexpso_get(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int *pending);
+// Ahead of the draw, any thread: starts the pipeline if it is new and returns at once; the finished pipeline waits for the draw's flexpso_get. soon: the draw is in the submission
+// being replayed (user-initiated work), else a guess made at record time (utility)
+void flexpso_kick(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int soon);
 // Blocking: unspecialized pipeline (archive, else compiled; cached by ukey) then specialized. For the warm-up thread and tools, never the render thread
 id<MTLRenderPipelineState> flexpso_make(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, NSError **err);
 // Cumulative counts and a log line ("flexible pipelines: ...") with the archive coverage of the pipelines asked for so far
-typedef struct { uint64_t asked, archive_hit, archive_miss, compiled, specialized, failed, skipped; double spec_ms, spec_worst_ms; } flexpso_counts;
+typedef struct { uint64_t asked, kicked, ready, archive_hit, archive_miss, compiled, specialized, failed, skipped; double spec_ms, spec_worst_ms; } flexpso_counts;
 flexpso_counts flexpso_stats(void);
 void flexpso_log(void);

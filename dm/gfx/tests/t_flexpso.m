@@ -89,11 +89,20 @@ int main(void) { @autoreleasepool {
     CHECK(c.compiled == 1 && c.specialized == 2, "one unspecialized pipeline for both colour states: compiled %llu, specialized %llu", c.compiled, c.specialized);
     CHECK(c.skipped >= 1, "no ask was answered pending");
     CHECK(worst < 5, "an ask took %.2f ms: the render thread waited", worst);
+    // A kick ahead of the draw: once its worker is done, the draw's first ask takes it without a skip
+    {
+        MTLRenderPipelineDescriptor *d = desc(1, MTLPixelFormatRGBA8Unorm, "fs"); long k = 3, u = 8; int pending = 0;
+        flexpso_kick(&k, &u, lib, lib, "kick", ^{ return d; }, 0);
+        for (int i = 0; flexpso_stats().specialized < c.specialized + 1; i++) { CHECK(i < 20000, "the kicked pipeline never became ready"); usleep(500); }
+        id<MTLRenderPipelineState> ps = flexpso_get(&k, &u, lib, lib, "kick", ^{ return d; }, &pending);
+        flexpso_counts c2 = flexpso_stats();
+        CHECK(ps && c2.kicked == 1 && c2.ready == 1 && c2.skipped == c.skipped, "kicked pipeline: got %p, kicked %llu, ready %llu, skipped %llu -> %llu", (__bridge void *)ps, c2.kicked, c2.ready, c.skipped, c2.skipped);
+    }
     // A function the descriptor names is not in the library: failure, not pending forever
     id<MTLLibrary> other = [dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 lone() { return 1; }\n" options:nil error:&e];
     MTLRenderPipelineDescriptor *bad = desc(0, MTLPixelFormatRGBA8Unorm, "fs"); bad.fragmentFunction = [other newFunctionWithName:@"lone"];
     CHECK(!get(9, 9, bad, &asks, &worst), "a pipeline with a function outside its library was made");
     flexpso_log();
-    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, failure reported\n", worst);
+    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, kicked pipeline ready at its first draw, failure reported\n", worst);
     return 0;
 }}

@@ -766,6 +766,17 @@ NVN(nvnCommandBufferUpdateUniformBuffer, void, NVNcommandBuffer *c, NVNbufferAdd
 }
 
 // ---------- Render commands: parameters are recorded into command memory in the payload format of nvn_obj.h; for replay see nvn_mtl.m ----------
+// Record-time kick (nvn_obj.h rk_state): each recording thread follows the binds of its command buffer; a draw after a change hands the state to mtl_rec_draw
+// The state carries over from one command buffer to the next as the replay's does within a submission. Games often set render targets on one thread and record draws on others: a thread
+// that never set render targets takes the last ones any thread set (a guess; a wrong one costs a specialization)
+static __thread rk_state t_rk; static __thread int t_rk_dirty, t_rk_has_rt;
+static pthread_mutex_t g_rk_mu = PTHREAD_MUTEX_INITIALIZER; static uint32_t g_rk_rt[10];
+static void rk_set(void *dst, const void *src, size_t n) { if (memcmp(dst, src, n)) { memcpy(dst, src, n); t_rk_dirty = 1; } }   // dst: a field of t_rk
+static void rk_draw(void) {
+    if (!g_mtl_rk_on) return;
+    if (!t_rk_has_rt) { uint32_t f[10]; pthread_mutex_lock(&g_rk_mu); memcpy(f, g_rk_rt, sizeof f); pthread_mutex_unlock(&g_rk_mu); rk_set(t_rk.cfmt, f, sizeof f); }
+    if (t_rk_dirty) { t_rk_dirty = 0; mtl_rec_draw(&t_rk); }
+}
 static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload) {
     uint32_t sz = (uint32_t)((8 + payload + 7) & ~(size_t)7);
     uint8_t *p = cmd_alloc(CB(c), sz); put_hdr(p, op, sz);
@@ -777,8 +788,8 @@ static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload) {
 // while there are usually only 1–2 in practice), and the empty tail took 40–50% of the command bytes per frame; the advanced stats page of the level 88 sorceress recorded 12.5 MB per frame, using up the game's own command memory pool (about 105 segments x 128 KB per frame)
 #define RECN(c, OP, T, ARR, N) ((T *)rec((c), (OP), offsetof(T, ARR) + sizeof(((T *)0)->ARR[0]) * (size_t)(N)))
 // Draws carry the indirect / multi-draw fields (ind onwards) only when they use them: a plain indexed draw record is 0x28 bytes instead of 0x40 (nvn_obj.h draw_rec)
-static void rec_draw(NVNcommandBuffer *c, p_draw d) { size_t n = d.ind || d.mdi_cnt ? sizeof d : offsetof(p_draw, ind); memcpy(rec(c, OP_DRAW, n), &d, n); }
-static void rec_draw_idx(NVNcommandBuffer *c, p_draw_idx d) { size_t n = d.ind || d.mdi_cnt ? sizeof d : offsetof(p_draw_idx, ind); memcpy(rec(c, OP_DRAW_IDX, n), &d, n); }
+static void rec_draw(NVNcommandBuffer *c, p_draw d) { rk_draw(); size_t n = d.ind || d.mdi_cnt ? sizeof d : offsetof(p_draw, ind); memcpy(rec(c, OP_DRAW, n), &d, n); }
+static void rec_draw_idx(NVNcommandBuffer *c, p_draw_idx d) { rk_draw(); size_t n = d.ind || d.mdi_cnt ? sizeof d : offsetof(p_draw_idx, ind); memcpy(rec(c, OP_DRAW_IDX, n), &d, n); }
 static void copy_view(view_t *dst, uint8_t *has, const NVNtextureView *v) { *has = v != NULL; if (v) *dst = *(const view_t *)v; }
 // Records with textures snapshot the texture objects (0x80 bytes each, after the record struct) and replay reads the snapshots: an NVN command no longer depends on the API object once recorded, and the game may finalize, free or reuse it before submitting.
 // Unity (Engage) does so when it changes scenes; only the object pointer used to be recorded, and replay read other data (a texture 1869367126 high, a Metal assertion abort).
@@ -807,6 +818,13 @@ NVN(nvnCommandBufferSetRenderTargets, void, NVNcommandBuffer *c, int n, const NV
     p_set_rt *r = REC_SNAP(c, OP_SET_RT, p_set_rt, n + 1); r->n = n;
     for (int i = 0; i < n; i++) { r->color[i] = ct ? tex_snap(r, SNAP_OFF(p_set_rt), i, ct[i], (uint64_t)__builtin_return_address(0)) : NULL; copy_view(&r->cview[i], &r->has_cview[i], cv ? cv[i] : NULL); }
     r->depth = tex_snap(r, SNAP_OFF(p_set_rt), n, dt, (uint64_t)__builtin_return_address(0)); copy_view(&r->dview, &r->has_dview, dv);
+    if (g_mtl_rk_on) {
+        uint32_t f[10] = {0};   // 8 colour formats, depth, samples
+        for (int i = 0; i < n; i++) if (r->color[i] && !(r->color[i]->d.format >= 0x41 && r->color[i]->d.format <= 0x50)) { f[i] = (uint32_t)(r->has_cview[i] && r->cview[i].set_format ? r->cview[i].format : r->color[i]->d.format); f[9] = (uint32_t)r->color[i]->d.samples; }
+        if (r->depth) { f[8] = (uint32_t)r->depth->d.format; f[9] = (uint32_t)r->depth->d.samples; }
+        rk_set(t_rk.cfmt, f, sizeof f); t_rk_has_rt = 1;
+        pthread_mutex_lock(&g_rk_mu); memcpy(g_rk_rt, f, sizeof f); pthread_mutex_unlock(&g_rk_mu);
+    }
 }
 NVN(nvnCommandBufferClearColor, void, NVNcommandBuffer *c, int index, const float *rgba, int mask) {
     p_clear_color *r = REC(c, OP_CLEAR_COLOR, p_clear_color); r->index = index; r->mask = mask; memcpy(r->rgba, rgba, 16);
@@ -823,8 +841,15 @@ NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, 
 NVN(nvnCommandBufferSetDepthRange, void, NVNcommandBuffer *c, float n, float f) { *REC(c, OP_DEPTH_RANGE, p_depth_range) = (p_depth_range){n, f}; }
 NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p, int stages) {
     *REC(c, OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){(const prog_t *)p, stages};
+    if (g_mtl_rk_on) for (int st = 0; st < 2; st++) if (stages >> st & 1) { const prog_t *q = (const prog_t *)p; uint64_t s = q ? q->serial : 0; rk_set(&t_rk.prog[st], &q, sizeof q); rk_set(&t_rk.ser[st], &s, sizeof s); }
 }
-static void bind_state(NVNcommandBuffer *c, int kind, const void *st, size_t n) { p_bind_state *r = REC(c, OP_BIND_STATE, p_bind_state); r->kind = kind; memcpy(r->bytes, st, n); }
+static void bind_state(NVNcommandBuffer *c, int kind, const void *st, size_t n) {
+    p_bind_state *r = REC(c, OP_BIND_STATE, p_bind_state); r->kind = kind; memcpy(r->bytes, st, n);
+    if (!g_mtl_rk_on) return;
+    blend_st bs; if (kind == 0) memcpy(&bs, st, sizeof bs);
+    void *dst = kind == 0 ? (void *)&t_rk.blend[bs.target] : kind == 1 ? (void *)&t_rk.color : kind == 2 ? (void *)&t_rk.chmask : kind == 3 ? (void *)&t_rk.ms : NULL;
+    if (dst) rk_set(dst, st, n);
+}
 NVN(nvnCommandBufferBindBlendState, void, NVNcommandBuffer *c, const NVNblendState *st) { bind_state(c, 0, st, sizeof(blend_st)); }
 NVN(nvnCommandBufferBindColorState, void, NVNcommandBuffer *c, const NVNcolorState *st) { bind_state(c, 1, st, sizeof(color_st)); }
 NVN(nvnCommandBufferBindChannelMaskState, void, NVNcommandBuffer *c, const NVNchannelMaskState *st) { bind_state(c, 2, st, sizeof(chmask_st)); }
@@ -834,10 +859,12 @@ NVN(nvnCommandBufferBindDepthStencilState, void, NVNcommandBuffer *c, const NVNd
 NVN(nvnCommandBufferBindVertexAttribState, void, NVNcommandBuffer *c, int n, const NVNvertexAttribState *st) {
     if (n < 0 || n > 16) { LOG("[RED] BindVertexAttribState n=%d", n); return; }
     p_bind_vattr *r = RECN(c, OP_BIND_VATTR, p_bind_vattr, st, n); r->first = 0; r->n = n; memcpy(r->st, st, 4 * n);
+    if (g_mtl_rk_on) { va_st a[16] = {{0}}; uint32_t nn = (uint32_t)n; memcpy(a, st, 4 * n); rk_set(&t_rk.nattr, &nn, 4); rk_set(t_rk.attr, a, sizeof a); }
 }
 NVN(nvnCommandBufferBindVertexStreamState, void, NVNcommandBuffer *c, int n, const NVNvertexStreamState *st) {
     if (n < 0 || n > 16) { LOG("[RED] BindVertexStreamState n=%d", n); return; }
     p_bind_vstream *r = RECN(c, OP_BIND_VSTREAM, p_bind_vstream, st, n); r->first = 0; r->n = n; memcpy(r->st, st, 8 * n);
+    if (g_mtl_rk_on) { vs_st a[16] = {{0}}; uint32_t nn = (uint32_t)n; memcpy(a, st, 8 * n); rk_set(&t_rk.nstream, &nn, 4); rk_set(t_rk.stream, a, sizeof a); }
 }
 NVN(nvnCommandBufferBindVertexBuffers, void, NVNcommandBuffer *c, int first, int n, const NVNbufferRange *rg) {
     if (n < 0 || first + n > 16) { LOG("[RED] BindVertexBuffers first=%d n=%d", first, n); return; }

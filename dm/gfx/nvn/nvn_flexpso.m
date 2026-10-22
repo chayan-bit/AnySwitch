@@ -12,7 +12,7 @@
 #define FLOG(...) do { fprintf(stderr, "[dm] [pso-flex] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 enum { MISS_LOG_ALL = 32 };   // archive misses logged one by one, then every 100th
 
-@interface FlexEntry : NSObject { @public id<MTLRenderPipelineState> ps; int done; } @end
+@interface FlexEntry : NSObject { @public id<MTLRenderPipelineState> ps; int done, kicked; } @end   // kicked: started ahead of the draw (flexpso_get with pending NULL)
 @implementation FlexEntry @end
 
 static id<MTLDevice> g_dev;
@@ -23,7 +23,7 @@ static dispatch_group_t g_open;   // the archive opens on a worker (about 3 ms p
 static int g_on; static long g_wait_us;
 static nvn_hmap g_req, g_base;   // values: retained FlexEntry
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-static _Atomic uint64_t g_asked, g_hit, g_miss, g_compiled, g_spec, g_failed, g_skipped, g_spec_ns, g_spec_worst_ns;
+static _Atomic uint64_t g_asked, g_kicked, g_ready, g_kick_late, g_hit, g_miss, g_compiled, g_spec, g_failed, g_skipped, g_spec_ns, g_spec_worst_ns;   // kicked: started ahead of the draw; ready: render asks that found it made
 
 static uint64_t now_ns_(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
@@ -125,20 +125,27 @@ static id<MTLRenderPipelineState> take_done(const void *key, FlexEntry *r, int *
     *pending = 0; return ps;
 }
 
-id<MTLRenderPipelineState> flexpso_get(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int *pending) {
+// pending NULL: a kick (no wait, no skip counted, a finished pipeline stays for the draw), its work at qos
+// slot: a far kick's claim on g_far, given back when its work ends
+static _Atomic int g_far; static int g_far_max = -1; static _Atomic uint64_t g_far_dropped;
+static id<MTLRenderPipelineState> ask(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int *pending, qos_class_t qos, _Atomic int *slot) {
     pthread_mutex_lock(&g_mu);
     FlexEntry *r = (__bridge FlexEntry *)nvn_hm_get(&g_req, key);
-    if (r && r->done) { id ps = take_done(key, r, pending); pthread_mutex_unlock(&g_mu); return ps; }
+    if (!pending && r) { pthread_mutex_unlock(&g_mu); if (slot) atomic_fetch_sub(slot, 1); return nil; }   // kick: already asked for
+    if (r && r->done) { int k = r->kicked; id ps = take_done(key, r, pending); pthread_mutex_unlock(&g_mu); if (k) atomic_fetch_add(&g_ready, 1); return ps; }
+    if (r && pending && r->kicked == 1) { r->kicked = 2; atomic_fetch_add(&g_kick_late, 1); }   // kicked, the draw came first
     if (!r) {
-        r = [FlexEntry new]; nvn_hm_put(&g_req, key, (void *)CFBridgingRetain(r));
+        r = [FlexEntry new]; r->kicked = !pending; nvn_hm_put(&g_req, key, (void *)CFBridgingRetain(r));
         pthread_mutex_unlock(&g_mu);
-        atomic_fetch_add(&g_asked, 1);
+        atomic_fetch_add(pending ? &g_asked : &g_kicked, 1);
         MTLRenderPipelineDescriptor *d = mk();
         NSData *uk = [NSData dataWithBytes:ukey length:g_base.klen]; NSString *lb = @(label ? label : "-"); FlexEntry *req = r;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dispatch_async(dispatch_get_global_queue(qos, 0), ^{
             NSError *e = nil; id<MTLRenderPipelineState> ps = flexpso_make(uk.bytes, d, vlib, flib, lb.UTF8String, &e);
             pthread_mutex_lock(&g_mu); req->ps = ps; req->done = 1; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
+            if (slot) atomic_fetch_sub(slot, 1);
         });
+        if (!pending) return nil;
         pthread_mutex_lock(&g_mu);
     }
     if (g_wait_us) {   // DM_PSO_FLEX_WAIT_US: bounded wait (or, -1, until ready)
@@ -152,16 +159,28 @@ id<MTLRenderPipelineState> flexpso_get(const void *key, const void *ukey, id<MTL
     *pending = 1; return nil;
 }
 
+id<MTLRenderPipelineState> flexpso_get(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int *pending) {
+    return ask(key, ukey, vlib, flib, label, mk, pending, QOS_CLASS_USER_INITIATED, NULL);
+}
+void flexpso_kick(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int soon) {
+    if (soon) { ask(key, ukey, vlib, flib, label, mk, NULL, QOS_CLASS_USER_INITIATED, NULL); return; }
+    // A far guess yields to what a draw waits for: utility QoS, and at most DM_PSO_KICK_MAX (default 1) in flight, the rest dropped, since Metal's compiler serves
+    // every compile in turn and a backlog of guesses delays the draws' own
+    if (g_far_max < 0) { const char *m = getenv("DM_PSO_KICK_MAX"); g_far_max = m ? atoi(m) : 1; }
+    if (atomic_fetch_add(&g_far, 1) >= g_far_max) { atomic_fetch_sub(&g_far, 1); atomic_fetch_add(&g_far_dropped, 1); return; }
+    ask(key, ukey, vlib, flib, label, mk, NULL, QOS_CLASS_UTILITY, &g_far);
+}
+
 flexpso_counts flexpso_stats(void) {
-    return (flexpso_counts){g_asked, g_hit, g_miss, g_compiled, g_spec, g_failed, g_skipped, g_spec_ns / 1e6, g_spec_worst_ns / 1e6};
+    return (flexpso_counts){g_asked, g_kicked, g_ready, g_hit, g_miss, g_compiled, g_spec, g_failed, g_skipped, g_spec_ns / 1e6, g_spec_worst_ns / 1e6};
 }
 
 void flexpso_log(void) {
     if (!g_on) return;
     flexpso_counts c = flexpso_stats();
-    static uint64_t said = ~0ull; if (c.asked + c.specialized == said) return; said = c.asked + c.specialized;
+    static uint64_t said = ~0ull; if (c.asked + c.kicked + c.specialized + c.skipped == said) return; said = c.asked + c.kicked + c.specialized + c.skipped;
     uint64_t looked = c.archive_hit + c.archive_miss;
-    FLOG("asked %llu, archive %llu hits / %llu misses (coverage %.1f%%), compiled %llu, specialized %llu (%.3f ms each, worst %.1f ms), failed %llu, draws skipped %llu",
-         (unsigned long long)c.asked, (unsigned long long)c.archive_hit, (unsigned long long)c.archive_miss, looked ? 100.0 * c.archive_hit / looked : 0.0, (unsigned long long)c.compiled,
+    FLOG("asked at the draw %llu, kicked ahead %llu (ready at their first draw %llu, still in progress %llu; guesses dropped %llu), archive %llu hits / %llu misses (coverage %.1f%%), compiled %llu, specialized %llu (%.3f ms each, worst %.1f ms), failed %llu, draws skipped %llu",
+         (unsigned long long)c.asked, (unsigned long long)c.kicked, (unsigned long long)c.ready, (unsigned long long)g_kick_late, (unsigned long long)g_far_dropped, (unsigned long long)c.archive_hit, (unsigned long long)c.archive_miss, looked ? 100.0 * c.archive_hit / looked : 0.0, (unsigned long long)c.compiled,
          (unsigned long long)c.specialized, c.specialized ? c.spec_ms / c.specialized : 0.0, c.spec_worst_ms, (unsigned long long)c.failed, (unsigned long long)c.skipped);
 }
