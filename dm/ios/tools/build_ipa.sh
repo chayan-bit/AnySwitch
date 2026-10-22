@@ -36,7 +36,8 @@ NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control
 [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
 VNACP=$(dirname "$ROMFS")/control.nacp; [ -f "$VNACP" ] || VNACP=$W/data/v0/control.nacp
 [ -n "${DM_APP_VERSION:-}" ] || DM_APP_VERSION=$(python3 "$DM/tools/nacp.py" --version "$VNACP") || { t "no display version in $VNACP: the app version is 1.0"; DM_APP_VERSION=1.0; }
-export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.anyswitch.$(echo "$GAME" | tr 'A-Z' 'a-z')} DM_DISPLAY_NAME DM_APP_VERSION DM_APP_CATEGORY=$(gp app_category) DM_TEAM_ID=${DM_TEAM_ID:-0000000000}   # placeholder identity: unsigned, the install tool replaces it
+DM_APP_CATEGORY=$(gp app_category) || exit 1
+export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.anyswitch.$(echo "$GAME" | tr 'A-Z' 'a-z')} DM_DISPLAY_NAME DM_APP_VERSION DM_APP_CATEGORY DM_TEAM_ID=${DM_TEAM_ID:-0000000000}   # placeholder identity: unsigned, the install tool replaces it
 if [ "${DM_SHOW_FPS:-0}" = 1 ]; then export DM_SHOW_FPS=YES; else export DM_SHOW_FPS=NO; fi
 export DM_LETTERBOX=${DM_LETTERBOX:-ambient} DM_CONTROLS_LAYOUT=${DM_CONTROLS_LAYOUT:-auto} DM_CONTROLS_SCALE=${DM_CONTROLS_SCALE:-1}   # Info.plist DMLetterbox / DMControlsLayout / DMControlsScale (front_ios.m); the app's Documents/env.txt overrides them
 for f in $MODS; do [ -f "$PATCHED/$f.patched.bin" ] && [ -f "$PATCHED/$f.fixups.tsv" ] || die "no rewritten module $PATCHED/$f (run dm/tools/patch_nso.py first)"; done
@@ -44,9 +45,9 @@ for f in $MODS; do [ -f "$PATCHED/$f.patched.bin" ] && [ -f "$PATCHED/$f.fixups.
 V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$GD/dmsh_chain.h")
 # A Vulkan game (Hades): the shaders are the game's SPIR-V, translated by dm/gfx/tools/vk_shaders.py into $MSL_IOS/vk; there are no NVN chain libraries. GFXAPI=nvn / vulkan says which
 # (the NSP script passes what main imports); without it, the shader libraries in $MSL_IOS tell: the chain's b-$V, else vk
-if [ -z "${GFXAPI:-}" ]; then if ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$'; then GFXAPI=nvn; elif [ -f "$MSL_IOS/vk/vk_shaders.metallib" ]; then GFXAPI=vulkan; else GFXAPI=nvn; fi; fi
+if [ -z "${GFXAPI:-}" ]; then if compgen -G "$MSL_IOS/b-$V/*_b.metallib" > /dev/null; then GFXAPI=nvn; elif [ -f "$MSL_IOS/vk/vk_shaders.metallib" ]; then GFXAPI=vulkan; else GFXAPI=nvn; fi; fi
 if [ "$GFXAPI" = vulkan ]; then [ -f "$MSL_IOS/vk/vk_shaders.metallib" ] || die "no iOS Vulkan shader library $MSL_IOS/vk (dm/gfx/tools/vk_shaders.py \"$ROMFS\" <Mac dir> --ios \"$MSL_IOS\")"
-else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"; fi
+else [ -n "$V" ] && compgen -G "$MSL_IOS/b-$V/*_b.metallib" > /dev/null || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"; fi
 # Shader packs (dm/gfx/README.md, "Shader packs"): once dm/gfx/tools/dmsh_pack.py has packed the iOS libraries into $MSL_IOS/b-$V/pack, the app ships the packs instead of the loose
 # <key>_b.metallib / .json they hold; SHADER_PACKS=0 ships the loose libraries. Pipelines replayed on this Mac for the archive must use the Mac packs then ($MSL_MAC/b-$V/pack, same --per-pack)
 PACKS=0; if [ "$GFXAPI" = nvn ] && [ "${SHADER_PACKS:-1}" != 0 ] && [ -f "$MSL_IOS/b-$V/pack/index.tsv" ]; then PACKS=1; fi
