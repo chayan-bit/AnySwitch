@@ -1,13 +1,15 @@
 // nvn_flexpso.m: a flexible pipeline (Metal 4 compiler, colour state specialized later) draws the same pixels as the classic pipeline of the same descriptor, in a Metal 4 render
 // encoder as the runtime uses, with blending, a partial write mask, a second colour target and depth; the render thread never waits; one unspecialized pipeline serves every
 // colour state; a pipeline the flexible path cannot make reports failure instead of pending forever. Render-target history (nvn_rthist.h): a draw may be skipped only when every target of
-// its pass was also rendered the previous frame; any other draw waits for its pipeline, counted apart from the skips
+// its pass was also rendered the previous frame; any other draw waits for its pipeline, counted apart from the skips. Background slots (nvn_bgq.h): hundreds of queued warm-up jobs keep
+// their slot limit and leave the process's GCD workers free, so a pipeline job on a global queue starts at once
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include "../nvn/nvn_flexpso.h"
 #include "../nvn/nvn_rthist.h"
+#include "../nvn/nvn_bgq.h"
 
 #define CHECK(c, ...) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); exit(1); } } while (0)
 static const char *SRC =
@@ -16,9 +18,30 @@ static const char *SRC =
     "struct I { float2 p [[attribute(0)]]; float4 c [[attribute(1)]]; };\n"
     "struct O { float4 c0 [[color(0)]]; float4 c1 [[color(1)]]; };\n"
     "vertex V vs(I i [[stage_in]]) { V o; o.p = float4(i.p, 0.5, 1); o.c = i.c; return o; }\n"
-    "fragment O fs(V i [[stage_in]]) { return {i.c, i.c.bgra}; }\n";
+    "fragment O fs(V i [[stage_in]]) { return {i.c, i.c.bgra}; }\n"
+    "fragment O fs2(V i [[stage_in]]) { return {i.c.gbra, i.c}; }\n";
 enum { N = 32 };
 static double now_ms(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6; }
+static _Atomic int g_live, g_peak;
+// Background slots: 300 jobs of 2 ms on 2 slots (600 ms of work) while a job on the user-initiated global queue (where nvn_flexpso.m makes a draw's pipeline) starts within 50 ms
+static void bgq_check(void) {
+    nvn_bgq b; bgq_init(&b, 2, QOS_CLASS_UTILITY, "t_flexpso.bgq"); dispatch_group_t g = dispatch_group_create();
+    for (int i = 0; i < 300; i++) {
+        dispatch_group_enter(g);
+        bgq_async(&b, ^{
+            int l = atomic_fetch_add(&g_live, 1) + 1;
+            for (int p = atomic_load(&g_peak); l > p && !atomic_compare_exchange_weak(&g_peak, &p, l);) {}
+            usleep(2000); atomic_fetch_sub(&g_live, 1); dispatch_group_leave(g);
+        });
+    }
+    usleep(20000);   // the slots are busy and the queues full
+    double t0 = now_ms(); __block double t1 = 0; dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ t1 = now_ms(); dispatch_semaphore_signal(s); });
+    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+    CHECK(t1 - t0 < 50, "a global-queue job waited %.1f ms behind the background slots: worker pool exhausted", t1 - t0);
+    CHECK(!dispatch_group_wait(g, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), "background jobs did not finish");
+    CHECK(atomic_load(&g_peak) >= 1 && atomic_load(&g_peak) <= 2, "%d background jobs ran at once on 2 slots", atomic_load(&g_peak));
+}
 
 static id<MTLDevice> dev; static id<MTLLibrary> lib; static id<MTL4CommandQueue> q; static id<MTLBuffer> vb;
 static MTLRenderPipelineDescriptor *desc(int blend, MTLPixelFormat f1, const char *frag) {
@@ -75,7 +98,17 @@ int main(void) { @autoreleasepool {
     q = [dev newMTL4CommandQueue];
     struct { float x, y; uint8_t c[4]; } v[3] = {{-1, -1, {255, 0, 0, 128}}, {3, -1, {0, 255, 0, 128}}, {-1, 3, {0, 0, 255, 128}}};
     vb = [dev newBufferWithBytes:v length:sizeof v options:MTLResourceStorageModeShared];
-    setenv("DM_PSO_FLEX", "1", 1); flexpso_open(dev, nil, sizeof(long), sizeof(long));
+    // An archive holding one unspecialized pipeline (fragment fs2), written the way an MTL4Archive can be at run time: a compiler that captures binaries
+    NSString *arch = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_flexpso_%d.metallib", getpid()]];
+    {
+        MTL4PipelineDataSetSerializerDescriptor *sd = [MTL4PipelineDataSetSerializerDescriptor new]; sd.configuration = MTL4PipelineDataSetSerializerConfigurationCaptureBinaries;
+        id<MTL4PipelineDataSetSerializer> ser = [dev newPipelineDataSetSerializerWithDescriptor:sd];
+        MTL4CompilerDescriptor *cd = [MTL4CompilerDescriptor new]; cd.pipelineDataSetSerializer = ser;
+        id<MTL4Compiler> comp = [dev newCompilerWithDescriptor:cd error:&e]; CHECK(comp, "compiler: %s", e.localizedDescription.UTF8String);
+        CHECK([comp newRenderPipelineStateWithDescriptor:flexpso_desc(desc(0, MTLPixelFormatRGBA8Unorm, "fs2"), lib, lib, 1) compilerTaskOptions:nil error:&e], "archive pipeline: %s", e.localizedDescription.UTF8String);
+        CHECK([ser serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:arch] error:&e], "archive: %s", e.localizedDescription.UTF8String);
+    }
+    setenv("DM_PSO_FLEX", "1", 1); flexpso_open(dev, arch, sizeof(long), sizeof(long));
     CHECK(flexpso_on(), "DM_PSO_FLEX=1 did not turn it on");
     // Two colour states of one unspecialized pipeline: pixel-identical to the classic pipeline of each
     const struct { int blend; MTLPixelFormat f1; } cs[2] = {{1, MTLPixelFormatRGBA8Unorm}, {0, MTLPixelFormatRGBA16Float}};
@@ -122,6 +155,14 @@ int main(void) { @autoreleasepool {
         CHECK(h.m.n == 1, "idle targets were not pruned: %u entries", h.m.n);
         CHECK(rth_pass(&h, every, 1, RTH_PRUNE_EVERY * 2 + 2), "the per-frame target lost its history in the prune");
         CHECK(!rth_pass(&h, idle, 1, RTH_PRUNE_EVERY * 2 + 2), "a pruned target counts as idle");
+        // Window (swapchain) images are redrawn every frame by definition, though each one only every other frame in a chain of two: a pass whose only targets are window images may skip
+        // from its first frame; with other targets as well the others decide
+        const uint64_t win_new[1] = {400}, win_every[1] = {100};
+        uint64_t f = RTH_PRUNE_EVERY * 2 + 3;
+        CHECK(rth_steady(&h, NULL, 0, 1, f) && rth_steady(&h, NULL, 0, 2, f), "a pass into window images only must be allowed to skip");
+        CHECK(!rth_steady(&h, NULL, 0, 0, f), "a pass without targets still waits");
+        CHECK(!rth_steady(&h, win_new, 1, 1, f), "window image + a new target: the new target makes it wait");
+        CHECK(rth_steady(&h, win_every, 1, 1, f), "window image + a per-frame target: may skip");
         rth_free(&h);
     }
     // A draw that may not skip waits for its pipeline: made on the first ask, counted as waited, not as skipped; a failure under wait is reported, not waited for forever
@@ -141,7 +182,22 @@ int main(void) { @autoreleasepool {
         ps = flexpso_get(&k3, &u3, lib, lib, "badwait", ^{ return bad2; }, 0, &pending, NULL);
         CHECK(!ps && !pending, "a failing pipeline under wait: got %p pending %d", (__bridge void *)ps, pending);
     }
+    // Archive coverage counts the lookups made for draws; the program warm-up's stand-ins (flexpso_warm) are counted apart, so that their misses do not read as lower coverage
+    {
+        flexpso_counts c0 = flexpso_stats(); long u1 = 20, u2 = 21, u3 = 22;
+        CHECK(flexpso_warm(&u1, desc(0, MTLPixelFormatRGBA8Unorm, "fs2"), lib, lib, "warm hit", &e), "warm-up stand-in from the archive failed");
+        CHECK(flexpso_warm(&u2, desc(0, MTLPixelFormatRGBA8Unorm, "fs"), lib, lib, "warm miss", &e), "compiled warm-up stand-in failed");
+        flexpso_counts c1 = flexpso_stats();
+        CHECK(c1.warm_hit == c0.warm_hit + 1 && c1.warm_miss == c0.warm_miss + 1, "warm-up lookups: hits %llu -> %llu, misses %llu -> %llu", c0.warm_hit, c1.warm_hit, c0.warm_miss, c1.warm_miss);
+        CHECK(c1.archive_hit == c0.archive_hit && c1.archive_miss == c0.archive_miss, "warm-up lookups counted as draw lookups: hits %llu -> %llu, misses %llu -> %llu", c0.archive_hit, c1.archive_hit, c0.archive_miss, c1.archive_miss);
+        CHECK(flexpso_make(&u3, desc(1, MTLPixelFormatRGBA8Unorm, "fs2"), lib, lib, "draw hit", &e), "draw pipeline from the archive failed");
+        flexpso_counts c2 = flexpso_stats();
+        CHECK(c2.archive_hit == c1.archive_hit + 1 && c2.warm_hit == c1.warm_hit, "a draw's archive hit was not counted as one: hits %llu -> %llu", c1.archive_hit, c2.archive_hit);
+        CHECK(c0.archive_hit == 0 && c0.archive_miss >= 1, "the draws before used fs (not in the archive): hits %llu, misses %llu", c0.archive_hit, c0.archive_miss);
+    }
+    [NSFileManager.defaultManager removeItemAtPath:arch error:nil];
+    bgq_check();
     flexpso_log();
-    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, kicked pipeline ready at its first draw, failure reported, target history rule, waited draws counted apart\n", worst);
+    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, kicked pipeline ready at its first draw, failure reported, target history rule, waited draws counted apart, background slots bounded without starving the worker pool, warm-up archive lookups counted apart\n", worst);
     return 0;
 }}

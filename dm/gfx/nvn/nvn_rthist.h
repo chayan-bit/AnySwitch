@@ -1,7 +1,8 @@
 // Render-target history for skip-draw (DM_PSO_FLEX, dm/gfx/README.md): which render passes may drop a draw whose pipeline is not ready yet.
 // A skipped draw is lost for one frame only when its target is drawn again the next frame. A target rendered once and then sampled for many frames (text or an icon baked into a
 // texture, a map built on demand) keeps the hole for as long as it is used, so a draw into it waits for its pipeline instead. The rule: a pass may skip when every target it attaches
-// was also rendered in the previous frame; a target new this frame, idle last frame, or a pass with no target at all waits.
+// was also rendered in the previous frame; a target new this frame, idle last frame, or a pass with no target at all waits. Window (swapchain) images are left out of the history: the game
+// redraws the image it presents every frame by definition, though each image of a chain of two is rendered only every other frame (rth_steady).
 // One table entry per target serial, its value two frame stamps packed in the pointer (no allocation): the last frame it was rendered and the frame before that one.
 // Written once per pass begin on the replay thread (the caller's lock); the draws only read the pass's result. Entries idle for more than a frame are pruned every RTH_PRUNE_EVERY frames:
 // an absent entry means the same as an idle one. Unit test: tests/t_flexpso.m.
@@ -36,3 +37,5 @@ static inline int rth_pass(nvn_rthist *h, const uint64_t *ser, int n, uint64_t f
     }
     return steady;
 }
+// A pass with n history targets ser and nwin window images (not in ser): window images never make it wait, a pass of window images only may skip from its first frame
+static inline int rth_steady(nvn_rthist *h, const uint64_t *ser, int n, int nwin, uint64_t frame) { return n ? rth_pass(h, ser, n, frame) : nwin > 0; }
