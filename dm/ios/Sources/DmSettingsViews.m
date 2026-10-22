@@ -156,8 +156,9 @@ static const CGFloat kKnob = 26;
     BOOL _compact; DmItemKind _kind; DmSetting *_setting;
     UILabel *_title, *_detail, *_value, *_note; UIImageView *_chev[2];
     DmToggleView *_toggle; DmSliderView *_slider;
-    NSString *_noteText; BOOL _locked;
+    NSString *_noteText; BOOL _locked, _confirming;
 }
+- (BOOL)confirming { return _confirming; }
 - (DmSetting *)setting { return _setting; }
 - (DmItemKind)kind { return _kind; }
 - (DmSliderView *)slider { return _slider; }
@@ -175,23 +176,37 @@ static const CGFloat kKnob = 26;
             _title.text = s.label; _detail.text = s.detail;
             if (s.type == DmSettingToggle) { _toggle = [DmToggleView new]; [self addSubview:_toggle]; }
             if (s.type == DmSettingSlider) { _slider = [DmSliderView new]; [self addSubview:_slider]; }
+            UIImageSymbolConfiguration *c = [UIImageSymbolConfiguration configurationWithPointSize:compact ? 12 : 14 weight:UIImageSymbolWeightBold];
             if (s.type == DmSettingChoice) {
-                UIImageSymbolConfiguration *c = [UIImageSymbolConfiguration configurationWithPointSize:compact ? 12 : 14 weight:UIImageSymbolWeightBold];
                 for (int i = 0; i < 2; i++) { _chev[i] = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:i ? @"chevron.right" : @"chevron.left" withConfiguration:c]]; _chev[i].contentMode = UIViewContentModeCenter; [self addSubview:_chev[i]]; }
+            }
+            if (s.type == DmSettingText) {   // the pencil says the row opens an editor
+                _chev[1] = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"pencil" withConfiguration:c]]; _chev[1].contentMode = UIViewContentModeCenter; [self addSubview:_chev[1]];
             }
             _noteText = s.restart ? @"Applies after a restart" : nil;
         } else {
             _title.textAlignment = NSTextAlignmentCenter; _detail.textAlignment = NSTextAlignmentCenter;
-            _title.text = kind == DmItemReset ? @"Restore defaults" : @"Restart now";
-            _detail.text = kind == DmItemReset ? @"Puts every setting on this page back to its default." : @"Closes the game so the changed settings apply on the next start. Progress that was not saved in the game is lost.";
+            [self showPlainTitle];
         }
         __weak DmRowView *w = self; on_style(self, ^{ [w paint]; });
     }
     return self;
 }
+// The title and detail of the rows that are not a setting
+- (void)showPlainTitle {
+    switch (_kind) {
+        case DmItemReset: _title.text = @"Restore defaults"; _detail.text = @"Puts every setting on this page back to its default."; break;
+        case DmItemResetAll:
+            _title.text = _confirming ? @"Tap again to restore everything" : @"Restore all defaults";
+            _detail.text = @"Puts every setting on every page back to its default."; break;
+        case DmItemRestart: _title.text = @"Restart now"; _detail.text = @"Closes the game so the changed settings apply on the next start. Progress that was not saved in the game is lost."; break;
+        case DmItemSetting: break;
+    }
+}
+- (void)setConfirming:(BOOL)c { _confirming = c; [self showPlainTitle]; [self paint]; [self setNeedsLayout]; }
 - (void)paint {
     self.layer.backgroundColor = cg(self, DmUI.row);
-    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemReset ? DmUI.accent : DmUI.warn);
+    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accent);
     _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accent;
     _note.textColor = DmUI.warn;
     for (int i = 0; i < 2; i++) _chev[i].tintColor = DmUI.sub;
@@ -217,7 +232,8 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
     CGFloat right = 0;   // width of what sits right of the title: the value, the toggle, the chevrons
     if (_toggle) right = 54;
     else if (_setting.type == DmSettingChoice) right = ceil([_value.text sizeWithAttributes:@{NSFontAttributeName: _value.font}].width) + (_compact ? 44 : 52);
-    else if (_slider) right = ceil([@"100%" sizeWithAttributes:@{NSFontAttributeName: _value.font}].width) + 8;
+    else if (_setting.type == DmSettingText) right = MIN(ceil([_value.text sizeWithAttributes:@{NSFontAttributeName: _value.font}].width), cw * 0.5) + (_compact ? 34 : 40);
+    else if (_slider) right = MAX(ceil([@"100%" sizeWithAttributes:@{NSFontAttributeName: _value.font}].width), ceil([_value.text sizeWithAttributes:@{NSFontAttributeName: _value.font}].width)) + 8;
     CGFloat tw = cw - (right ? right + 12 : 0), th = ceil(_title.font.lineHeight), y = padY;
     L.title = CGRectMake(padX, y, plain ? cw : tw, th);
     CGFloat noteW = 0; if (_note.text.length) { noteW = ceil([_note.text sizeWithAttributes:@{NSFontAttributeName: _note.font}].width); }
@@ -225,6 +241,9 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
     else if (_setting.type == DmSettingChoice) {
         CGFloat cs = _compact ? 16 : 20; L.chevR = CGRectMake(x1 - cs, y + (th - cs) / 2, cs, cs); L.chevL = CGRectMake(x1 - right + 4, y + (th - cs) / 2, cs, cs);
         L.value = CGRectMake(L.chevL.origin.x + cs, y, L.chevR.origin.x - L.chevL.origin.x - cs, th);
+    } else if (_setting.type == DmSettingText) {
+        CGFloat cs = _compact ? 16 : 20; L.chevR = CGRectMake(x1 - cs, y + (th - cs) / 2, cs, cs);
+        L.value = CGRectMake(x1 - right, y, right - cs - 8, th);
     } else if (_slider) L.value = CGRectMake(x1 - right + 8, y, right - 8, th);
     y += th;
     if (noteW && !plain) { L.note = CGRectMake(padX, y + 1, cw, ceil(_note.font.lineHeight)); y += ceil(_note.font.lineHeight) + 1; }

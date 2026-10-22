@@ -1,8 +1,8 @@
 // iOS front end (the iOS implementation of front.h): the Metal view + a full-screen virtual gamepad layer (DmGamepad.m).
 // The picture is the game's 16:9 frame fitted into the screen. With letterbox=ambient (default) the Metal view is the whole screen and the present stage fills the bars with the blurred live frame (dm/gfx/nvn/nvn_ambient.h);
 // with letterbox=black the view is just the 16:9 rectangle on a black screen, as before. Controls sit in the bars when they are tall enough (controls layout auto), else over the picture (DmGamepad.m).
-// Settings (DmSettings.m, the in-app settings screen DmSettingsVC.m; gear button at the top, the + and - buttons held together, or Cmd-,): DM_LETTERBOX = ambient | black, DM_CONTROLS_LAYOUT = auto | overlay, DM_CONTROLS_SCALE, DM_CONTROLS_OPACITY, DM_AMBIENT_LEVEL, DM_SHOW_FPS.
-// Precedence: Documents/env.txt, then the player's choice in Documents/settings.json, then the Info.plist keys (project.yml), then the defaults. Changes in the screen apply at once (settingChanged:).
+// Settings (DmSettings.m, the in-app settings screen DmSettingsVC.m; gear button at the top, the + and - buttons held together, or Cmd-,); the registry in DmSettings.m lists every setting and whether it applies live or on the next start.
+// Precedence: Documents/env.txt, then the player's choice in Documents/settings.json, then the Info.plist keys (project.yml), then the game profile's defaults (dm/settings.json), then the registry defaults. Changes in the screen apply at once (settingChanged:).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -10,6 +10,7 @@
 #import <AVFAudio/AVFAudio.h>
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
+#import "DmHaptics.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -20,6 +21,7 @@ void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
 void dm_gamepad_scale(float s);
 void dm_gamepad_opacity(float o);
+void dm_gamepad_shake_g(double g);
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 void dm_gamepad_set_chord(void (^handler)(void));
 void mtl_letterbox_set(int ambient);
@@ -39,6 +41,9 @@ static void front_ios_settings(void) {
     g_controls_auto = [[s valueForKey:@"DM_CONTROLS_LAYOUT"] isEqualToString:@"auto"];
     g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
+    dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
+    dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
+    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
     LOG("front end: letterbox %s, controls layout %s, controls scale %.2f, opacity %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale, g_controls_opacity);
 }
 static void front_ios_power_watch(void);
@@ -140,6 +145,10 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
     else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
+    else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);
+    else if ([k isEqualToString:@"DM_VOLUME"]) dm_audio_volume(v.doubleValue);
+    else if ([k isEqualToString:@"DM_VIBRATION"]) dm_haptics_enable([v isEqualToString:@"1"]);
+    else if ([k isEqualToString:@"DM_VIBRATION_STRENGTH"]) dm_haptics_strength(v.floatValue);
     else if ([k isEqualToString:@"DM_SHOW_FPS"]) {
         BOOL want = [v isEqualToString:@"1"];
         if (want && !self.fps) { self.fps = front_ios_fps_label(); [self.view insertSubview:self.fps belowSubview:self.gear]; [self.view setNeedsLayout]; }
