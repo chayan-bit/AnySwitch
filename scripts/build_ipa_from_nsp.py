@@ -6,6 +6,7 @@
 #   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A Vulkan game (main imports Vulkan, not NVN: Hades) skips the NVN shader steps: vk_shaders.py translates its SPIR-V shaders instead.
 #   Which of these steps a game needs follows from its files (dm/games/profile_guess.py shader_sources), not from its profile. A game with no matching profile is surveyed (<NSP folder>/<title ID>_survey/survey.md), then gets a provisional profile guessed from
 #   the survey (<NSP folder>/<title ID>_build/profile/<title ID>/, outside the repository, found through DM_GAMES_DIR) and a best-effort IPA that may not boot; SURVEY_ONLY / --survey-only stops after the survey.
+#   MAC_ONLY / --mac-only stops after the shader stages instead of building the IPA: it builds the Mac dev host (DEVCTL=1) and writes <id>_build/mac_run.json, what a Mac run of the game needs (scripts/compat_run.py).
 # Two ways to run it: open this file in Spyder and press F5 (it uses the values under "Settings" below; an empty NSP folder or prod.keys is asked for at run time);
 #   or in a terminal: python3 scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> [options] (values given on the command line override "Settings", -h lists every option;
 #   without keyboard input a missing value is not asked for but reported as an error; exit code 0 on success, 1 on error, 130 when interrupted). Command-line options entered in Spyder's run configuration work the same way.
@@ -15,7 +16,7 @@
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
 # The Python running this file needs lz4, capstone and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress).
-import collections, ctypes, getpass, hashlib, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
+import collections, ctypes, getpass, hashlib, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
 from pathlib import Path
 
 # ---- Settings ----
@@ -32,6 +33,7 @@ EXEFS_PATCHES = ''                      # optional: a folder of community ExeFS 
 SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
 PROFILE_OUT = ''                        # where a provisional profile goes (empty = <NSP folder>/<title ID>_build/profile; the profile is <this>/<title ID>/)
 ALLOW_DAMAGED = False                   # a damaged NSP (files failing the NCA's hash check: an incomplete copy or a broken download) stops the build; True writes those files as read and goes on
+MAC_ONLY = False                        # stop after the shader stages: the Mac dev host and <id>_build/mac_run.json instead of the IPA (scripts/compat_run.py boots the game from it)
 PROVISIONAL = False                     # build from a provisional profile even when dm/games has one for the game (to test the guesses; the profile goes to PROFILE_OUT / <id>_build/profile)
 HEAP_CHECK = True                       # a provisional profile whose game has virtual address memory and sets a heap: boot it on the Mac until its heap request (a few seconds) to size the heap region
 HEAP_CHECK_SECS = 30                    # the longest heap check (it stops at the first heap request, or HEAP_CHECK_NNMAIN_SECS into nnMain without one)
@@ -651,12 +653,13 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     PROG.set(step=', '.join(mods), done=0, total=len(mods), unit='modules')
     procs, logf = {}, {}
     try:
-        for m in mods:
-            logf[m] = open(logs / f'rewrite_{m}.log', 'w')
-            procs[m] = subprocess.Popen([str(py), str(repo / 'dm/tools/patch_nso.py'), str(exe_dir / m), str(tmp), m], env=env, stdout=logf[m], stderr=subprocess.STDOUT)
+        cap, todo = max(1, int(env.get('J') or os.cpu_count() or 8)), list(mods)   # at most J modules at once (J: the shader tools' workers too)
         left = list(mods)
         while left:
-            for m in [m for m in left if procs[m].poll() is not None]:
+            while todo and sum(1 for m in left if m in procs and procs[m].poll() is None) < cap:
+                m = todo.pop(0); logf[m] = open(logs / f'rewrite_{m}.log', 'w')
+                procs[m] = subprocess.Popen([str(py), str(repo / 'dm/tools/patch_nso.py'), str(exe_dir / m), str(tmp), m], env=env, stdout=logf[m], stderr=subprocess.STDOUT)
+            for m in [m for m in left if m in procs and procs[m].poll() is not None]:
                 left.remove(m); PROG.set(done=len(mods) - len(left))
                 if procs[m].returncode:
                     log = logs / f'rewrite_{m}.log'; logf[m].close()
@@ -692,16 +695,48 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
     return out
 
 
-def build_mac_host(repo, out, env, logs, g):
-    """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's"""
-    host = repo / 'dm/host'
+def build_mac_host(repo, out, env, logs, g, devctl=False):
+    """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's.
+    devctl: a dev build with the dev input channel (DEVCTL=1, docs/dev-control.md), reused while the compile line and every source and header it reads are unchanged"""
+    host, dev = repo / 'dm/host', ['DEVCTL=1'] if devctl else []
     run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
-    dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
+    dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', *dev, 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
     cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
-    out.parent.mkdir(parents=True, exist_ok=True)
-    run(cmd, logs / 'mac_host_build.log', env=env, cwd=host)
+    kf, key = out.with_name(out.name + '.key'), None
+    if devctl:
+        key = fingerprint(cmd, ('files', host_inputs(repo) + [host / f'gen/{g.id}/game_profile.h'] + profile_files(g)), ('cmd', ['clang', '--version']), env=env)
+        if out.is_file() and reused(kf, key) is not None: return out
+    rmtree(kf); out.parent.mkdir(parents=True, exist_ok=True)
+    run(cmd, logs / ('mac_dev_host_build.log' if devctl else 'mac_host_build.log'), env=env, cwd=host)
+    if key: kf.write_text(f'{key}\n')
+    return out
+
+
+def host_inputs(repo):   # the sources and headers the Mac host is compiled from (dm/host, dm/gfx and the third-party headers; not tests, tools or build output)
+    out = []
+    for d, skip in (('dm/host', ('gen', 'tests')), ('dm/gfx', ('tests', 'metal', 'tools')), ('dm/third_party', ())):
+        for p in sorted((repo / d).rglob('*')):
+            if p.suffix in ('.c', '.m', '.h', '.S', '.inc') and p.relative_to(repo / d).parts[0] not in skip and p.is_file(): out.append(p)
+    return out
+
+
+def mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisional, env, logs):
+    """--mac-only: the Mac dev host, then <id>_build/mac_run.json with what a run needs; returns its path. The Mac shader libraries are sh/cache/b-<chain> (NVN) or sh/vk (Vulkan)"""
+    PROG.stage('Mac dev host')
+    host = build_mac_host(repo, work / 'tools/dmhost-dev', env, logs, g, devctl=True)
+    msl = sh / ('vk' if gfx == 'vulkan' else 'cache')
+    if gfx != 'vulkan':
+        chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
+        if not next((msl / f'b-{chain}').glob('*_b.metallib'), None): raise BuildError(f'no Mac shader libraries in {msl / f"b-{chain}"}')
+    keys = [p.read_text().split('\n', 1)[0] for p in sorted([patched.with_name(patched.name + '.key'), sh / 'pkg.key', host.with_name(host.name + '.key'), *sh.glob('ios/*.key')]) if p.is_file()]
+    info = {'title_id': g.id, 'name': g.get('name', ''), 'version': pkg_ver, 'gfx': gfx, 'provisional': provisional, 'host': str(host), 'patched': str(patched),
+            'romfs': str(game / 'RomFS'), 'aoc': str(aoc or ''), 'msl_dir': str(msl), 'shader_map': str(g.table('shader_map.tsv')), 'profile_dir': str(g.dir),
+            'games_dir': env.get('DM_GAMES_DIR', ''), 'games_first': env.get('DM_GAMES_FIRST', ''), 'fingerprint': hashlib.sha256('\n'.join(keys).encode()).hexdigest()[:16]}
+    out = work / 'mac_run.json'; out.write_text(json.dumps(info, indent=1) + '\n')
+    PROG.end(host.name)
+    say(f'mac run: {out}')
     return out
 
 
@@ -1148,6 +1183,7 @@ def parse_args(argv):
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, off)')
     ap.add_argument('--exefs-patches', help='folder of community ExeFS patches (<name>/<build ID>.ips, IPS32 or .pchtxt, Atmosphere layout) applied before the rewrite to the modules whose build ID they name (default: the EXEFS_PATCHES setting, none)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
+    ap.add_argument('--mac-only', action='store_true', help='stop after the shader stages: build the Mac dev host and write <id>_build/mac_run.json for a Mac run (scripts/compat_run.py), no IPA')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check): write them as read and go on instead of stopping')
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
     ap.add_argument('--provisional', action='store_true', help='build from a provisional profile even when dm/games has one for the game (tests the guesses)')
@@ -1222,7 +1258,8 @@ def main(args=None):
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
-    PROG.plan(1 + len(versions) + bool(fam['dlc']) + 4)   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders and the run-time steps added below), app build, IPA pack
+    mac_only = args.mac_only or MAC_ONLY
+    PROG.plan(1 + len(versions) + bool(fam['dlc']) + (3 if mac_only else 4))   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders and the run-time steps added below), app build, IPA pack
     PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     PROG.end()
@@ -1271,6 +1308,8 @@ def main(args=None):
         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] else None
         skey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional, oodle)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, provisional, skey)
+    if mac_only:
+        mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisional, env, logs); return
 
     if free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
     say(f'building the IPA → {out_ipa}')
