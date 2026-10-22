@@ -14,7 +14,7 @@
 //     DM_CONTROLS_LAYOUT=auto, dm_gamepad_layout): top bar ZL, L (L3 in 3D), then - / layout button / + and the frame-rate counter, then R3 (3D), R, ZR; bottom bar the left stick, (3D: the D-pad,) and the diamond.
 //     The keys get a frosted look (a lighter fill, a bright rim and a soft top-lit gloss over the blurred ambient bars). Touches on the bars that no control takes are not sent to the game's touch screen.
 //     With DM_CONTROLS_LAYOUT=overlay, or bars too small (a 16:10 screen), everything stays as described above, over the picture.
-//   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
+//   Shaking the device (iPhone or iPad) shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the device" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <CoreMotion/CoreMotion.h>
@@ -44,17 +44,17 @@ static void publish(void) {
     pthread_mutex_unlock(&g_mu);
 }
 
-// ---- Shaking the phone ----
+// ---- Shaking the device ----
 // The accelerometer at 60 Hz (no gyroscope, no permission prompt): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it exceeds DM_SHAKE_G
 // (1.5 G by default; Documents/env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole cycle)
-// and shaking on keeps it going. Holding the phone and pressing the screen stays far below the threshold. Each detected shake is logged with its peak
+// and shaking on keeps it going. Holding the device and pressing the screen stays far below the threshold. Each detected shake is logged with its peak
 static CMMotionManager *g_motion;
 static void motion_start(void) {
     if (g_motion) return;
     g_motion = [CMMotionManager new];
-    if (!g_motion.accelerometerAvailable) { LOG("front end: no accelerometer, shaking the phone does nothing"); return; }
+    if (!g_motion.accelerometerAvailable) { LOG("front end: no accelerometer, shaking the device does nothing"); return; }
     const char *e = getenv("DM_SHAKE_G"); double thr = e && atof(e) > 0 ? atof(e) : 1.5;
-    LOG("front end: shaking the phone shakes the controller (threshold %.2f G)", thr);
+    LOG("front end: shaking the device (iPhone or iPad) shakes the controller (threshold %.2f G)", thr);
     g_motion.accelerometerUpdateInterval = 1.0 / 60;
     NSOperationQueue *q = [NSOperationQueue new]; q.maxConcurrentOperationCount = 1;
     __block double gx = 0, gy = 0, gz = 0, last = -1, peak = 0; __block BOOL init = NO;
@@ -66,7 +66,7 @@ static void motion_start(void) {
         gx += (a.x - gx) * 0.02; gy += (a.y - gy) * 0.02; gz += (a.z - gz) * 0.02;
         if (g > thr) { if (last < 0) peak = 0; last = d.timestamp; peak = fmax(peak, g); }
         BOOL on = last >= 0 && d.timestamp - last < 0.12;
-        if (!on && last >= 0) { LOG("front end: phone shaken (peak %.1f G)", peak); last = -1; }
+        if (!on && last >= 0) { LOG("front end: device shaken (peak %.1f G)", peak); last = -1; }
         uint64_t want = on ? DM_BTN_SHAKE : 0;
         pthread_mutex_lock(&g_mu); BOOL changed = g_shake_btn != want; g_shake_btn = want; pthread_mutex_unlock(&g_mu);
         if (changed) publish();

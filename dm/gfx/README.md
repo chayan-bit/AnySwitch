@@ -173,11 +173,11 @@ Comparison and testing:
 
 | Switch | Effect |
 |---|---|
-| `DM_NVN_TBDR=1` | Turns on the pass optimizations of the replay layer (store / load elision, pass merging). They are off by default: they infer which textures a draw reads from its bound slots, which bindless textures defeat ([docs/agents/04-graphics.md](../../docs/agents/04-graphics.md) section 4) |
+| `DM_NVN_TBDR=1` | Turns on the pass optimizations of the replay layer (store / load elision, pass merging). They are off by default: they infer which textures a draw reads from its bound slots, which bindless textures defeat ([docs/internals/04-graphics.md](../../docs/internals/04-graphics.md) section 4) |
 | `DM_NVN_UNWRITTEN_DC=0` | With `DM_NVN_TBDR=1`, turns off the single item "attachments not written in this pass are not stored" |
 | `DM_NVN_FUSE_CHECK=1` | Same-frame check of pass merging; logs the comparison result every time |
 | `DM_FPS=30` or `60` | Pins the target frame rate |
-| `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/agents/04-graphics.md](../../docs/agents/04-graphics.md) section 7 |
+| `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/internals/04-graphics.md](../../docs/internals/04-graphics.md) section 7 |
 | `DM_LETTERBOX=ambient` or `black` | What the bars show when the picture does not fill the screen: `ambient` (default) the blurred live frame, `black` plain black bars; see "Letterbox" below |
 | `DM_CONTROLS_LAYOUT=auto` or `overlay` | iOS only: `auto` (default) puts the touch controls in the letterbox bars when they are tall enough, `overlay` keeps them over the picture |
 | `DM_CONTROLS_SCALE=0.75..2.5` | iOS only, controls in the bars: size of the A / B / X / Y keys, the left stick and the D-pad (default 1; Info.plist key `DMControlsScale`); they grow upward from the bar over the picture |

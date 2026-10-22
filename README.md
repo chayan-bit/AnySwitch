@@ -3,14 +3,16 @@
 [![CI](https://github.com/chayan-bit/AnySwitch/actions/workflows/ci.yml/badge.svg)](https://github.com/chayan-bit/AnySwitch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Play your own Nintendo Switch games natively on iPhone and iPad.
+Play your own Nintendo Switch games natively on iPad and iPhone.
 Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
 
-AnySwitch is not an emulator.
-The game's own code runs directly on the Apple chip, with the Switch's graphics rebuilt on Metal.
-Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
+## About
 
-## How it works
+AnySwitch is not an emulator.
+The game's own aarch64 code runs directly on the Apple chip, and the Switch's graphics are rebuilt on Metal.
+There is no JIT, no CPU emulation and no separate runtime process.
+The iPad is a first-class target: the app is laid out for its 4:3 screen, with the touch controls in the bars around the picture.
+Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
 
 | Piece | What it does |
 |---|---|
@@ -21,6 +23,30 @@ Nothing from any game is in this repository, and the project is not affiliated w
 | **Game profiles** | Everything specific to one title lives in `dm/games/<title id>/`. The code itself is game-agnostic. |
 
 The deeper write-up is in [docs/development.md](docs/development.md) and [dm/gfx/README.md](dm/gfx/README.md).
+
+## Features
+
+- **One script from NSP to IPA.**
+  [scripts/build_ipa_from_nsp.py](scripts/build_ipa_from_nsp.py) extracts the game, rewrites its code, translates its shaders and packs an IPA that runs on both iPad and iPhone.
+  Repeat builds reuse every stage whose inputs did not change.
+- **In-app settings screen.**
+  A gear button (or + and - held together on a controller) opens a screen styled after the Switch's System Settings, driven by touch, controller or keyboard.
+  Settings, their values and how they are stored: [docs/settings.md](docs/settings.md).
+- **Ambient letterbox fill.**
+  Where the picture does not fill the screen, as with a 16:9 game on a 4:3 iPad, the bars show a blurred, dimmed copy of the live frame instead of black.
+  Brightness is a setting; `black` turns it off.
+  Details and before and after pictures: [dm/gfx/README.md](dm/gfx/README.md#letterbox).
+- **Adjustable touch controls.**
+  The controls sit in the letterbox bars when those are tall enough, and over the picture otherwise.
+  Their size (0.75 to 2.5 times) and opacity (30 to 100 percent) are settings, and a 2D / 3D button switches the layout.
+  A connected game controller hides them.
+- **Precompiled pipeline archives.**
+  Compiled GPU pipelines are shipped inside the IPA, so a known pipeline is created without a driver compile and the first-use stutter goes away.
+  Harvest, build and run-time lookup: [dm/gfx/README.md](dm/gfx/README.md#precompiled-pipeline-archives).
+- **Community ExeFS patches.**
+  IPS, IPS32 and `.pchtxt` patches are applied at build time: [docs/exefs-patches.md](docs/exefs-patches.md).
+- **For developers: checkpoint saves and a dev input channel.**
+  `scripts/checkpoint.py` starts a run from a saved game state, and `scripts/dmctl` drives a running game frame by frame from the Mac, on the Mac host and in the iOS app: [docs/dev-control.md](docs/dev-control.md).
 
 ## Status
 
@@ -62,36 +88,57 @@ To add a game, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-game-profile).
 | The Legend of Zelda: Tears of the Kingdom | `0100F2C0115B6000` | 1.4.3 | Playable |
 | Unicorn Overlord | `010069401ADB8000` | 1.05 | Playable |
 
-Known issues:
+Test reports for a title or a build go in a [compatibility report](https://github.com/chayan-bit/AnySwitch/issues/new?template=compatibility_report.yml).
+
+### Known issues
 
 - No amiibo and no online features.
 - Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
 - Fire Emblem: Three Houses: small square patches on the ground where decals land.
 - Super Mario Galaxy and Super Mario Galaxy 2: effects drawn as points or lines come out one pixel wide.
 
-Test reports for a title or a build go in a [compatibility report](https://github.com/chayan-bit/AnySwitch/issues/new?template=compatibility_report.yml).
-
 ## Requirements
 
-- A Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835), [Homebrew](https://brew.sh) or Nix, and Python 3.
-- iOS or iPadOS 26 or later, on an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.
+- A Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835), Python 3, and either [Nix](https://nixos.org/download) or [Homebrew](https://brew.sh).
+- iOS or iPadOS 26 or later, on an iPad with an M1 chip or later, or an iPhone 15 Pro or newer (A17 Pro chip or later).
   The games' textures are BC-compressed, and older iPhones cannot read that format.
 - Your own game dump (NSP files; an XCI cartridge dump works for the base game) and the `prod.keys` of your console.
 - Free disk space of about twice the NSPs' size plus 10 GB.
 - A way to sideload an IPA (AltStore, Sideloadly, LiveContainer, or Xcode).
 
-## Quick start
+## Setup
 
-**1. Get AnySwitch and its tools** (once):
+**1. Get AnySwitch** (once):
 
 ```
-git clone https://github.com/chayan-bit/AnySwitch.git && cd AnySwitch
+git clone https://github.com/chayan-bit/AnySwitch.git
+cd AnySwitch
+```
+
+**2. Get the build tools** (once), with Nix or with Homebrew.
+
+With Nix, open a shell that has them:
+
+```
+nix-shell -p xcodegen zstd spirv-cross dotnet-sdk_10 'python3.withPackages (p: [p.lz4 p.capstone p.fonttools])'
+```
+
+Inside that shell, make Xcode's own `xcrun` win over the one Nix puts first, so the Metal compiler is found:
+
+```
+unset DEVELOPER_DIR SDKROOT
+PATH=$(echo "$PATH" | tr ':' '\n' | grep -v xcrun | paste -sd: -)
+```
+
+With Homebrew:
+
+```
 brew install xcodegen zstd spirv-cross
 brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 ```
 
-**2. Put one game's NSPs in a folder**, base game (an NSP, or an XCI cartridge dump) and update (and any DLC):
+**3. Put one game's NSPs in a folder**, base game (an NSP, or an XCI cartridge dump) and update (and any DLC):
 
 ```
 ~/Games/MarioWonder/
@@ -99,7 +146,7 @@ python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < 
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
 
-**3. Run the script** [scripts/build_ipa_from_nsp.py](scripts/build_ipa_from_nsp.py):
+**4. Run the build script** [scripts/build_ipa_from_nsp.py](scripts/build_ipa_from_nsp.py):
 
 ```
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
@@ -107,11 +154,25 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 The IPA appears in the same folder.
 The first build takes 30 to 60 minutes, later ones about 10.
-Options such as `-o` (output path), `--app-name` and `--bundle-id` are listed by `-h`.
-The default bundle ID is `org.anyswitch.<base game title ID in lowercase>`.
+`-h` lists every option; the common ones are:
 
-**4. Install** the IPA with your sideloading tool.
+| Option | Effect |
+|---|---|
+| `-o <path>` | Where to write the IPA. |
+| `--app-name <name>` | The name under the icon. The default is the game's own name. |
+| `--bundle-id <id>` | The bundle ID. The default is `org.anyswitch.<base game title ID in lowercase>`. |
+| `-p <version>` | Pack another version of the game, for example `v0` for Mario's 1.0.0. |
+| `--show-fps` | Show the frame-rate counter from the first launch. |
+| `--no-keep-extracted` | Delete the extracted game files after the build. They are kept by default to speed up the next one. |
+| `--env-file <file>` | Bake `KEY=VALUE` switches into the app. |
+| `--exefs-patches <dir>` | Apply community ExeFS patches. |
+
+All options with examples: [docs/development.md](docs/development.md#the-packing-script-in-detail).
+
+**5. Install the IPA** with your sideloading tool.
 The app gets the game's name, icon and version (the update's version when there is an update, else the base game's).
+It runs on iPad and iPhone alike.
+With a free Apple ID the signature lasts seven days, and the app has to be installed again after that.
 
 ## Play
 
@@ -119,17 +180,22 @@ The app gets the game's name, icon and version (the update's version when there 
 Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice.
 In 3D, the right stick (the camera in most games) is not drawn: swipe on the right third of the screen, starting anywhere off the buttons.
 A connected game controller hides the touch controls and keeps every button.
-The in-app settings screen (the gear button at the top, or hold + and - on a controller) changes the bars, the controls and the frame-rate counter: [docs/settings.md](docs/settings.md).
+
+**Settings.**
+The gear button at the top (or + and - held together on a controller, or Cmd and comma on a keyboard) opens the settings screen.
+It changes the bars around the picture, the size and opacity of the touch controls, and the frame-rate counter: [docs/settings.md](docs/settings.md).
 
 **Shaking.**
-Shake the phone to shake the controller, in games that read its motion.
+Shake the device (iPhone or iPad) to shake the controller, in games that read its motion.
 A light bump does not count; a sharp flick does.
+The threshold is `DM_SHAKE_G` in `Documents/env.txt`, 1.5 G by default.
+A lower value, for example `DM_SHAKE_G=1.0`, suits the heavier iPad.
 
 - **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
 - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, attach the relevant lines of `log.txt` to an issue (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
 - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
-- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps the games that run at 60 fps on their original 30 fps, which saves battery. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start).
+- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps the games that run at 60 fps on their original 30 fps, which saves battery. `DM_SHOW_FPS=1` shows the frame rate at the top left.
 
 ## Legal
 
@@ -148,12 +214,14 @@ It does not include, distribute or require any game, firmware or key.
 Contributions are welcome: bug fixes, new game profiles, compatibility reports, docs.
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 Report security problems as described in [SECURITY.md](SECURITY.md).
-The docs are indexed in [docs/README.md](docs/README.md).
+The docs are indexed in [docs/README.md](docs/README.md), and the porting and debugging notes for contributors are in [docs/internals](docs/internals/README.md).
 
-## Credits
+## Credits and acknowledgements
 
-AnySwitch is a fork of [nxnative](https://github.com/seedds/nxnative) by seedds (MIT), which is built on the native-execution approach of [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) (MIT).
-It also uses the shader translator of Ryujinx (MIT), and draws on Atmosphère, yuzu, LibHac, SPIRV-Cross, deko3d, libvpx, stb_vorbis and the Vulkan headers.
+AnySwitch started from [nxnative](https://github.com/seedds/nxnative) by seedds (MIT), and keeps its code mergeable with it.
+nxnative in turn builds on the native-execution approach of [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) (MIT).
+AnySwitch uses the shader translator of Ryujinx (MIT), and draws on Atmosphère, yuzu, LibHac, SPIRV-Cross, deko3d, libvpx, stb_vorbis and the Vulkan headers.
+Thanks to the authors and maintainers of all of them.
 The full list with licenses is in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
