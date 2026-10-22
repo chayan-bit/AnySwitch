@@ -201,5 +201,17 @@ int mtl_tex_gpu_owned(uint64_t serial);                                  // its 
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
 void mtl_reg_samp(int id, const samp_par *p);
 void mtl_prog_release(prog_t *p);
+// A program got its shaders (nvnProgramSetShaders, game thread): the pipeline warm-up may start on its pair (DM_PSO_PROGWARM, nvn_mtl.m)
+void mtl_prog_created(const prog_t *p);
+// Record-time kick (rank 7, nvn_mtl.m): the pipeline state of the draws a thread is recording, followed in hle_nvn.c, so a worker can make a draw's pipeline while the game is still
+// recording, before the submission replays it. Each recording thread keeps its own state (render targets: see hle_nvn.c); a wrong guess costs a worker, never a draw
+typedef struct {
+    const prog_t *prog[2]; uint64_t ser[2];   // the programs bound to the vertex and the fragment stage, and their serials (a program object may be given new shaders)
+    uint32_t cfmt[8], dfmt, samples;          // NVN formats of the render targets (a colour view's format when it sets one; BC targets, never attached, 0)
+    blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms;
+    uint32_t nattr, nstream; va_st attr[16]; vs_st stream[16];
+} rk_state;
+extern int g_mtl_rk_on;                   // set by nvn_mtl.m once flexible pipelines are on and DM_PSO_RECKICK is not 0
+void mtl_rec_draw(const rk_state *r);     // game thread, at a draw whose state changed since the previous draw of this thread: cheap when the state was seen before
 // New serial (> 0, globally increasing)
 uint64_t nvn_new_serial(void);

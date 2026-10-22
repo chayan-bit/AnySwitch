@@ -224,6 +224,53 @@ The keys are semi-transparent with a lighter fill, a bright rim and a soft top-l
 On a 13-inch iPad (4:3) the bars are 129 pt tall in landscape and the controls fit; on an 11-inch iPad (about 16:10) the bottom bar is 78 pt, so the layout falls back to the overlay.
 Touches on the bars that no control takes are not sent to the game's touch screen.
 
+## Pipeline coverage
+
+A render pipeline compiled at a game's first draw costs tens of milliseconds, so the layer tries to have each one made before the draw that needs it, for any title and without playing it first.
+Every piece is game-agnostic; anything specific to a container format is a build-time accelerator, keyed by the format and never by the title.
+
+### Program pairs at build time
+
+`tools/dmsh_pairs.py` recovers the vertex and pixel shader pairs a title can draw with from its RomFS and main, into `program_pairs.tsv` (game-derived build output).
+Its rules, in order of precision:
+
+- `split` reads a packer's convention that lists a material's two shader files next to each other;
+- `tfx` reads the technique tables of TinyEffect objects compressed inside main;
+- `iface` is the generic rule: from the Maxwell shader program header, a pixel shader pairs with a vertex shader when every generic attribute it reads is one the vertex shader writes, and their shader files are at most `WINDOW` apart in container order.
+
+The interface rule over-pairs (any linkable neighbours), so its pairs rank last in the archive.
+`build_ipa.sh` runs the tool for NVN titles (`PAIRS=0` skips it, `PAIRS=force` rescans) and prints a coverage self-check: how many of the title's vertex and pixel shaders are in a pair, for all pairs, the accelerators alone and the interface rule alone.
+A shader in no pair compiles on first use; a shader in a pair is necessary but not sufficient, and the device's hit and miss log is the real coverage.
+
+### Flexible pipelines and skip-draw
+
+`nvn/nvn_flexpso.m` (on with `DM_PSO_FLEX=1`) makes pipelines through Metal 4's `MTL4Compiler` with colour formats, write masks and blending unspecialized, so one unspecialized pipeline per shader pair and vertex layout serves every colour state.
+The unspecialized pipeline comes from a shipped `MTL4Archive` (`dm/pso_flex.metallib`, or `DM_PSO_FLEX_ARCHIVE=path|off`) or is compiled; a worker then specializes it for the draw's colour state.
+The render thread never compiles or specializes: it asks, draws if the pipeline is ready, and otherwise skips the draw and counts it.
+`DM_PSO_FLEX_WAIT_US=n` lets it wait at most n microseconds (0 by default; -1 waits until ready, for pixel comparisons only).
+The archive opens on a worker, so boot does not wait for it.
+A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (the archive's coverage of what was asked), compiles, specializations and skipped draws.
+
+### Pipelines started ahead of the draw
+
+- At program creation (`nvnProgramSetShaders`), a program that carries both stages names its pair: up to `DM_PSO_PROGWARM` utility-QoS workers (default 2, 0 turns it off) load both shaders and compile a stand-in pipeline that leaves the functions in Metal's compiled-function cache. Games that create single-stage programs and bind stages separately get nothing here. `DM_PSO_PROGLOG=path` logs creations, warm-ups and first draws.
+- At record time, each recording thread follows the binds of its command buffer (programs per stage, vertex layout, render target formats, colour and multisample state) in `hle_nvn.c`; a draw after a change hands the state to `mtl_rec_draw`, which hashes it and, for a state not seen before, has a worker predict the draw's pipeline key and start it in `nvn_flexpso.m`. The submission replays the draw later and usually finds it made. A thread's state carries over between its command buffers; a thread that never set render targets takes the last ones any thread set, so a wrong guess usually costs only a specialization (the unspecialized pipeline is shared). Only draws with both stages bound are kicked, at utility QoS and at most `DM_PSO_KICK_MAX` (default 1) in flight, the rest dropped: Metal's compiler serves compiles in turn, and a backlog of guesses delays the pipelines draws are waiting for. Off by default, `DM_PSO_RECKICK=1` (with `DM_PSO_FLEX=1`) turns it on: the draw-time path with its scan-ahead already skips most new pipelines for a single frame, and in measurements the guesses did not lower that.
+- Worker-loaded shader objects are the ones the submit thread uses (one shared table), so a pipeline made ahead of the draw matches the draw's key.
+- `DM_PSO_SKIPLOG=path` writes one line per skipped draw (present count, key hash), and the `[pso-flex]` lines count kicks, kicks ready at their draw, draws, and the game-thread cost of the kick.
+
+### Archive build and the device's pipeline log
+
+`build_ipa.sh` builds `dm/pso_flex.metallib` with `tools/dmsh_flexarch.py`, filling tiers in order until `PSO_FLEX_MB` (default 300, 0 = no cap):
+
+1. harvested and learned pipelines: the R records of `$W/build/pso_user*.tsv`;
+2. accelerator pairs: `split` and `tfx` pairs and the profile's same-variation table (`shader_pairs.tsv`);
+3. interface pairs.
+
+The build prints what each tier gave and the size written.
+Before that, `ios/tools/pull_pso_user.py` copies the pipeline log (`Documents/pso_user.tsv`) from every reachable device that has the app installed (`PSO_PULL=0` skips it); the app always writes that log, off the render thread.
+`PSO_FLEX=0` skips the archive and `PSO_FLEX_ARCHIVE=path` takes a finished one.
+The archive names the libraries the app ships, so it is built from the final (packed) libraries.
+
 ## Known limitations
 
 The following paths are not implemented and report red in the log when reached (`RED_ONCE` in `nvn/nvn_mtl.m`):

@@ -55,6 +55,16 @@ if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json 
 # PSO_HARVEST = harvest files separated by ':', default every $W/build/pso_harvest*.metallib: copy a device harvest (Documents/pso_harvest.metallib) there under its own name, for example
 # pso_harvest_ipad.metallib, and it is merged with the Mac one. No archive is no error: pipelines then compile on first use, as before
 MSL_MAC=${MSL_MAC:-$W/build/cache/metal_shader_cache}
+# Program pairs (dm/gfx/README.md, pipeline coverage): dmsh_pairs.py recovers the vertex / pixel shader pairs the title can draw with from its RomFS and main, without playing, into
+# $W/build/program_pairs.tsv (kept while newer than the tool), and prints how many of the title's shaders are in a pair: the harvest-free coverage check of a new title.
+# PAIRS=0 skips it, PAIRS=force rescans. Needs lz4 in python3, else it runs under nix-shell
+PAIRS_TSV=$W/build/program_pairs.tsv
+if [ "$GFXAPI" = nvn ] && [ "${PAIRS:-1}" != 0 ]; then
+  t "program pairs (dmsh_pairs.py)"; [ "${PAIRS:-1}" = force ] && rm -f "$PAIRS_TSV"
+  PC=(python3 "$DM/gfx/tools/dmsh_pairs.py" "$ROMFS" "$(dirname "$ROMFS")/ExeFS/main" "$PAIRS_TSV" --table "$GD/shader_pairs.tsv" --coverage "$GD/shader_map.tsv" --reuse)
+  if python3 -c 'import lz4' 2> /dev/null; then DM_GAME=$GAME "${PC[@]}"; else DM_GAME=$GAME nix-shell -p 'python3.withPackages(ps:[ps.lz4])' --run "$(printf '%q ' "${PC[@]}")"; fi \
+    || { rm -f "$PAIRS_TSV"; t "[RED] dmsh_pairs.py failed above: no program pairs"; }
+fi
 # Pipeline expansion (docs/stageB-pipeline-expansion.md): PSO_EXPAND = pso_user.tsv files of harvest runs separated by ':'; dmsh_psoexpand.py adds the pipelines their learned states give
 # other shader pairs and replays them through the host's warm-up on this Mac into $W/build/pso_harvest_expand.metallib, merged below like any harvest. PSO_EXPAND_ARGS = more flags (--max-bytes ...)
 if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ]; then
@@ -70,6 +80,22 @@ elif [ "$GFXAPI" = nvn ] && [ ${#HV[@]} -gt 0 ]; then
   mkdir -p "$O" && python3 "$DM/gfx/tools/dmsh_psoarch.py" "${HV[@]}" --libs "$MSL_MAC/b-$V" "$MSL_IOS/b-$V" --target-libs "$MSL_IOS/b-$V" --msl "$MSL_MAC/b-$V" \
     ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cp "$O/pso_archive.metallib" Gen/dm/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
 else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pipeline archive, pipelines compile on first use"; fi
+# Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
+# the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
+# accelerator rules and the same-variation table, then the interface pairs. PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
+# app ships, so it is built from the packed libraries once those are packed
+if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
+  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp "$PSO_FLEX_ARCHIVE" Gen/dm/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
+  else
+    [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
+    UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
+    PL=(); for p in "$PAIRS_TSV" "$GD/shader_pairs.tsv"; do [ -f "$p" ] && PL+=("$p"); done
+    t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
+    make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
+      ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/pso_flex.metallib" \
+      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" Gen/dm/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
+  fi
+fi
 # Diagnostic build: DM_ENV_FILE=file → dm/env.txt in the bundle (main.m sets one environment variable per line at boot)
 if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy DM_ENV_FILE"; t "env: $(grep -v '^#' "$DM_ENV_FILE" | tr '\n' ' ')"; fi
 # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)

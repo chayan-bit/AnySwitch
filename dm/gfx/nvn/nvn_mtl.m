@@ -24,8 +24,11 @@
 #include "nvn_refl.h"
 #include "nvn_cover.h"
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
+#include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree (in the game profile folder, -I from the Makefile)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
+extern int g_mtl_rk_on;   // record-time kick (defined with it, below)
+uint64_t mtl_present_count(void);
 // Texture slot table per stage: 0-127 the combined handles (nvnCommandBufferBindTexture), 128-255 the separate texture binds (NVN_SEPTEX_SLOT0, nvn_obj.h)
 #define NTEX 256
 // The NVN driver's constant segments, one layout in every game (dm/gfx/tools/dmsh_build.py), byte offsets: c2 holds the combined handles at 0x20 + 8 r (41 slots up to the separate table:
@@ -270,6 +273,7 @@ static void udc_selftest(void) {
     }
 }
 void mtl_init(void) {
+    { const char *f = getenv("DM_PSO_FLEX"), *k = getenv("DM_PSO_RECKICK"); g_mtl_rk_on = f && atoi(f) > 0 && k && atoi(k) > 0; }   // record-time kick (rank 7, below)
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
     const char *link = getenv("DM_PRESENT_LINK");
@@ -1163,7 +1167,7 @@ void mtl_present_flush(void);
 // took 78 s on the iPhone (5 s windowless on the Mac). A swapchain texture is not handed back before its previous present is processed (AcquireTexture waits for that ticket)
 void mtl_finish(void) { mtl_finish_gpu(); }
 static void present_drop_for_suspend(void);
-void mtl_drain(void) { psoarch_flush(1); present_drop_for_suspend(); mtl_present_flush(); mtl_init(); id<MTLCommandBuffer> cb = q_cb(); [cb commit]; [cb waitUntilCompleted]; mtl_finish_gpu(); }
+void mtl_drain(void) { psoarch_flush(1); flexpso_log(); present_drop_for_suspend(); mtl_present_flush(); mtl_init(); id<MTLCommandBuffer> cb = q_cb(); [cb commit]; [cb waitUntilCompleted]; mtl_finish_gpu(); }
 
 // ================= Render replay =================
 #include "../../host/front.h"
@@ -2647,7 +2651,9 @@ static NSString *exe_rel(const char *rel) {
     return [NSString stringWithFormat:@"%s/%s", dir, rel];
 }
 // Shader mapping table (output of tools/shader_map.py): at runtime only 'Switch control section key → stage' is used; shaders are always translations of the Switch originals (tools/dmsh_build.py produces <key>_b.metallib + reflection offline)
-static void shmap_load(void) {
+static void shmap_load_(void);
+static void shmap_load(void) { static dispatch_once_t once; dispatch_once(&once, ^{ shmap_load_(); }); }   // also called from game threads (mtl_prog_created): once, and callers wait until it is complete
+static void shmap_load_(void) {
     if (g_shmap) return;
     const char *e = getenv("DM_NVN_SHMAP");
     NSString *path = e ? @(e) : exe_rel("../games/" DM_GAME_ID "/shader_map.tsv");   // default: the current game profile folder (Mac: dm/games/<id>; on iOS main.m sets DM_NVN_SHMAP)
@@ -2688,7 +2694,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn; uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn; id<MTLLibrary> lib; uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     // The argument buffer encoded last time
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; uint32_t ab_binst;   // ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; } @end   // bflib: readable-tile version <key>_bf (merge B step 2)
@@ -2779,20 +2785,34 @@ static FILE *pso_user_file(void) {
     if (path) g_pso_user = fopen(path.fileSystemRepresentation, "a");
     return g_pso_user;
 }
+// Passive learning: the log is on whenever there is a save directory (always on the device), and its lines go to a serial utility queue: the dedup against the shipped and earlier
+// lists (read once, on that queue) and the append never run on the submit thread. build_ipa.sh pulls it from a reachable device and folds its R records into the archive's first tier
+static uint64_t g_pu_lines, g_pu_bytes, g_pu_ns, g_pu_init_ns;   // written on the queue only; init: the one-time read of the shipped and earlier lists
+static void pso_user_write(const char *line);
 static void pso_user_record(const char *fmt, ...) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.pso-user", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    char *copy = strdup(line);
+    dispatch_async(q, ^{ @autoreleasepool { uint64_t t0 = bp_now(); pso_user_write(copy); free(copy); g_pu_ns += bp_now() - t0; } });
+}
+static void pso_user_write(const char *line) {
     FILE *f = pso_user_file();
     if (!f) return;
-    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
     if (!g_pso_user_seen) {
-        g_pso_user_seen = [NSMutableSet set];
+        uint64_t t0 = bp_now(); g_pso_user_seen = [NSMutableSet set];
         NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
         NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
         for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:old]; }
+        g_pu_init_ns = bp_now() - t0;
     }
     size_t ll = strlen(line); NSString *s = [[NSString alloc] initWithBytes:line length:ll && line[ll - 1] == '\n' ? ll - 1 : ll encoding:NSUTF8StringEncoding];   // Compared with the manifest file line by line (without the newline)
     if (!s || [g_pso_user_seen containsObject:s]) return;
     [g_pso_user_seen addObject:s]; fputs(line, f); fflush(f);
+    g_pu_lines++; g_pu_bytes += ll;
+    if (g_pu_lines % 100 == 0) MLOG("[pso-user] %llu new lines, %.1f KB appended to the pipeline log (%.1f us per line, plus %.1f ms once to read the lists; off the render thread)",
+                                    (unsigned long long)g_pu_lines, g_pu_bytes / 1024.0, (g_pu_ns - g_pu_init_ns) / 1e3 / g_pu_lines, g_pu_init_ns / 1e6);
 }
 // Build the library from a .metallib file without permanently occupying a file descriptor: newLibraryWithURL keeps that file open for as long as the library object lives (one per game shader - of the 258 descriptors the iOS app permanently holds in a run, 213 are these,
 // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
@@ -2834,7 +2854,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
         atomic_fetch_add(&g_vs_loaded, 1);
         if (atomic_load(&g_depth_zero)) { if (j[@"entry_z"]) entry = j[@"entry_z"]; else RED_ONCE(85, "vertex shader %s has no near=0 entry (entry_z): depth stays in the GL convention", pc.UTF8String); }
     }
-    o->fn = [lib newFunctionWithName:entry]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
+    o->fn = [lib newFunctionWithName:entry]; o->lib = lib; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);   // lib: Metal 4 pipelines name functions by library (nvn_flexpso.m)
     if (stage == 0) o->layer_out = t_lib_layer;   // writes the layer (render_target_array_index, named in the library's metadata): its passes are layered and its pipelines get an input class (pso_desc)
     // A function that declares function constants cannot go into a pipeline until it is specialized, even when every constant is optional. SPIRV-Cross declares one for shaders that read a
     // texel buffer (spvLinearTextureAlignmentOverride, used only through is_function_constant_defined; one of Pokémon Legends: Z-A's imgui pixel shaders, 2bd5037003980716): an empty set of
@@ -2893,11 +2913,21 @@ static int rt_range_pr_ro(NvProg *p) {
     for (int k=0;k<6;k++) if (p->sh[k] && (k>1 || p->sh[k]->stage != k || !p->sh[k]->range_ro || p->sh[k]->rf.drv_read[0] || p->sh[k]->rf.drv_read[2])) return 0;
     return 1;
 }
+// The canonical shader object of each key, for every thread: pipeline keys hold shader pointers, so a pipeline a worker makes ahead of the draw (program-creation warm-up,
+// record-time kick) only matches the draw's key when both use the same object. Put-if-absent returns the object that won
+static os_unfair_lock g_sh_lock = OS_UNFAIR_LOCK_INIT; static NSMutableDictionary<NSString *, NvShader *> *g_sh_shared;
+static NvShader *sh_shared_get(NSString *k) { os_unfair_lock_lock(&g_sh_lock); NvShader *o = g_sh_shared[k]; os_unfair_lock_unlock(&g_sh_lock); return o; }
+static NvShader *sh_shared_put(NSString *k, NvShader *o) {
+    if (!o) return nil;
+    os_unfair_lock_lock(&g_sh_lock); if (!g_sh_shared) g_sh_shared = [NSMutableDictionary dictionary];
+    NvShader *had = g_sh_shared[k]; if (!had) g_sh_shared[k] = o; os_unfair_lock_unlock(&g_sh_lock); return had ? had : o;
+}
 static NvShader *shader_get(NSString *pc, int stage) {
     if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
     NvShader *o = g_shcache[pc];
     if (o) return o;
-    uint64_t bt = bp_now(); o = shader_load(pc, stage);
+    if ((o = sh_shared_get(pc))) { g_shcache[pc] = o; return o; }   // loaded by a worker ahead of its first draw
+    uint64_t bt = bp_now(); o = sh_shared_put(pc, shader_load(pc, stage));
     if (!o) return nil;
     g_shcache[pc] = o;
     pso_record("S\t%s\t%d\n", pc.UTF8String, stage);
@@ -3808,9 +3838,35 @@ static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_
 static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
 static void pso_predict_rest(void);
 static NSString *pso_label(NvShader *vs, NvShader *fs) { return [NSString stringWithFormat:@"vertex %s fragment %s", vs->key, fs ? fs->key : "-"]; }   // shader keys, for archive miss lines
+// A new pipeline: cached, and recorded for the warm-up of later runs (pso_user.tsv) and DM_PSO_RECORD (g_pso_lmap / g_pso_fz: the merged pass being drawn, if any)
+static void pso_keep(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLRenderPipelineState> ps) {
+    pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(k, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
+    pso_record("R\t%s\n", shex);
+    pso_user_record("R\t%s\n", shex);
+    hm_put_id(&g_pso, k, ps);
+}
+// Flexible pipelines (nvn_flexpso.m): the unspecialized key is the pipeline key without colour formats, write masks, blending and depth / stencil formats, plus what pso_desc takes from the shader
+typedef struct { pso_key k; int32_t layer_out, pad; } pso_ukey;
+static void pso_ukey_fill(const pso_key *k, NvShader *vs, pso_ukey *u) {
+    memset(u, 0, sizeof *u); memcpy(&u->k, k, sizeof *k);
+    memset(u->k.cfmt, 0, sizeof u->k.cfmt); u->k.dfmt = u->k.sfmt = 0; u->k.blend_en = u->k.chmask = 0; memset(u->k.blend, 0, sizeof u->k.blend);
+    u->layer_out = vs->layer_out;
+}
+static id<MTLRenderPipelineState> pso_flex_get(const pso_key *k, NvShader *vs, NvShader *fs, int *pending) {
+    pso_ukey u; pso_ukey_fill(k, vs, &u); char lb[64]; snprintf(lb, sizeof lb, "vertex %s fragment %s", vs->key, fs ? fs->key : "-");
+    return flexpso_get(k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(k, vs, fs, nil, 0); }, pending);
+}
+// DM_PSO_SKIPLOG=path: one line per skipped draw, <present count> <TAB> <key hash>, for the skip measurement (dm/gfx/README.md, pipeline coverage)
+static void pso_skip_log(const pso_key *k) {
+    static FILE *f; static int init; if (!init) { init = 1; const char *p = getenv("DM_PSO_SKIPLOG"); if (p && (f = fopen(p, "w"))) setvbuf(f, NULL, _IOLBF, 0); }   // line-buffered: the process may be killed
+    if (!f) return;
+    uint64_t h = 1469598103934665603ull; const uint8_t *b = (const uint8_t *)k; for (size_t i = 0; i < sizeof *k; i++) h = (h ^ b[i]) * 1099511628211ull;
+    fprintf(f, "%llu\t%016llx\n", (unsigned long long)mtl_present_count(), (unsigned long long)h);
+}
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k)) return;
+    if (flexpso_on()) { pso_ukey u; pso_ukey_fill(k, vs, &u); flexpso_kick(k, &u, vs->lib, fs ? fs->lib : nil, pso_label(vs, fs).UTF8String, ^{ return pso_desc(k, vs, fs, nil, 0); }, 1); return; }   // a worker makes it, the draw takes it
     pthread_mutex_lock(&g_pp_mu);
     int at = pso_pend_find(k), slot = -1;
     if (at < 0) for (int i = 0; i < PSO_PEND_MAX; i++) if (!g_pp[i].used) { slot = i; break; }
@@ -3832,6 +3888,7 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // Called 
 }
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused);
 static id<MTLFunction> ms_fs_override(NvShader *fs);   // DM_NVN_MAGSCAN (defined before draw)
+static void pw_first_draw(NvShader *vs, NvShader *fs);   // DM_PSO_PROGLOG (program-creation warm-up, below)
 static int pf_int_kind(MTLPixelFormat f);
 // A pipeline Metal refused: when a colour the fragment shader writes has an integer attachment, its output was most likely translated as float (a game without PC reflection has no output types,
 // Tears of the Kingdom's BC4 block encoder and Ultrahand mask were the first cases). Writes the facts row that declares the outputs, for the profile's shader_facts_manual.tsv (merged by shader_split.py)
@@ -3855,10 +3912,17 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
     if (hm_get_id(&g_pso_fail, &k)) return nil;
-    id<MTLRenderPipelineState> ps;
+    pw_first_draw(vs, fs);
+    id<MTLRenderPipelineState> ps = nil;
     NSError *e = nil; uint64_t bt = bp_now();
-    ps = g_pso_lmap || ms_fn ? nil : pso_pend_take(&k);
-    if (ps) g_pp_taken++;
+    int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw is skipped until then; merged passes and specialized fragments as before
+    if (flex) {
+        if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // first miss in this submission: ask for the later ones too
+        int pending; ps = pso_flex_get(&k, vs, fs, &pending);
+        if (!ps && pending) { pso_skip_log(&k); return nil; }
+    }
+    if (!ps) ps = flex || g_pso_lmap || ms_fn ? nil : pso_pend_take(&k);
+    if (ps) g_pp_taken += !flex;
     else {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
         MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL);
@@ -3874,10 +3938,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
     if (!ps) { char hint[200]; MLOG("[RED] failed to create render pipeline (vertex %s fragment %s): %s%s", vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, pso_fout_hint(fs, g_pass.cfmt, hint, sizeof hint));
                hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
-    if (!ms_fn) { pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&k, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
-        pso_record("R\t%s\n", shex);
-        pso_user_record("R\t%s\n", shex); }
-    hm_put_id(&g_pso, &k, ps);
+    if (ms_fn) hm_put_id(&g_pso, &k, ps); else pso_keep(&k, vs, fs, ps);
     return ps;
 }
 static NSString *warm_key(const char *s, size_t n) {
@@ -3926,7 +3987,9 @@ static void warm_worker(NSArray<NSString *> *paths) {
                                                 if (!fsfn) { g_warm_skip_fz++; continue; }
                     }
                     pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
-                    NSError *e = nil; id ps = psoarch_render(pso_desc(&k, vs, fs, fsfn, sk.merged), pso_label(vs, fs).UTF8String, &e);
+                    NSError *e = nil; id ps = nil;
+                    if (flexpso_on() && !fsfn && !sk.merged) { pso_ukey u; pso_ukey_fill(&k, vs, &u); ps = flexpso_make(&u, pso_desc(&k, vs, fs, nil, 0), vs->lib, fs ? fs->lib : nil, pso_label(vs, fs).UTF8String, &e); }   // as the draw would (pso_get_)
+                    if (!ps) ps = psoarch_render(pso_desc(&k, vs, fs, fsfn, sk.merged), pso_label(vs, fs).UTF8String, &e);
                     if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {   // a vertex shader that writes the layer (see pso_get_)
                         vs->layer_out = 1; e = nil; ps = psoarch_render(pso_desc(&k, vs, fs, fsfn, sk.merged), pso_label(vs, fs).UTF8String, &e); }
                     if (!ps) { MLOG("[RED] background render pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
@@ -3958,6 +4021,132 @@ int mtl_warm_wait(int timeout_ms) {
     while (atomic_load(&g_warm_running) && (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms) usleep(2000);
     return (int)((bp_now() - t0) / 1000000ull) + 1;
 }
+// ---- Program-creation warm-up (dm/gfx/README.md, pipeline coverage, generic path): the game creates its programs (nvnProgramSetShaders) when it loads content, usually well before
+// their first draw, and the call names the exact vertex + pixel pair. DM_PSO_PROGWARM=n (default 2, 0 = off): n utility-QoS workers load the pair's shaders and compile a stand-in
+// pipeline of the pair (no vertex layout, one sample): it cannot be used for the draw, but it leaves both functions in Metal's compiled-function cache, which cuts the draw's own compile
+// (by about a fifth, measured on a Mac). Only programs that carry both stages: a game that binds its stages separately creates single-stage programs whose pair is unknown here.
+// DM_PSO_PROGLOG=path: one line per program created (C), warm-up done (R) and first draw of a pair (D), with uptime in ns, for the measurement (dm/gfx/README.md, pipeline coverage)
+static int g_pw_n = -1; static FILE *g_pw_log; static os_unfair_lock g_pw_lock = OS_UNFAIR_LOCK_INIT;
+static dispatch_semaphore_t pw_sem(void) {   // the background slots shared by the warm-up and the record-time kick: DM_PSO_PROGWARM of them, 2 when it is unset or 0
+    static dispatch_once_t once; static dispatch_semaphore_t s;
+    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"); int v = n ? atoi(n) : 0; s = dispatch_semaphore_create(v > 0 ? v : 2); });
+    return s;
+}
+static NSMutableSet<NSString *> *g_pw_seen, *g_pw_drawn;
+static void pw_log(const char *fmt, ...) {
+    if (!g_pw_log) return;
+    va_list ap; va_start(ap, fmt); os_unfair_lock_lock(&g_pw_lock); vfprintf(g_pw_log, fmt, ap); fflush(g_pw_log); os_unfair_lock_unlock(&g_pw_lock); va_end(ap);
+}
+static NvShader *pw_shader(NSString *key, int stage) { NvShader *sh = sh_shared_get(key); return sh ? sh : sh_shared_put(key, shader_load(key, stage)); }   // shader_get takes it from the shared table
+static void prog_created(const prog_t *p);
+void mtl_prog_created(const prog_t *p) { @autoreleasepool { prog_created(p); } }   // a game thread: its implicit pool is never drained
+static void prog_created(const prog_t *p) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"), *l = getenv("DM_PSO_PROGLOG"); g_pw_n = n ? atoi(n) : 2; if (l) g_pw_log = fopen(l, "w");
+        g_pw_seen = [NSMutableSet set]; g_pw_drawn = [NSMutableSet set]; });
+    if (!g_pw_log && g_pw_n <= 0) return;
+    shmap_load();
+    NSString *vk = nil, *fk = nil;
+    for (unsigned i = 0; i < p->nstage && i < 6; i++) {
+        uint8_t md[8]; if (!prog_key(p, i, md)) continue;
+        NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]], *st = g_shmap[k];
+        if ([st isEqualToString:@"vertex"]) vk = [k stringByAppendingString:@"_b"]; else if ([st isEqualToString:@"pixel"]) fk = [k stringByAppendingString:@"_b"];
+    }
+    if (!vk || !fk) return;   // single-stage programs: no pair, no warm-up
+    NSString *pair = [NSString stringWithFormat:@"%@\t%@", vk, fk ?: @"-"];
+    os_unfair_lock_lock(&g_pw_lock); int fresh = ![g_pw_seen containsObject:pair]; if (fresh) [g_pw_seen addObject:pair]; os_unfair_lock_unlock(&g_pw_lock);
+    pw_log("C\t%llu\t%s\t%d\n", (unsigned long long)bp_now(), pair.UTF8String, fresh);
+    if (!fresh || g_pw_n <= 0) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_semaphore_wait(pw_sem(), DISPATCH_TIME_FOREVER);
+        @autoreleasepool {
+            struct timespec c0, c1; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0); uint64_t t0 = bp_now();
+            NvShader *vs = pw_shader(vk, 0), *fs = pw_shader(fk, 1); id ps = nil;
+            if (vs && fs) {
+                pso_key k; memset(&k, 0, sizeof k); k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.samples = 1; NSError *e = nil;
+                MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, nil, 0);
+                if (flexpso_on()) { pso_ukey u; pso_ukey_fill(&k, vs, &u); ps = flexpso_make(&u, d, vs->lib, fs->lib, "program warm-up", &e); }
+                else ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];   // not psoarch_render: a stand-in must not reach a harvest archive
+            }
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+            pw_log("R\t%llu\t%s\t%d\t%.3f\t%.3f\n", (unsigned long long)bp_now(), pair.UTF8String, ps != nil, (bp_now() - t0) / 1e6, (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6);
+        }
+        dispatch_semaphore_signal(pw_sem());
+    });
+}
+static void pw_first_draw(NvShader *vs, NvShader *fs) {   // submit thread, pipeline cache miss
+    if (!g_pw_log) return;
+    NSString *pair = [NSString stringWithFormat:@"%s\t%s", vs->key, fs ? fs->key : "-"];
+    if ([g_pw_drawn containsObject:pair]) return;
+    [g_pw_drawn addObject:pair]; pw_log("D\t%llu\t%s\n", (unsigned long long)bp_now(), pair.UTF8String);
+}
+// ---- Record-time kick (rank 7, dm/gfx/README.md, pipeline coverage): hle_nvn.c follows the binds of each recording thread and calls mtl_rec_draw at a draw whose state changed. A state not
+// seen before goes to a background worker (utility QoS, the warm-up's slots) that predicts the draw's pipeline key from it and asks nvn_flexpso.m to start that pipeline, so it is usually
+// made before the submission replays the draw, which then finds it ready instead of skipping. A wrong guess (state left by an earlier command buffer, a depth attachment the pass drops)
+// costs a specialization at most: the unspecialized pipeline is shared. Off by default (it did not lower the skips of the draw-time path with its scan-ahead); DM_PSO_RECKICK=1 with DM_PSO_FLEX=1 turns it on
+int g_mtl_rk_on;
+enum { RK_SEEN = 1 << 17 };   // ponytail: a fixed table, no kicks once it is 3/4 full (98k distinct draw states); a clearing epoch if a title gets there
+static uint64_t g_rk_seen[RK_SEEN]; static uint32_t g_rk_nseen; static os_unfair_lock g_rk_lock = OS_UNFAIR_LOCK_INIT;
+static int rk_first(uint64_t h) {   // 1 the first time h is seen
+    h |= 1; int fresh = 0;
+    os_unfair_lock_lock(&g_rk_lock);
+    if (g_rk_nseen < RK_SEEN / 4 * 3)
+        for (uint32_t i = (uint32_t)(h >> 20) & (RK_SEEN - 1);; i = (i + 1) & (RK_SEEN - 1)) {
+            if (g_rk_seen[i] == h) break;
+            if (!g_rk_seen[i]) { g_rk_seen[i] = h; g_rk_nseen++; fresh = 1; break; }
+        }
+    os_unfair_lock_unlock(&g_rk_lock);
+    return fresh;
+}
+static NSString *rk_shader(const prog_t *p, NSString *stage) {   // the program's shader of that stage as the shader map names it; on the game thread (the program may be finalized later)
+    if (!p) return nil;
+    for (unsigned i = 0; i < p->nstage && i < 6; i++) {
+        uint8_t md[8]; if (!prog_key(p, i, md)) continue;
+        NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
+        if ([(NSString *)g_shmap[k] isEqualToString:stage]) return [k stringByAppendingString:@"_b"];
+    }
+    return nil;
+}
+static void rk_kick(const rk_state *r, NSString *vk, NSString *fk) {   // worker: the key pso_key_fill would make from this state, asked for ahead of the draw
+    NvShader *vs = pw_shader(vk, 0), *fs = fk ? pw_shader(fk, 1) : nil;
+    if (!vs || (fk && !fs)) return;
+    pso_key k; memset(&k, 0, sizeof k); k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs;
+    uint32_t pf; uint8_t swz[4];
+    for (int i = 0; i < 8; i++) if (r->cfmt[i] && nvn_fmt_to_mtl((int)r->cfmt[i], &pf, swz) && pf && !mtl_fmt_block((MTLPixelFormat)pf)) k.cfmt[i] = pf;
+    if (r->dfmt && nvn_fmt_to_mtl((int)r->dfmt, &pf, swz) && pf) {
+        if (pf != MTLPixelFormatStencil8) k.dfmt = pf;
+        if (pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatDepth32Float_Stencil8) k.sfmt = pf;
+    }
+    k.samples = r->samples > 1 ? r->samples : 1;
+    k.blend_en = r->color.blend_en; k.chmask = r->chmask.mask; k.a2c = r->ms.a2c;
+    for (int i = 0; i < 8; i++) if (k.cfmt[i]) k.blend[i] = r->blend[i];
+    const nvn_refl *rf = &vs->rf;
+    for (int v = 0; v < rf->nv; v++) { int a = rf->v[v].nvn; if (a < 16 && a < (int)r->nattr) { k.attr[a] = r->attr[a]; int s = r->attr[a].stream; if (s < 16) k.stream[s] = r->stream[s]; } }
+    pso_ukey u; pso_ukey_fill(&k, vs, &u); char lb[64]; snprintf(lb, sizeof lb, "vertex %s fragment %s", vs->key, fs ? fs->key : "-");
+    flexpso_kick(&k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(&k, vs, fs, nil, 0); }, 0);
+    static FILE *kl; static dispatch_once_t once; dispatch_once(&once, ^{ const char *p = getenv("DM_PSO_KICKLOG"); if (p && (kl = fopen(p, "w"))) setvbuf(kl, NULL, _IOLBF, 0); });
+    if (kl) { pso_skey sk; char hex[sizeof sk * 2 + 1]; pso_skey_from(&k, vs, fs, 0, NULL, &sk); pso_skey_hex(&sk, hex); fprintf(kl, "K\t%s\n", hex); }   // DM_PSO_KICKLOG: the predicted keys, against the R records of the draws
+}
+static _Atomic uint64_t g_rk_calls, g_rk_new, g_rk_ns;   // game-thread cost of the kick: calls (draws after a state change), new states, time
+static void rk_new(const rk_state *r);
+void mtl_rec_draw(const rk_state *r) {
+    uint64_t t0 = bp_now(), h = 1469598103934665603ull; const uint8_t *b = (const uint8_t *)r; uint64_t w;
+    for (size_t i = 0; i + 8 <= sizeof *r; i += 8) { memcpy(&w, b + i, 8); h = (h ^ w) * 1099511628211ull; }
+    if (rk_first(h)) { atomic_fetch_add(&g_rk_new, 1); @autoreleasepool { rk_new(r); } }
+    atomic_fetch_add(&g_rk_calls, 1); atomic_fetch_add(&g_rk_ns, bp_now() - t0);
+}
+static void rk_new(const rk_state *r) {
+    shmap_load();
+    if (!flexpso_on()) return;
+    NSString *vk = rk_shader(r->prog[0], @"vertex"), *fk = rk_shader(r->prog[1], @"pixel");
+    if (!vk || !fk) return;   // both stages: a pair half known is mostly a stale bind of another pass
+    rk_state st = *r; dispatch_semaphore_t sem = pw_sem();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+        @autoreleasepool { rk_kick(&st, vk, fk); }
+        dispatch_semaphore_signal(sem);
+    });
+}
 // Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map: the app's dm/, put there by build_ipa.sh);
 // DM_PSO_HARVEST=path, or 1 for pso_harvest.metallib beside pso_user.tsv (Documents on iOS): every pipeline created is recorded for tools/dmsh_psoarch.py
 static void pso_archive_open(void) {
@@ -3967,6 +4156,8 @@ static void pso_archive_open(void) {
     if (h && !strcmp(h, "1")) { harv = [pso_user_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_harvest.metallib"];
         if (!harv) MLOG("[RED] DM_PSO_HARVEST=1 but neither DM_PSO_USER nor DM_SAVE is set: no harvest (give DM_PSO_HARVEST a path)"); }
     psoarch_open(g_dev, load, harv);
+    const char *f = getenv("DM_PSO_FLEX_ARCHIVE");
+    flexpso_open(g_dev, f && !strcmp(f, "off") ? nil : f && *f ? @(f) : [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_flex.metallib"], sizeof(pso_key), sizeof(pso_ukey));
 }
 static void warm_start(void) {
     if (g_warm_started++) return;
@@ -6521,17 +6712,17 @@ static void warm_claim(void) {
     for (WarmItem *item in items) {
         if (item->kind == 0) {
             if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
-            if (!g_shcache[item->key]) { g_shcache[item->key] = item->shader; g_warm_claim_shaders++; }
+            if (!g_shcache[item->key]) { g_shcache[item->key] = sh_shared_put(item->key, item->shader); g_warm_claim_shaders++; }
         } else if (item->kind == 1) {
             if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
             NvShader *vs = g_shcache[item->vs_key], *fs = item->fs_key.length ? g_shcache[item->fs_key] : nil;
-            if (!vs) { vs = item->vs; g_shcache[item->vs_key] = vs; }
-            if (item->fs_key.length && !fs) { fs = item->fs; g_shcache[item->fs_key] = fs; }
+            if (!vs) { vs = sh_shared_put(item->vs_key, item->vs); g_shcache[item->vs_key] = vs; }
+            if (item->fs_key.length && !fs) { fs = sh_shared_put(item->fs_key, item->fs); g_shcache[item->fs_key] = fs; }
             item->pso.vs = (__bridge void *)vs; item->pso.fs = (__bridge void *)fs;
             if (!hm_get_id(&g_pso, &item->pso)) { hm_put_id(&g_pso, &item->pso, item->object); g_warm_claim_rps++; }
         } else {
             NvShader *cs = g_shcache[item->key];
-            if (!cs) { cs = item->shader; if (!g_shcache) g_shcache = [NSMutableDictionary dictionary]; g_shcache[item->key] = cs; }
+            if (!cs) { cs = sh_shared_put(item->key, item->shader); if (!g_shcache) g_shcache = [NSMutableDictionary dictionary]; g_shcache[item->key] = cs; }
             const void *key = (__bridge const void *)cs;
             if (!hm_get_id(&g_cps, &key)) { hm_put_id(&g_cps, &key, item->object); g_warm_claim_cps++; }
         }
@@ -7609,7 +7800,9 @@ static double g_link_it_tin;   // Enqueue time of the frame the display-link cal
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
-    if (g_present_n % 600 == 0) psoarch_flush(0);   // harvest runs: new pipelines reach the disk within seconds (an app killed in the background loses no more); with an archive, the hits / misses so far
+    if (g_present_n % 600 == 0) { psoarch_flush(0); flexpso_log();
+        if (flexpso_on()) MLOG("[pso-flex] draws %llu so far; record-time kick on the game threads: %llu draws after a state change, %llu new states, %.2f us each, %.1f ms in all",
+                               (unsigned long long)g_stat_draw, (unsigned long long)g_rk_calls, (unsigned long long)g_rk_new, g_rk_calls ? g_rk_ns / 1e3 / g_rk_calls : 0.0, g_rk_ns / 1e6); }   // harvest runs: new pipelines reach the disk within seconds (an app killed in the background loses no more); with an archive, the hits / misses so far
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
         MLOG("[bootprof] t=%.3f s present #%llu: metallibs loaded %llu / %.1f ms; pipelines created %llu / %.1f ms (all synchronous on the submit thread); prewarmed and used: shaders %llu / render pipelines %llu / compute pipelines %llu; "

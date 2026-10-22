@@ -72,10 +72,16 @@ t_pfv: t_pfv.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_psoarch: t_psoarch.m ../nvn/nvn_psoarch.m ../nvn/nvn_psoarch.h
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_psoarch.m ../nvn/nvn_psoarch.m -framework Metal -framework Foundation
+t_flexpso: t_flexpso.m ../nvn/nvn_flexpso.m ../nvn/nvn_flexpso.h ../nvn/nvn_hmap.h
+	clang -O1 -g -Wall -fobjc-arc -o $@ t_flexpso.m ../nvn/nvn_flexpso.m -framework Metal -framework Foundation
 # Build tool, not a test: replays a pipeline manifest through the host's warm-up (tools/pso_replay.m, driven by tools/dmsh_psoexpand.py)
 pso_replay: ../tools/pso_replay.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ ../tools/pso_replay.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_psoarch t_passgpu t_present_ambient
+# Measurement tool, not a test: pipeline creation cost per record, classic vs Metal 4 vs Metal 4 unspecialized + specialization (tools/pso_flexbench.m, dm/gfx/README.md, pipeline coverage).
+# The embedded Info.plist gives it its own bundle id, so its system shader cache folder is its own and BENCH_CLEAR=1 can empty it
+pso_flexbench: ../tools/pso_flexbench.m pso_flexbench.plist ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -Wl,-sectcreate,__TEXT,__info_plist,pso_flexbench.plist -o $@ ../tools/pso_flexbench.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_psoarch t_passgpu t_present_ambient t_flexpso
 	./t_nvn
 	./t_dirty_slots
 	./t_dirty_race
@@ -112,4 +118,7 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	DM_GAME=$(GAME) python3 test_shader_split_zlib.py   # tools/shader_split.py zlib_streams: shaders compressed inside a module image
 	python3 test_psoarch.py   # runs t_psoarch: harvest -> lookup, then metal-tt archives (macOS looked up, iOS built)
 	MTL_DEBUG_LAYER=1 ./t_passgpu
+	MTL_DEBUG_LAYER=1 ./t_flexpso
+	DM_GAME=$(GAME) python3 test_pairs.py   # tools/dmsh_pairs.py split and iface rules, coverage
+	python3 test_flexarch.py   # tools/dmsh_flexarch.py archive tiers and size cap
 .PHONY: run
