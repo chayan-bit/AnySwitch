@@ -675,6 +675,24 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     PROG.end(', '.join(mods))
 
 
+
+def link_code(py, repo, out, env, logs, g):
+    """The Mac code dylib <patched>/code/macos.dylib (dm/ios/tools/gen_embed.py --dylib): every Mac boot of the conversion maps the rewritten modules from it (loader.c code_image),
+    the same vm_remap path as the iPad. Relinked when the rewrite, gen_embed.py or the code ABI changed (a few seconds)"""
+    mods, dst = g.words('modules'), out / 'code/macos.dylib'
+    kf = out / 'code/macos.key'
+    key = fingerprint(('files', [repo / 'dm/ios/tools/gen_embed.py', repo / 'dm/host/dm_abi.h', out.with_name(out.name + '.key')]), mods, g.id, ('cmd', ['clang', '--version']), env=env)
+    if dst.is_file() and reused(kf, key) is not None: return
+    PROG.stage('code dylib', step=', '.join(mods))
+    dst.parent.mkdir(exist_ok=True); rmtree(kf); tmp = dst.with_name('macos.partial.dylib')
+    with open(logs / 'code_dylib.log', 'w') as log:
+        r = subprocess.run([str(py), str(repo / 'dm/ios/tools/gen_embed.py'), str(out), str(out / 'code/embed.S'), *mods, '--title', g.id, '--dylib', str(tmp), '--target', 'macos'],
+                           env=env, stdout=log, stderr=subprocess.STDOUT)
+    (out / 'code/embed.S').unlink(missing_ok=True)
+    if r.returncode: PROG.end(ok=False); raise BuildError(f'gen_embed.py exit code {r.returncode} linking {dst} (full output: {logs / "code_dylib.log"})')
+    tmp.rename(dst); kf.write_text(f'{key}\n')
+    PROG.end(str(dst))
+
 GLSLC_SECS = 30   # the longest capture run: Three Houses compiles its 9 shaders within 1.2 s of boot, and the run stops as soon as every file the profile names is there
 
 
@@ -1329,6 +1347,7 @@ def main(args=None):
 
     patched = work / f'patched_{pkg_ver}'
     rewrite(py, repo, game / 'ExeFS', patched, env, logs, g)
+    link_code(py, repo, patched, env, logs, g)
     if 'DM_EXEFS_PATCHES' in env: report_exefs_patches(patched, g.words('modules'))
     if provisional:   # the keys that need the rewritten modules, then the heap check (both only change keys the host is built with, not the rewrite or the shader steps)
         provisional_prep(py, repo, env, logs, g)

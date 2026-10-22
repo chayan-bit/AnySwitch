@@ -60,6 +60,7 @@ jobs:
           python3 -I dm/gfx/tests/test_chain_headers.py
           python3 -I dm/ios/tests/test_device_gpu.py
           python3 -I dm/ios/tests/test_build_defaults.py
+          python3 -I dm/ios/tests/test_gen_embed.py
 
   host-tests:
     runs-on: macos-15
