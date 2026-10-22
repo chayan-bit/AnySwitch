@@ -122,6 +122,7 @@ The scripts in `tools/`; usage is written in each file's header:
 | `dmsh_chain.py`, `dmsh_chain.lock` | Translation chain version and tool fingerprints |
 | `dmsh_facts.py` | Reads the answer table `shader_facts.tsv` (which `shader_split.py` writes) |
 | `dmsh_fetch.py` | Generates the "readable tile" versions of fragment shaders |
+| `dmsh_rscale.py` | Internal-resolution facts in the reflection (each texture's `render_scale` index and usage flags, FragCoord use); run on a library dir, it checks them against the MSL |
 | `c1_guard.py` | Generates `c1_full.tsv` |
 | `cb_extent.py` | Generates `cb_extent.tsv` |
 | `dmsh_dryrun.py` | Dry-run conversion of the whole library, measuring only "can it be converted" |
