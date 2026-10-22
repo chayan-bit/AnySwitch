@@ -10,6 +10,7 @@ import os, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+AUTO_MODES = {'off': 0, 'on': 1, 'auto': 2}   # macro values of the keys that take auto (nvn_autostat.h NVN_AUTO_*)
 
 
 class Game:
@@ -107,12 +108,15 @@ def header(g):
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in fbs): sys.exit(f'{g.id}: feedback_snap takes fragment shader keys (8-16 lowercase hex digits): {fbs}')
     afr = g.words('alpha_from_red', '')   # fragment shader key prefixes that read single-channel textures mapped (R, 0, 0, 1) with alpha = red (nvn_mtl.m tex_alpha_red); none by default
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in afr): sys.exit(f'{g.id}: alpha_from_red takes fragment shader keys (8-16 lowercase hex digits): {afr}')
-    rcd = g.get('render_cond', 'off')   # NVN conditional rendering evaluated at replay, timestamp reports with counter 0 (nvn_mtl.m OP_RENDER_COND): on / off
-    if rcd not in ('on', 'off'): sys.exit(f'{g.id}: render_cond must be on or off: {rcd}')
-    tfu = g.get('tex_flush_upload', 'off')   # textures written by the CPU into a pool and published with nvnMemoryPoolFlushMappedRange are uploaded like packaged ones (hle_nvn.c): on / off
-    if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload must be on or off: {tfu}')
-    tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
-    if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
+    # Keys on their way to detection at run time take auto as well (nvn_autostat.h): macro 0 off / 1 on / 2 auto; auto resolves to off until the key's detector lands, and the host's
+    # environment switches (DM_NVN_RENDER_COND, DM_NVN_TEX_GUEST for both texture keys) override the profile either way
+    rcd = g.get('render_cond', 'off')   # NVN conditional rendering evaluated at replay, timestamp reports with counter 0 (nvn_mtl.m OP_RENDER_COND): on / off / auto
+    if rcd not in AUTO_MODES: sys.exit(f'{g.id}: render_cond must be on, off or auto: {rcd}')
+    tfu = g.get('tex_flush_upload', 'off')   # textures written by the CPU into a pool and published with nvnMemoryPoolFlushMappedRange are uploaded like packaged ones (hle_nvn.c): on / off / auto
+    if tfu not in AUTO_MODES: sys.exit(f'{g.id}: tex_flush_upload must be on, off or auto: {tfu}')
+    tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off / auto
+    if tdu not in AUTO_MODES or (tdu == 'on' and tfu != 'on') or (tdu == 'auto' and tfu == 'off'):
+        sys.exit(f'{g.id}: tex_dirty_upload must be on, off or auto, on needs tex_flush_upload on and auto needs it on or auto: {tdu}')
     tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
     if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
     vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
@@ -156,9 +160,9 @@ def header(g):
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',
-         f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
-         f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',
-         f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
+         f'#define DM_GAME_TEX_FLUSH_UPLOAD {AUTO_MODES[tfu]}',
+         f'#define DM_GAME_RENDER_COND {AUTO_MODES[rcd]}',
+         f'#define DM_GAME_TEX_DIRTY_UPLOAD {AUTO_MODES[tdu]}',
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',

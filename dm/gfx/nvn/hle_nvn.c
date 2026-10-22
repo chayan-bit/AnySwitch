@@ -17,6 +17,7 @@
 #include "nvn_fstep.h"
 #include "../../host/front.h"
 #include "nvn_dirty.h"
+#include "nvn_autostat.h"
 #include <mach/mach_time.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -309,20 +310,30 @@ NVN(nvnTextureBuilderGetStorageAlignment, size_t, const NVNtextureBuilder *b) {
 // textures with content 0, and the G-buffer's base colour came out black. Textures that can hold such data (not render targets, not linear, no packaged layout, in a pool
 // the CPU can write) are registered by address range; a flush that covers part of one marks it CPU-written (mtl_tex_cpu_written: uploaded from guest memory, re-uploaded
 // when its pages change). Off by default: in another game a flushed range could cover an image a shader writes, whose GPU content the upload would replace
+// Profile keys on their way to detection at run time (nvn_autostat.h): off / on / auto from the profile, overridden by DM_NVN_RENDER_COND and by DM_NVN_TEX_GUEST (both texture keys),
+// so a compatibility run A/Bs them without rebuilding the host. Resolved on first use: the iOS app applies its env.txt after the host's constructors
+static int g_key_mode[3]; static pthread_once_t g_key_once = PTHREAD_ONCE_INIT;
+static void key_init(void) {
+    const char *tg = getenv("DM_NVN_TEX_GUEST");
+    g_key_mode[NVN_KEY_RENDER_COND] = nvn_auto_mode(getenv("DM_NVN_RENDER_COND"), DM_GAME_RENDER_COND);
+    g_key_mode[NVN_KEY_TEX_FLUSH] = nvn_auto_mode(tg, DM_GAME_TEX_FLUSH_UPLOAD);
+    g_key_mode[NVN_KEY_TEX_DIRTY] = nvn_auto_mode(tg, DM_GAME_TEX_DIRTY_UPLOAD);
+}
+int nvn_key_mode(int key) { pthread_once(&g_key_once, key_init); return key >= 0 && key < 3 ? g_key_mode[key] : NVN_AUTO_OFF; }
 typedef struct { const uint8_t *mem; uint64_t size; tex_t t; uint64_t stamp; const void *span; } flush_tex;   // stamp: dirty-page generation at registration (tex_dirty_upload); span: its tracked range (nvn_dirty_span), so a check needs no search over every pool
 static flush_tex *g_ft; static size_t g_nft, g_cft; static pthread_mutex_t g_ft_mu = PTHREAD_MUTEX_INITIALIZER;
 static void ft_add(const tex_t *t) {
     // Buffer textures are views onto the pool buffer the GPU reads directly (tex_mtl in nvn_mtl.m); an upload would push Age of Calamity's 1,048,576-texel R32F one through tex_desc, past Metal's 2D limit
-    if (!DM_GAME_TEX_FLUSH_UPLOAD || !t->mem || !t->pool || t->has_layout || t->d.target == NVN_TEXTURE_TARGET_BUFFER || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ||
+    if (!nvn_key_on(NVN_KEY_TEX_FLUSH) || !t->mem || !t->pool || t->has_layout || t->d.target == NVN_TEXTURE_TARGET_BUFFER || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ||
         (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE))) return;
     pthread_mutex_lock(&g_ft_mu);
     if (g_nft == g_cft && !(g_ft = realloc(g_ft, (g_cft = g_cft ? 2 * g_cft : 1024) * sizeof *g_ft))) die("flush_tex allocation failed");
-    uint64_t st = nvn_dirty_now(); if (DM_GAME_TEX_DIRTY_UPLOAD) nvn_dirty_protect(t->mem, t->L.size);   // see nvn_ft_written
+    uint64_t st = nvn_dirty_now(); if (nvn_key_on(NVN_KEY_TEX_DIRTY)) nvn_dirty_protect(t->mem, t->L.size);   // see nvn_ft_written
     g_ft[g_nft++] = (flush_tex){t->mem, t->L.size, *t, st, nvn_dirty_span(t->mem, t->L.size)};
     pthread_mutex_unlock(&g_ft_mu);
 }
 static void ft_del(uint64_t serial) {
-    if (!DM_GAME_TEX_FLUSH_UPLOAD || !serial) return;
+    if (!nvn_key_on(NVN_KEY_TEX_FLUSH) || !serial) return;
     pthread_mutex_lock(&g_ft_mu);
     for (size_t i = 0; i < g_nft; i++) if (g_ft[i].t.serial == serial) { g_ft[i] = g_ft[--g_nft]; break; }
     pthread_mutex_unlock(&g_ft_mu);
@@ -331,7 +342,7 @@ static void ft_del(uint64_t serial) {
 // natively; its 121-layer ASTC terrain material arrays, 42 MB each). They stayed GPU-only textures with content 0, which ASTC decodes as the error colour, and the cave came out magenta.
 // ft_add write-protects a registered texture's pages, and on its first resolution (tex_mtl, submit thread) a write since then makes it CPU-written like a flushed one
 int nvn_ft_written(const tex_t *t) {
-    if (!DM_GAME_TEX_DIRTY_UPLOAD || !t->serial) return 0;
+    if (!nvn_key_on(NVN_KEY_TEX_DIRTY) || !t->serial) return 0;
     int r = 0; pthread_mutex_lock(&g_ft_mu);
     for (size_t i = 0; i < g_nft; i++) if (g_ft[i].t.serial == t->serial) {
         if (nvn_dirty_since_span(g_ft[i].span, g_ft[i].mem, g_ft[i].size, g_ft[i].stamp)) { r = 1; g_ft[i] = g_ft[--g_nft]; }
@@ -349,7 +360,7 @@ int nvn_ft_written(const tex_t *t) {
 // Checking every texture at every submission cost TOTK 0.4 ms of submit CPU per frame on the Mac; this way a texture is picked up a few submissions later at most
 enum { FT_POLL_BYTES = 128 << 20 };
 void nvn_ft_poll(void) {
-    if (!DM_GAME_TEX_DIRTY_UPLOAD) return;
+    if (!nvn_key_on(NVN_KEY_TEX_DIRTY)) return;
     static uint64_t gen; static size_t cur, left;
     static tex_t *hit; static size_t chit; size_t nhit = 0;
     uint64_t now = nvn_dirty_now(), scanned = 0;
@@ -367,7 +378,7 @@ void nvn_ft_poll(void) {
     for (size_t i = 0; i < nhit; i++) if (!mtl_tex_gpu_owned(hit[i].serial)) mtl_tex_cpu_written(&hit[i]);   // outside g_ft_mu: the ownership check takes the replay's serial table lock
 }
 static void ft_flush(const uint8_t *a, uint64_t n) {
-    if (!DM_GAME_TEX_FLUSH_UPLOAD || !a || !n) return;
+    if (!nvn_key_on(NVN_KEY_TEX_FLUSH) || !a || !n) return;
     pthread_mutex_lock(&g_ft_mu);
     for (size_t i = 0; i < g_nft;)
         if (g_ft[i].mem < a + n && a < g_ft[i].mem + g_ft[i].size) { mtl_tex_cpu_written(&g_ft[i].t); g_ft[i] = g_ft[--g_nft]; } else i++;
@@ -2142,11 +2153,11 @@ NVN(nvnCommandBufferClearBuffer, void, NVNcommandBuffer *c, NVNbufferAddress a, 
 // State the replay layer does not have yet: logged once (conditional rendering is treated as "always draw")
 // Render enable (profile render_cond, see OP_RENDER_COND in nvn_mtl.m): recorded and evaluated at replay; without the key everything draws, as before
 NVN(nvnCommandBufferSetRenderEnable, void, NVNcommandBuffer *c, uint32_t en) {
-    if (DM_GAME_RENDER_COND) *REC(c, OP_RENDER_COND, p_render_cond) = (p_render_cond){(en & 0xff) ? 2 : 3, 0, 0};
+    if (nvn_key_on(NVN_KEY_RENDER_COND)) *REC(c, OP_RENDER_COND, p_render_cond) = (p_render_cond){(en & 0xff) ? 2 : 3, 0, 0};
     else if (!(en & 0xff)) ONCE_LOG("[RED] SetRenderEnable(false): the host draws anyway for now");
 }
 NVN(nvnCommandBufferSetRenderEnableConditional, void, NVNcommandBuffer *c, NVNconditionalRenderMode m, NVNbufferAddress a) {
-    if (DM_GAME_RENDER_COND) *REC(c, OP_RENDER_COND, p_render_cond) = (p_render_cond){(int)m & 1, 0, a};
+    if (nvn_key_on(NVN_KEY_RENDER_COND)) *REC(c, OP_RENDER_COND, p_render_cond) = (p_render_cond){(int)m & 1, 0, a};
     else ONCE_LOG("[RED] SetRenderEnableConditional: the host draws anyway for now");
 }
 // Fire Emblem: Three Houses turns depth clamp on for its scenes; ignored, the ground right under its close-up battle cameras was clipped away and the lighting pass painted the sky's fog colour there

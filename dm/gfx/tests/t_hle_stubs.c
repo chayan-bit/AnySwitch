@@ -10,3 +10,5 @@ uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) { 
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp) { (void)pool; (void)a; (void)n; (void)gen; (void)stamp; return 0; }
 void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n) { (void)pool; (void)a; (void)n; }
 int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n) { (void)pool; (void)a; (void)n; return 0; }
+int nvn_key_mode(int key) { (void)key; return 0; }   // the run-time keys (render_cond, tex_flush_upload, tex_dirty_upload) are off here, their default
+int nvn_ft_written(const void *t) { (void)t; return 0; }   // tex_dirty_upload only, off above
