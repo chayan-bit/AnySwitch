@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <mach-o/loader.h>
 #include "dm.h"
@@ -91,8 +92,49 @@ static int check(NSString *r, char *why, size_t n) {
     return 0;
 }
 
+int dm_is_pack(const char *dir) {
+    char p[1024]; snprintf(p, sizeof p, "%s/manifest.json", dir);
+    return !access(p, F_OK);
+}
+
 int dm_pack_check(const char *root, char *why, size_t n) {
     @autoreleasepool { return check(@(root), why, n); }
+}
+
+// The environment contract (docs/development.md "Game packs"): each default below applies only where the caller has not set the variable; optional parts that are absent are named in the log
+int dm_boot_env(const char *root) {
+    @autoreleasepool {
+        NSString *r = @(root);
+        NSString *code = [NSString stringWithFormat:@"code/%s.dylib", PLATFORM], *msl = [NSString stringWithFormat:@"msl/%s", PLATFORM], *pso = [NSString stringWithFormat:@"pso/%s", PLATFORM];
+        static const int REQUIRED = 1, OPTIONAL = 0;
+        struct { const char *env; NSString *rel; int required; const char *without; } d[] = {
+            {"DM_PROFILE_DIR", @"profile", REQUIRED, NULL}, {"DM_CODE", code, REQUIRED, NULL}, {"DM_ROMFS", @"romfs.dmstore", REQUIRED, NULL},
+            {"DM_NVN_SHMAP", @"profile/shader_map.tsv", REQUIRED, NULL}, {"DM_MSL_DIR", msl, REQUIRED, NULL},
+            {"DM_PSO_ARCHIVE", [pso stringByAppendingPathComponent:@"pso_archive.metallib"], OPTIONAL, "pipelines compile on first use"},
+            {"DM_PSO_FLEX_ARCHIVE", [pso stringByAppendingPathComponent:@"pso_flex.metallib"], OPTIONAL, "flexible pipelines compile on workers"},
+            {"DM_FONT_DIR", @"font", OPTIONAL, "the system's shared-font stand-ins"}, {"DM_AOC_DIR", @"aoc", OPTIONAL, "no add-on content"}};
+        int missing = 0;
+        for (size_t i = 0; i < sizeof d / sizeof *d; i++) {
+            if (getenv(d[i].env)) { LOG("pack: %s=%s (set by the caller)", d[i].env, getenv(d[i].env)); continue; }
+            NSString *p = [r stringByAppendingPathComponent:d[i].rel];
+            if (d[i].required || [NSFileManager.defaultManager fileExistsAtPath:p]) { setenv(d[i].env, p.fileSystemRepresentation, 0); continue; }
+            LOG("pack: no %s: %s", d[i].rel.UTF8String, d[i].without); missing++;
+        }
+        return missing;
+    }
+}
+
+int dm_boot_game(const char *root) {
+    static _Atomic int booted;
+    char why[1024];
+    if (dm_pack_check(root, why, sizeof why)) { LOG("[RED] %s", why); return 1; }   // a refused pack leaves the process free to boot another
+    if (atomic_exchange(&booted, 1)) { LOG("[RED] dm_boot_game runs once per process: %s ignored", root); return -1; }
+    dm_boot_env(root);
+    dm_profile_load(getenv("DM_PROFILE_DIR"));
+    static char *argv[3]; argv[0] = "dmhost"; argv[1] = strdup(root);
+    void dm_host_preload_start(int argc, char **argv);
+    dm_host_preload_start(2, argv);
+    return 0;
 }
 
 void dm_pack_require(const char *root) {

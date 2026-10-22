@@ -83,7 +83,7 @@ profile-parity: t_profile.m ../profile.m ../profile.h ../dm_abi.h ../../games/ga
 PACK_ID = $(firstword $(PROFILES))
 pack-check: $(B)/t_pack ../../games/game.py
 	@python3 ../../games/game.py json $(PACK_ID) $(B)/pack_profile
-	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID)
+	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID) 2>/dev/null
 $(B)/t_pack: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
 	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
 .PHONY: run tsan profile-parity pack-check

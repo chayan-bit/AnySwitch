@@ -1,28 +1,40 @@
 // nn::account: the real device manages users via the acc:u0 service; the host has one fixed local user.
 // Online accounts (network service account / Nintendo Account authorization / tokens) are out of scope and uniformly return RES_FAIL; the async context's completion event fires immediately.
-// Environment switch: DM_NICK=nickname (default Player).
+// Environment switches: DM_NICK=nickname (default Player), DM_USER_UID=the user's 32-hex-digit Uid (default a fixed one).
 #include "hle.h"
+#include <stdatomic.h>
 
 typedef struct { uint64_t v[2]; } Uid;                 // nn::account::Uid, 16 bytes
 typedef struct { uint64_t v[3]; } UserHandle;          // nn::account::UserHandle, 24 bytes
 _Static_assert(sizeof(Uid) == 16, "Uid");
-static const Uid k_uid = {{0x78626c0000000001ull, 0x53574e4154495645ull}};   // Non-zero means valid
+static Uid k_uid = {{0x78626c0000000001ull, 0x53574e4154495645ull}};   // Non-zero means valid; the fixed local user, so saves made before DM_USER_UID keep their owner
+// The local user: DM_USER_UID (32 hex digits, the caller's per-user value, boot.h environment contract) else the fixed one. Read on first use: the iOS app sets the environment after process start
+static Uid user_uid(void) {
+    static _Atomic int done;
+    if (atomic_load(&done)) return k_uid;
+    const char *e = getenv("DM_USER_UID"); Uid u = {{0, 0}}; char hi[17] = "";
+    if (e && strlen(e) == 32 && strspn(e, "0123456789abcdefABCDEF") == 32) { memcpy(hi, e, 16); u.v[0] = strtoull(hi, NULL, 16); u.v[1] = strtoull(e + 16, NULL, 16); }
+    if (u.v[0] | u.v[1]) { k_uid = u; LOG("account: user %s (DM_USER_UID)", e); }
+    else if (e) LOG("[RED] account: DM_USER_UID must be 32 hex digits, not all zero (got \"%s\"): the fixed local user", e);
+    atomic_store(&done, 1);
+    return k_uid;
+}
 #define HANDLE_MAGIC 0x55534552484e444cull                                    // "USERHNDL"
 
 HLE_FORCE("_ZN2nn7account10InitializeEv", "connects to the acc:u0 account service; the host has one fixed local user", void, h_acc_Init, void) {}
 
 HLE_FORCE("_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi", "list of open users; always the one local user", Result, h_acc_ListOpen, int *n, Uid *out, int max) {
     *n = 0;
-    if (max > 0) { out[0] = k_uid; *n = 1; }
+    if (max > 0) { out[0] = user_uid(); *n = 1; }
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", "list of all users; always the one local user (Super Mario 3D World + Bowser's Fury)", Result, h_acc_ListAll, int *n, Uid *out, int max) {
     *n = 0;
-    if (max > 0) { out[0] = k_uid; *n = 1; }
+    if (max > 0) { out[0] = user_uid(); *n = 1; }
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "user selection applet; the host picks the local user directly", Result, h_acc_ShowSel, Uid *out, const void *settings) {
-    (void)settings; *out = k_uid; return RES_OK;
+    (void)settings; *out = user_uid(); return RES_OK;
 }
 // Take the users the system opened on the application's behalf (Mario 1.2.1 asks this first and falls back to TryOpenPreselectedUser on 0; the game only reads the count, not the return value):
 // the host has no such users and returns 0, so the game opens the preselected user itself, as in v0
@@ -30,15 +42,15 @@ HLE_FORCE("_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi", "users opened by
 // Hand the open users to the next program of a multi-program application (Octopath Traveler 0 imports it with oe::ExecuteProgram): the host runs one program, so there is nothing to hand over
 HLE_FORCE("_ZN2nn7account13PushOpenUsersEv", "hand the open users to the next program: the host runs only this one", void, h_acc_PushOpen, void) {}
 HLE_FORCE("_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE", "user preselected at launch; always the local user (returns bool)", unsigned, h_acc_TryOpenPre, UserHandle *h) {
-    h->v[0] = k_uid.v[0]; h->v[1] = k_uid.v[1]; h->v[2] = HANDLE_MAGIC; return 1;
+    h->v[0] = user_uid().v[0]; h->v[1] = user_uid().v[1]; h->v[2] = HANDLE_MAGIC; return 1;
 }
 // The aborting form (Super Mario Odyssey, SDK 7): without the hook the SDK's IPC call fails and aborts with no message. In SDK 6 the same symbol returns a Result, and Fire Emblem: Three Houses
 // skips its save mount when it is non-zero (main+0x53b7e0); returning void left the handle pointer in w0, so the game never mounted "save" and its loading screen waited forever for save:/system.
 // It returns 0 now, which SDK 7+ callers ignore
 HLE_FORCE("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE", "user preselected at launch (returns a Result in SDK 6, later versions abort on failure); always the local user", Result, h_acc_OpenPre, UserHandle *h) {
-    h->v[0] = k_uid.v[0]; h->v[1] = k_uid.v[1]; h->v[2] = HANDLE_MAGIC; return RES_OK;
+    h->v[0] = user_uid().v[0]; h->v[1] = user_uid().v[1]; h->v[2] = HANDLE_MAGIC; return RES_OK;
 }
-HLE_FORCE("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE", "last opened user; always the local user (Super Mario Odyssey)", Result, h_acc_LastOpened, Uid *out) { *out = k_uid; return RES_OK; }
+HLE_FORCE("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE", "last opened user; always the local user (Super Mario Odyssey)", Result, h_acc_LastOpened, Uid *out) { *out = user_uid(); return RES_OK; }
 HLE_FORCE("_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE", "open user; the handle holds the Uid itself", Result, h_acc_OpenUser, UserHandle *h, const Uid *uid) {
     h->v[0] = uid->v[0]; h->v[1] = uid->v[1]; h->v[2] = HANDLE_MAGIC; return RES_OK;
 }
@@ -82,10 +94,10 @@ HLE_FORCE("_ZN2nn7account42NintendoAccountAuthorizationRequestContext10GetIdToke
 // ---------- Account interfaces used by newer SDKs: user enumeration / existence / profile image, the remaining AsyncContext members ----------
 HLE_FORCE("_ZN2nn7account12GetUserCountEPi", "user count; always the one local user", Result, h_acc_UserCount, int *n) { *n = 1; return RES_OK; }
 HLE_FORCE("_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi", "list of qualified users; always the one local user", Result, h_acc_ListQual, int *n, Uid *out, int max) {
-    int k = 0; if (max > 0 && out) { out[0] = k_uid; k = 1; } *n = k; return RES_OK;
+    int k = 0; if (max > 0 && out) { out[0] = user_uid(); k = 1; } *n = k; return RES_OK;
 }
 HLE_FORCE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", "whether a user exists; true for the local user", Result, h_acc_Exists, uint8_t *out, const Uid *uid) {
-    *out = uid->v[0] == k_uid.v[0] && uid->v[1] == k_uid.v[1]; return RES_OK;
+    *out = uid->v[0] == user_uid().v[0] && uid->v[1] == user_uid().v[1]; return RES_OK;
 }
 HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "user creation applet; the host already has its local user", Result, h_acc_ShowCreator, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE", "user profile image; the host has none (fails)", Result, h_acc_LoadImage, uint64_t *n, void *buf, uint64_t sz, const Uid *uid) {

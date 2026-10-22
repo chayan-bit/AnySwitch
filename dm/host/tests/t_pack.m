@@ -1,5 +1,5 @@
 // The pack version contract (boot.m): a scratch pack with each number off by one in turn (pack format, profile schema, code ABI, shader ABI, the code dylib's own stamp), a missing part,
-// a foreign title and a broken profile are each refused with the expected reason, and dm_pack_require exits with 78; the correct pack passes.
+// a foreign title and a broken profile are each refused with the expected reason, and dm_pack_require exits with 78; the correct pack passes. Then the environment contract (dm_boot_env, dm_boot_game).
 // Run: make -C dm/host/tests pack-check (t_pack <folder with a valid game.json> <its title id>)
 #import <Foundation/Foundation.h>
 #include <sys/wait.h>
@@ -42,6 +42,42 @@ static void expect(const char *name, const char *want) {   // want NULL: bootabl
     printf("%s %s: rc %d, exit %d, \"%s\"\n", ok ? "✓" : "✗", name, rc, st, why);
 }
 
+// dm_boot_game's last step, recorded instead of loading anything
+static int preload_argc; static char *preload_argv[2];
+void dm_host_preload_start(int argc, char **argv) { preload_argc = argc; preload_argv[0] = argv[0]; preload_argv[1] = argv[1]; }
+
+static const char *ENVS[] = {"DM_PROFILE_DIR", "DM_CODE", "DM_ROMFS", "DM_NVN_SHMAP", "DM_MSL_DIR", "DM_PSO_ARCHIVE", "DM_PSO_FLEX_ARCHIVE", "DM_FONT_DIR", "DM_AOC_DIR"};
+static void check(const char *name, int ok, const char *detail) {
+    n++; if (!ok) fails++;
+    printf("%s %s%s%s\n", ok ? "✓" : "✗", name, detail ? ": " : "", detail ?: "");
+}
+static int env_is(const char *k, const char *rel) {   // rel NULL: unset; else <root>/<rel>
+    const char *v = getenv(k); char want[1200];
+    if (!rel) return !v;
+    snprintf(want, sizeof want, "%s/%s", root, rel);
+    return v && !strcmp(v, want);
+}
+// The environment contract: defaults only where the caller has not set a variable, absent optional parts counted (and named in the log), then dm_boot_game once per process
+static void boot_cases(void) {
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    valid_pack(); setenv("DM_ROMFS", "/caller/romfs.dmstore", 1);
+    int missing = dm_boot_env(root);
+    check("defaults: required parts", env_is("DM_PROFILE_DIR", "profile") && env_is("DM_CODE", "code/macos.dylib") && env_is("DM_NVN_SHMAP", "profile/shader_map.tsv") && env_is("DM_MSL_DIR", "msl/macos"), NULL);
+    check("defaults: the caller's value wins", !strcmp(getenv("DM_ROMFS"), "/caller/romfs.dmstore"), getenv("DM_ROMFS"));
+    check("defaults: 4 absent optional parts left unset", missing == 4 && env_is("DM_PSO_ARCHIVE", NULL) && env_is("DM_PSO_FLEX_ARCHIVE", NULL) && env_is("DM_FONT_DIR", NULL) && env_is("DM_AOC_DIR", NULL), NULL);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    sh("mkdir -p '%s/aoc/1' '%s/font' '%s/pso/macos' && : > '%s/pso/macos/pso_archive.metallib'", root, root, root, root);
+    missing = dm_boot_env(root);
+    check("defaults: present optional parts", missing == 1 && env_is("DM_ROMFS", "romfs.dmstore") && env_is("DM_AOC_DIR", "aoc") && env_is("DM_FONT_DIR", "font") && env_is("DM_PSO_ARCHIVE", "pso/macos/pso_archive.metallib") && env_is("DM_PSO_FLEX_ARCHIVE", NULL), NULL);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI + 1, DM_SHADER_ABI, title);
+    check("dm_boot_game refuses a stale pack and boots nothing", dm_boot_game(root) == 1 && !preload_argc && env_is("DM_CODE", NULL), NULL);
+    manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, title);
+    check("dm_boot_game boots a good pack", dm_boot_game(root) == 0 && preload_argc == 2 && !strcmp(preload_argv[0], "dmhost") && !strcmp(preload_argv[1], root) && env_is("DM_CODE", "code/macos.dylib") && g_profile.id && !strcmp(g_profile.id, title), NULL);
+    check("dm_boot_game runs once per process", dm_boot_game(root) == -1, NULL);
+    check("dm_is_pack", dm_is_pack(root) && !dm_is_pack(tmp), NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: t_pack <folder with game.json> <title id>\n"); return 2; }
     snprintf(profile, sizeof profile, "%s", argv[1]); snprintf(title, sizeof title, "%s", argv[2]);
@@ -68,6 +104,7 @@ int main(int argc, char **argv) {
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, "0100000000000000"); sh("cp '%s/other.dylib' '%s/code/macos.dylib'", tmp, root);
     expect("profile of another title", "profile/game.json is for title");
     valid_pack(); sh("sed -i '' 's/\"schema\": *[0-9]*/\"schema\": 999/' '%s/profile/game.json'", root); expect("broken profile", "profile: game.json schema 999");
+    boot_cases();
     sh("rm -rf '%s'", tmp);
     printf("t_pack: %d cases, %d failed\n", n, fails);
     return fails != 0;

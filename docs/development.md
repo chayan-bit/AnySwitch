@@ -147,6 +147,50 @@ Notes on these steps:
 - If Xcode's Locations setting puts products in a custom place, the script finds the app through the build log.
 - hactool cannot read every update (Mario 1.2.1's patch NCA gives "Invalid BKTR layout!"), which is why `nx_extract` uses LibHac.
 
+## Game packs
+
+A game pack is one game's data in a fixed folder layout, booted by the one engine binary (the iOS app or `dmhost` on the Mac).
+The engine holds no game-specific code; everything that differs per game is in the pack.
+
+```
+<pack root>/
+  manifest.json      title_id, the four version numbers (abi), platforms
+  profile/           game.json (the resolved dm/games profile), <module>.fixups / .gates / .cuts / .obs / .sites.tsv, shader_map.tsv, c1_full.tsv, cb_extent.tsv, pso_manifest.tsv, settings.json
+  code/              ios.dylib, macos.dylib (the rewritten modules, dm/ios/tools/gen_embed.py --dylib)
+  msl/<platform>/    shader libraries (b-<chain>/...)
+  pso/<platform>/    pso_archive.metallib, pso_flex.metallib (optional)
+  romfs.dmstore      the game files as a chunk store
+  aoc/<index>/       add-on content (optional)
+  font/              shared-font stand-ins (optional)
+```
+
+### Version contract
+
+`dm/host/dm_abi.h` holds four numbers, each bumped by hand in the commit that breaks compatibility: `DM_PACK_FORMAT` (this layout and the manifest keys), `DM_PROFILE_SCHEMA` (the keys of `game.json`), `DM_CODE_ABI` (what the rewritten code shares with the loader), `DM_SHADER_ABI` (what the host expects from the shader stages).
+`dm_pack_check` (`dm/host/boot.m`) compares the manifest's numbers with the engine's, reads the code dylib's own `__dminfo` stamp (code ABI and title id), checks that this platform's parts are present and parses the profile.
+It has no side effects, so a menu can call it for every pack.
+A refused pack does not boot: `dmhost` prints a `[RED]` line that names the mismatch and the stage to re-run, and exits with code 78.
+
+### Boot API and environment contract
+
+`dmhost <pack root>` (a folder with `manifest.json`) checks the pack and boots it through `dm_boot_game`, the same call the iOS app makes; `dmhost <rewriter output folder>` keeps working for the converter's own boots, with `DM_PROFILE_DIR` set by the script.
+`dm_boot_game` sets each variable below only when the caller has not set it, so any of them can still be pointed elsewhere for a test.
+
+| Variable | Default from the pack | Absent |
+| --- | --- | --- |
+| `DM_PROFILE_DIR` | `<root>/profile` (also where the rewriter tables are read) | refused by the check |
+| `DM_CODE` | `<root>/code/<platform>.dylib` | refused by the check |
+| `DM_ROMFS` | `<root>/romfs.dmstore` | refused by the check |
+| `DM_NVN_SHMAP` | `<root>/profile/shader_map.tsv` | |
+| `DM_MSL_DIR` | `<root>/msl/<platform>` | refused by the check |
+| `DM_PSO_ARCHIVE` | `<root>/pso/<platform>/pso_archive.metallib` | logged; pipelines compile on first use |
+| `DM_PSO_FLEX_ARCHIVE` | `<root>/pso/<platform>/pso_flex.metallib` | logged; flexible pipelines compile on workers |
+| `DM_FONT_DIR` | `<root>/font` | logged; the system's stand-ins |
+| `DM_AOC_DIR` | `<root>/aoc` | logged; no add-on content |
+
+The caller owns the per-user and per-session values, which the pack never sets: `DM_SAVE`, `DM_TEMP`, `DM_USER_UID` (32 hex digits; unset means the fixed local user, so existing saves keep their owner), `DM_NICK`, `DM_USERS` and `DM_OPMODE`.
+`dm_boot_game` runs once per process: switching games starts a new process.
+
 ## Prewarm lists
 
 Metal compiles each combination of shaders and pipeline settings for the GPU the first time it is used. Each takes tens of milliseconds, so a burst of them on entering a level is a visible freeze. The host records what it had to compile and rebuilds those pipelines on a background queue at the next launch:
