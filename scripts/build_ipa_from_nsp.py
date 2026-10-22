@@ -1098,7 +1098,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, provisional=False, split_ke
 
 
 def pack_shaders(py, repo, sh, env, logs, g):
-    """Shader packs (dm/gfx/README.md, "Shader packs") for the Mac and the iOS libraries of the chain: without them the host opens one library per shader at run time (Pokemon Sword's boot programs: about 4 s
+    """Shader packs (dm/gfx/README.md, "Shader packs") for the Mac and the iOS libraries of the chain: without them the host opens one library per shader at run time (a test title's 340 boot programs: about 4 s
     more before the first frame) and build_ipa.sh ships loose libraries. The iOS set takes its MSL from the Mac one with the same arguments (a pipeline archive compiles a Mac harvest against the iOS pack of the same number).
     --hot takes the profile's seed list (pso_manifest.tsv), the one harvest list a build from NSPs has. Reused when the iOS shader stage's key (its file beside b-<chain>), the tools, the profile and Xcode are as at the last
     successful run; without that key (a provisional profile) the packs are made again, which only relinks the .air files dmsh_pack.py keeps"""

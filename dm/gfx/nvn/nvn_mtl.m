@@ -1850,7 +1850,7 @@ static int clear_rect_zero(int i);
 // Linear textures (LINEAR) in a CPU-visible pool: the game writes the pool memory directly from the CPU (SMBW's glyph cache: 2048×8192 R8, IMAGE|LINEAR, pool CPU_UNCACHED|GPU_CACHED,
 // the font engine rasterizes glyphs into it on the CPU). A GPU-private texture never sees those writes → all menu / dialog text is blank. On unified memory, create a linear texture directly on the pool buffer (zero copy): the GPU reads the current content at execution time, same as NVN.
 // Where a linear texture's storage sits in its pool buffer: 1 when a Metal texture can alias it there, -1 when the offset or row pitch is below this GPU's linear alignment
-// (minimumLinearTextureAlignmentForPixelFormat: 16 bytes on a Mac, 64 on an iPad; Pokemon Sword's 8-pixel RGBA8 rows of 32 bytes), 0 when it is not an aliasable linear texture at all
+// (minimumLinearTextureAlignmentForPixelFormat: 16 bytes on a Mac, 64 on an iPad; a test title's 8-pixel RGBA8 rows of 32 bytes), 0 when it is not an aliasable linear texture at all
 static int linear_place(const tex_t *t, uint32_t *pf, size_t *row, void **mb, uint64_t *mo) {
     // LINEAR_RENDER_TARGET is a linear layout too (SMBW's sky colour ramps: four 64×1 RGBA16F, written by the CPU every frame). Also in a pool the CPU cannot access, whose buffer holds what
     //   its storage held at creation (see tex_init_fill): Rhythm Heaven Groove's 228 linear R8 textures (sprite masks), read from files into CPU_NO_ACCESS pools, were private textures of zeros
