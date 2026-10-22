@@ -4,6 +4,7 @@
 # Prerequisites: the rewriter (patched directory) and the iOS shader build (IOSOUT) have been run as in the README; Xcode and xcodegen are installed.
 # Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden
 #   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
+#   IPA_ROMFS=0 leaves the RomFS out of the IPA (it is still read for the control data and the icon): the app then needs it at Documents/romfs (main.m looks there first, then at DmIOS.app/romfs), for a build that updates an install which already has the game files
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the app version is the display version in the packed game's control data (the one next to the RomFS:
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.anyswitch.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
 #   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
@@ -156,7 +157,7 @@ if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pac
   [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-MAPS+=("$P/romfs=$ROMFS")
+if [ "${IPA_ROMFS:-1}" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"
 python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

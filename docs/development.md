@@ -84,6 +84,7 @@ When the output goes to a file or a pipe, the script prints a plain line instead
 Everything it writes stays in the NSP folder: intermediate files and logs in `<id>_build/`, the IPA next to the NSPs. The extracted game files stay in `<id>_build/extract/` for the next build; `--no-keep-extracted` (`KEEP_EXTRACTED = False` in Spyder) deletes them at the end. It exits with 0 when done and 1 on an error. The app's bundle ID is `org.anyswitch.<base game title ID>` (for example `org.anyswitch.0100a6301214e000`), and its version is the game's display version: the update's when an update is packed, else the base game's (Engage 2.0.0); `--app-name` / `--bundle-id` (or `APP_NAME` / `BUNDLE_ID` in Spyder) override the name and ID.
 
 On the device, environment switches go in `Documents/env.txt` (one `KEY=VALUE` per line), and game files are also accepted at `Documents/romfs`.
+`IPA_ROMFS=0` in the environment of `build_ipa.sh` leaves the RomFS out of the IPA, which suits an update of an install that already has it in `Documents/romfs` (the app looks there first).
 
 ## Port another game
 
