@@ -51,6 +51,7 @@ jobs:
           python3 -I dm/gfx/tests/test_tbdr_budget.py
           python3 -I dm/gfx/tests/test_pairs.py
           python3 -I dm/gfx/tests/test_flexarch.py
+          python3 -I dm/ios/tests/test_device_gpu.py
 
   host-tests:
     runs-on: macos-15

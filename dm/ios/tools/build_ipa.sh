@@ -53,9 +53,12 @@ else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ ||
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" Gen/dm/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
 # The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes dm/settings.json in the app
 if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
+# GPU architectures both pipeline archives below are built for (each holds one copy of every pipeline per architecture): PSO_ARCHS (names as the app's log line "this GPU: ..." prints
+# them), else the connected devices' own, read from their chip IDs by tools/device_gpu.py (read-only: lists devices, installs nothing), else every iOS GPU family with Metal 4
+if [ -n "${PSO_ARCHS:-}" ]; then t "GPU architectures: $PSO_ARCHS (PSO_ARCHS)"; else PSO_ARCHS=$(python3 tools/device_gpu.py) || PSO_ARCHS=; fi
 # Precompiled pipelines (docs/stageB-pipeline-archives.md) as dm/pso_archive.metallib, where the host looks each pipeline up before compiling it: PSO_ARCHIVE=a finished archive, taken as is;
-# else the harvests (DM_PSO_HARVEST runs on the Mac or the device) are compiled together by dmsh_psoarch.py with metal-tt for the iOS GPUs (PSO_ARCHS=architectures to keep it small,
-# default every iOS GPU) against this chain's iOS libraries; MSL_MAC = the Mac libraries (their MSL is rebuilt with the driver link metal-tt reads).
+# else the harvests (DM_PSO_HARVEST runs on the Mac or the device) are compiled together by dmsh_psoarch.py with metal-tt for the iOS GPUs (the architectures above)
+# against this chain's iOS libraries; MSL_MAC = the Mac libraries (their MSL is rebuilt with the driver link metal-tt reads).
 # PSO_HARVEST = harvest files separated by ':', default every $W/build/pso_harvest*.metallib: copy a device harvest (Documents/pso_harvest.metallib) there under its own name, for example
 # pso_harvest_ipad.metallib, and it is merged with the Mac one. No archive is no error: pipelines then compile on first use, as before
 MSL_MAC=${MSL_MAC:-$W/build/cache/metal_shader_cache}
@@ -87,7 +90,8 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
 # accelerator rules and the same-variation table, then the interface pairs. PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
-# app ships, so it is built from the packed libraries once those are packed
+# app ships, so it is built from the packed libraries once those are packed. The cap holds for all the architectures above (measured on a one-architecture build), so every
+# architecture fewer fits that many more pipelines
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
   if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp "$PSO_FLEX_ARCHIVE" Gen/dm/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else

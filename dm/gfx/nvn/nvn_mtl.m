@@ -26,6 +26,7 @@
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
 #include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready (or waiting, nvn_rthist.h)
 #include "nvn_rthist.h"
+#include "nvn_bgq.h"   // background slots of the program warm-up and the record-time kick
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree (in the game profile folder, -I from the Makefile)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
 extern int g_mtl_rk_on;   // record-time kick (defined with it, below)
@@ -2010,7 +2011,8 @@ static int enc_open(void) { return g_enc != nil; }
 // Target info of the current render pass: determined once from the attachments at rp_begin and shared by all draws in the pass (pipeline key, depth-stencil, viewport / scissor all depend only on it)
 static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs, steady; NSUInteger tw, th; uint64_t serial, reg_gen, ser_gen, range_dirty; int range_external, range_depth_nonro, layered; __unsafe_unretained id<MTLTexture> range_color, range_depth; } g_pass;
 static int g_rp_layered;   // the pass about to open is for a vertex shader that writes the layer (draw → rp_begin_ex)
-// steady (DM_PSO_FLEX skip-draw): every target of the pass was also rendered the previous frame, so a draw whose pipeline is not ready may be skipped; otherwise it waits (nvn_rthist.h).
+// steady (DM_PSO_FLEX skip-draw): every target of the pass was also rendered the previous frame (window images always count as such), so a draw whose pipeline is not ready may be
+// skipped; otherwise it waits (nvn_rthist.h).
 // Stamped once per pass begin on the replay thread; the draws read the flag only
 static nvn_rthist g_rth = {.m = {.klen = 8}, .next_prune = RTH_PRUNE_EVERY};
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // Already set on this encoder (not set again if identical)
@@ -2567,10 +2569,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         g_pass.dfmt = g_pass.hd ? (uint32_t)dt.pixelFormat : 0; g_pass.sfmt = stt ? (uint32_t)stt.pixelFormat : 0;
         if (dt || stt) g_pass.samples = (uint32_t)(dt ? dt : stt).sampleCount;
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
-        if (flexpso_on()) { uint64_t ts[9]; int nt = 0;
-            for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) ts[nt++] = R.rt.color[i]->serial;
+        if (flexpso_on()) { uint64_t ts[9]; int nt = 0, nwin = 0;
+            for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) { uint64_t s = R.rt.color[i]->serial; if (xv_present(s)) nwin++; else ts[nt++] = s; }
             if (dt || stt) ts[nt++] = R.rt.depth->serial;
-            g_pass.steady = rth_pass(&g_rth, ts, nt, atomic_load(&g_cur_frame)); }
+            g_pass.steady = rth_steady(&g_rth, ts, nt, nwin, atomic_load(&g_cur_frame)); }
         if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
@@ -4114,10 +4116,10 @@ int mtl_warm_wait(int timeout_ms) {
 // (by about a fifth, measured on a Mac). Only programs that carry both stages: a game that binds its stages separately creates single-stage programs whose pair is unknown here.
 // DM_PSO_PROGLOG=path: one line per program created (C), warm-up done (R) and first draw of a pair (D), with uptime in ns, for the measurement (dm/gfx/README.md, pipeline coverage)
 static int g_pw_n = -1; static FILE *g_pw_log; static os_unfair_lock g_pw_lock = OS_UNFAIR_LOCK_INIT;
-static dispatch_semaphore_t pw_sem(void) {   // the background slots shared by the warm-up and the record-time kick: DM_PSO_PROGWARM of them, 2 when it is unset or 0
-    static dispatch_once_t once; static dispatch_semaphore_t s;
-    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"); int v = n ? atoi(n) : 0; s = dispatch_semaphore_create(v > 0 ? v : 2); });
-    return s;
+static nvn_bgq *pw_slots(void) {   // the background slots shared by the warm-up and the record-time kick (nvn_bgq.h): DM_PSO_PROGWARM of them, 2 when it is unset or 0
+    static dispatch_once_t once; static nvn_bgq b;
+    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"); int v = n ? atoi(n) : 0; bgq_init(&b, v > 0 ? v : 2, QOS_CLASS_UTILITY, "dm.pso.warm"); });
+    return &b;
 }
 static NSMutableSet<NSString *> *g_pw_seen, *g_pw_drawn;
 static void pw_log(const char *fmt, ...) {
@@ -4144,21 +4146,19 @@ static void prog_created(const prog_t *p) {
     os_unfair_lock_lock(&g_pw_lock); int fresh = ![g_pw_seen containsObject:pair]; if (fresh) [g_pw_seen addObject:pair]; os_unfair_lock_unlock(&g_pw_lock);
     pw_log("C\t%llu\t%s\t%d\n", (unsigned long long)bp_now(), pair.UTF8String, fresh);
     if (!fresh || g_pw_n <= 0) return;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        dispatch_semaphore_wait(pw_sem(), DISPATCH_TIME_FOREVER);
+    bgq_async(pw_slots(), ^{
         @autoreleasepool {
             struct timespec c0, c1; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0); uint64_t t0 = bp_now();
             NvShader *vs = pw_shader(vk, 0), *fs = pw_shader(fk, 1); id ps = nil;
             if (vs && fs) {
                 pso_key k; memset(&k, 0, sizeof k); k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.samples = 1; NSError *e = nil;
                 MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, nil, 0);
-                if (flexpso_on()) { pso_ukey u; pso_ukey_fill(&k, vs, &u); ps = flexpso_make(&u, d, vs->lib, fs->lib, "program warm-up", &e); }
+                if (flexpso_on()) { pso_ukey u; pso_ukey_fill(&k, vs, &u); ps = flexpso_warm(&u, d, vs->lib, fs->lib, "program warm-up", &e); }
                 else ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];   // not psoarch_render: a stand-in must not reach a harvest archive
             }
             clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
             pw_log("R\t%llu\t%s\t%d\t%.3f\t%.3f\n", (unsigned long long)bp_now(), pair.UTF8String, ps != nil, (bp_now() - t0) / 1e6, (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6);
         }
-        dispatch_semaphore_signal(pw_sem());
     });
 }
 static void pw_first_draw(NvShader *vs, NvShader *fs) {   // submit thread, pipeline cache miss
@@ -4227,12 +4227,8 @@ static void rk_new(const rk_state *r) {
     if (!flexpso_on()) return;
     NSString *vk = rk_shader(r->prog[0], @"vertex"), *fk = rk_shader(r->prog[1], @"pixel");
     if (!vk || !fk) return;   // both stages: a pair half known is mostly a stale bind of another pass
-    rk_state st = *r; dispatch_semaphore_t sem = pw_sem();
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-        @autoreleasepool { rk_kick(&st, vk, fk); }
-        dispatch_semaphore_signal(sem);
-    });
+    rk_state st = *r;
+    bgq_async(pw_slots(), ^{ @autoreleasepool { rk_kick(&st, vk, fk); } });
 }
 // Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map: the app's dm/, put there by build_ipa.sh);
 // DM_PSO_HARVEST=path, or 1 for pso_harvest.metallib beside pso_user.tsv (Documents on iOS): every pipeline created is recorded for tools/dmsh_psoarch.py
