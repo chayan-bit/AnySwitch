@@ -71,6 +71,7 @@ The capability comes from what the build actually has, not from a title.
 | `fstep` | The game's modules carry the rewriter's frame-step stubs (`dm_fps_state` is set by the loader). |
 | `fpscap` | Either the frame-step stubs, or an engine frame limit that the host keeps in game memory (`hle_fpslock.c`). |
 | `haptics` | The device has a haptic engine, or a controller with haptics is connected. |
+| `internalres` | The graphics layer can draw render targets above the Switch's resolution. No build has it yet, so the Internal resolution row stays hidden; `DM_INTERNAL_RES` is parsed and logged only. |
 
 A value that is stored for a hidden row is kept and still applies; the row only is not offered.
 
@@ -81,6 +82,7 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | Display | Bars around the picture | `DM_LETTERBOX` | ambient, black | ambient | at once |
 | Display | Ambient brightness | `DM_AMBIENT_LEVEL` | 20 to 100 percent | 50 percent | at once |
 | Display | Render scale (`fstep`) | `DM_RENDER_SCALE` | 50 to 100 percent | 100 percent | restart |
+| Display | Internal resolution (`internalres`) | `DM_INTERNAL_RES` | 1x (Switch), 1.5x, 2x | 1x | restart |
 | Controls | Touch controls | `DM_CONTROLS_LAYOUT` | auto, overlay | auto | at once |
 | Controls | Controls size | `DM_CONTROLS_SCALE` | 0.75 to 2.5 | 1 | at once |
 | Controls | Controls opacity | `DM_CONTROLS_OPACITY` | 30 to 100 percent | 100 percent | at once |

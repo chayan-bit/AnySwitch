@@ -162,7 +162,10 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"enabledWhen": @{@"key": @"DM_UPSCALE", @"equals": @"sharp"},   // bilinear has no sharpening pass
               @"detail": @"How strongly Sharp sharpens the enlarged picture. 0% keeps only the edge-aware enlargement."},
             @{@"key": @"DM_RENDER_SCALE", @"label": @"Render scale", @"type": @"slider", @"min": @0.5, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"apply": @"restart", @"requires": @"fstep",
-              @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."}]},
+              @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."},
+            @{@"key": @"DM_INTERNAL_RES", @"plistKey": @"DMInternalRes", @"label": @"Internal resolution", @"type": @"choice", @"default": @"1", @"apply": @"restart", @"requires": @"internalres",
+              @"detail": @"Draws the game at a multiple of the Switch's resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.",
+              @"options": @[@{@"value": @"1", @"label": @"1x (Switch)", @"aliases": @[@"1.0"]}, @{@"value": @"1.5", @"label": @"1.5x"}, @{@"value": @"2", @"label": @"2x", @"aliases": @[@"2.0"]}]}]},
         @{@"id": @"controls", @"title": @"Controls", @"icon": @"gamecontroller", @"settings": @[
             @{@"key": @"DM_CONTROLS_LAYOUT", @"plistKey": @"DMControlsLayout", @"label": @"Touch controls", @"type": @"choice", @"default": @"auto",
               @"detail": @"Auto puts the controls in the bars around the picture when the bars are tall enough. Overlay keeps them over the picture.",

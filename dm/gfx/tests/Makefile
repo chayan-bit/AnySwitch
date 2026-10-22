@@ -38,6 +38,8 @@ t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
 t_autostat: t_autostat.c ../nvn/nvn_autostat.h
 	clang -O1 -Wall -o $@ t_autostat.c
+t_rscale: t_rscale.c ../nvn/nvn_rscale.h
+	clang -O1 -Wall -o $@ t_rscale.c
 t_fuse_check: t_fuse_check.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fuse_check.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
@@ -87,7 +89,7 @@ pso_flexbench: ../tools/pso_flexbench.m pso_flexbench.plist ../../host/crash.c t
 	clang $(CFLAGS) -fobjc-arc -Wl,-sectcreate,__TEXT,__info_plist,pso_flexbench.plist -o $@ ../tools/pso_flexbench.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_pack: t_pack.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pack.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_psoarch t_passgpu t_present_ambient t_present_scale t_flexpso t_pack t_autostat
+run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_psoarch t_passgpu t_present_ambient t_present_scale t_flexpso t_pack t_autostat t_rscale
 	./t_nvn
 	./t_dirty_slots
 	./t_dirty_race
@@ -96,6 +98,7 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	./t_pace
 	./t_fstep
 	./t_autostat
+	./t_rscale
 	./t_refl
 	./t_hmap
 	./t_cover
@@ -130,4 +133,5 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	MTL_DEBUG_LAYER=1 ./t_flexpso
 	DM_GAME=$(GAME) python3 test_pairs.py   # tools/dmsh_pairs.py split and iface rules, coverage
 	python3 test_flexarch.py   # tools/dmsh_flexarch.py archive tiers and size cap
+	python3 test_rscale.py   # tools/dmsh_rscale.py internal-resolution facts and their MSL check
 .PHONY: run

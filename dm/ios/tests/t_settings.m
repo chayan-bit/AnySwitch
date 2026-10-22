@@ -125,7 +125,12 @@ int main(void) { @autoreleasepool {
       CHECK(vs.type == DmSettingSlider && !vs.restart, "strength is a live slider"); EQ([s valueForKey:@"DM_VIBRATION_STRENGTH"], @"1"); EQ([vs displayValue:@"0.6"], @"60%"); EQ([vs normalized:@"3"], @"1"); EQ([vs normalized:@"-3"], @"0");
       DmSetting *sc = find(s, @"DM_CONTROLS_SCALE"); EQ([sc displayValue:@"1.25"], @"125%");   // unchanged
       DmSetting *r = find(s, @"DM_RENDER_SCALE"); EQ([r displayValue:@"0.85"], @"85%"); EQ([r normalized:@"0.2"], @"0.5");
-      DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fpscap"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides"); }
+      DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fpscap"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides");
+      DmSetting *ir = find(s, @"DM_INTERNAL_RES"); CHECK(ir.restart && ir.type == DmSettingChoice, "internal resolution is a restart choice"); EQ(ir.requires, @"internalres"); EQ(ir.plistKey, @"DMInternalRes");
+      EQ([s valueForKey:@"DM_INTERNAL_RES"], @"1"); EQ([ir normalized:@"1.0"], @"1"); EQ([ir normalized:@"1.5"], @"1.5"); EQ([ir normalized:@"2.0"], @"2"); EQ([ir normalized:@"3"], nil); EQ([ir normalized:@"1.25"], nil);
+      EQ([ir displayValue:@"1"], @"1x (Switch)"); EQ([ir displayValue:@"2"], @"2x");
+      DmSettings *hid = makeEx(builtin, nil, ^BOOL(NSString *c) { return ![c isEqualToString:@"internalres"]; }, tmpFile(), [NSMutableDictionary dictionary], @{});
+      CHECK(![hid isAvailable:find(hid, @"DM_INTERNAL_RES")], "hidden until the build can scale targets (capability internalres)"); }
 
     // 9. text settings: trimmed, case kept, control characters refused, capped in characters and in bytes (the host copies 32 bytes), exported and locked like the others
     { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); DmSetting *n = find(s, @"DM_NICK");
@@ -194,7 +199,7 @@ int main(void) { @autoreleasepool {
       DmSettings *h = makeEx(builtin, nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), env, @{}); CHECK([h setValue:@"30" forKey:@"DM_FPS_TARGET"], "stored anyway"); EQ([h valueForKey:@"DM_FPS_TARGET"], @"30"); }
 
     // 14. the registry's own consistency: every `requires` names a known capability, every entry has a label and a detail, every slider default is inside its range
-    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", nil];
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", @"internalres", nil];
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) {
           if (st.requires) CHECK([known containsObject:st.requires], "%s requires unknown %s", st.key.UTF8String, st.requires.UTF8String);
           CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);
