@@ -53,8 +53,8 @@ static int maxdiff(const tex_t *a, const tex_t *b, int x, int y, int w, int h) {
     for (int i = 0; i < w * h * 4; i++) m = MAX(m, abs(p[i] - q[i]));
     free(p); free(q); return m;
 }
-// Programs: 0 gradient (FragCoord), 1 texel fetch (TexelFetchScale), 2 texture size (TextureSizeUnscale), 3 image store, 4 integer gradient
-static prog_t t_pg[5]; static NvProg *t_keep[5];
+// Programs: 0 gradient (FragCoord), 1 texel fetch (TexelFetchScale), 2 texture size (TextureSizeUnscale), 3 image store, 4 integer gradient, 5 host-pixel stripes (detail finer than a guest texel)
+static prog_t t_pg[6]; static NvProg *t_keep[6];
 static NSString *const k_msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
     "struct V { float4 p [[position]]; };\n"
     "vertex V vs(uint n [[vertex_id]]) { float2 p[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)}; V o; o.p = float4(p[n], 0, 1); return o; }\n"
@@ -68,11 +68,12 @@ static NSString *const k_msl = @"#include <metal_stdlib>\nusing namespace metal;
     "fragment float4 tsize(V in [[stage_in]], constant A1 &a [[buffer(0)]]) { float s = a.sb->rs[1].x; float2 z = float2(a.t.get_width(), a.t.get_height());\n"
     "  if (s != 1) z /= abs(s); return float4(z.x / 255, z.y / 255, 0, 1); }\n"
     "fragment void istore(V in [[stage_in]], constant A3 &a [[buffer(0)]]) { float2 g = in.p.xy / a.sb->rs[0].x; a.img.write(float4(g.x / 64, g.y / 48, 0.5, 1), uint2(g)); }\n"
-    "fragment uint4 igrad(V in [[stage_in]], constant A0 &a [[buffer(0)]]) { uint2 g = uint2(in.p.xy / a.sb->rs[0].x); return uint4(g.x + g.y * 64, 0, 0, 0); }\n";
+    "fragment uint4 igrad(V in [[stage_in]], constant A0 &a [[buffer(0)]]) { uint2 g = uint2(in.p.xy / a.sb->rs[0].x); return uint4(g.x + g.y * 64, 0, 0, 0); }\n"
+    "fragment float4 hstripe(V in [[stage_in]], constant A0 &a [[buffer(0)]]) { return float4(fmod(floor(in.p.x), 4) / 3, 0, 0, a.sb->rs[0].x > 0); }\n";
 static void programs(void) {
     NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:k_msl options:nil error:&e]; if (!l) { fprintf(stderr, "%s\n", e.localizedDescription.UTF8String); abort(); }
-    static NSString *const fs[5] = {@"grad", @"fetch", @"tsize", @"istore", @"igrad"};
-    for (int i = 0; i < 5; i++) {
+    static NSString *const fs[6] = {@"grad", @"fetch", @"tsize", @"istore", @"igrad", @"hstripe"};
+    for (int i = 0; i < 6; i++) {
         NvProg *p = [NvProg new]; p->sh[0] = [NvShader new]; p->sh[0]->fn = [l newFunctionWithName:@"vs"];
         NvShader *f = p->sh[1] = [NvShader new]; f->stage = 1; f->fn = [l newFunctionWithName:fs[i]]; f->rf.frag_coord = i != 2;
         f->rf.b[f->rf.nb++] = (nvn_rbind){.kind = NVN_RB_SUPPORT, .aid = 0, .sidx = NVN_RS_NONE};
@@ -95,6 +96,7 @@ static void b_occ(chain *c, const tex_t *t, int id) { (void)id; set_rt(c, t); sc
     prog(c, &t_pg[0]); tdraw(c); uint64_t rep[2] = {ty, t_qaddr}; emit(c, OP_REPORT_COUNTER, rep, 16); }
 static void b_istore(chain *c, const tex_t *t, int id) { (void)t; set_rt(c, NULL); prog(c, &t_pg[3]); bind(c, OP_BIND_IMG, id); tdraw(c); }
 static void b_igrad(chain *c, const tex_t *t, int id) { (void)id; set_rt(c, t); prog(c, &t_pg[4]); tdraw(c); }
+static void b_stripe(chain *c, const tex_t *t, int id) { (void)id; set_rt(c, t); prog(c, &t_pg[5]); tdraw(c); }
 int main(int argc, char **argv) { @autoreleasepool {
     setvbuf(stdout, NULL, _IONBF, 0); setenv("DM_INTERNAL_RES", argc > 1 ? argv[1] : "2", 1); mtl_init(); t_s = g_rs; printf("== internal resolution %gx ==\n", t_s); programs();
     char nm[160];
@@ -149,5 +151,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     both(b_istore, &im, reg(&im), &rim, reg(&rim));
     EXPECT("image bound for store: 1x after the pass", 1, rs_of(tex_mtl(&im)) == 1.0f);
     EXPECT("attachment-less image-store pass: equal to 1x", 0, maxdiff(&im, &rim, 0, 0, W, H));
+    // A 1x pass sampling a scaled texture (a bloom chain's first downsample, its kernel sized in guest texels) reads the texture's 1x copy, so it sees what a 1x render
+    // would give it: the same as copying the texture to 1x first (both a bilinear resample), not the host texels that happen to sit under its guest-sized taps
+    { tex_t hs = tex(1, W, H, NVN_FORMAT_RGBA8, 0), h1 = tex(0, W, H, NVN_FORMAT_RGBA8, 0), o = tex(0, W, H, NVN_FORMAT_RGBA8, 0), ro = tex(0, W, H, NVN_FORMAT_RGBA8, 0);
+      int ihs = reg(&hs), ih1 = reg(&h1); uint64_t n0 = g_lo_count;
+      chain c = chain_new(); b_stripe(&c, &hs, 0); copy(&c, &hs, &h1, (NVNcopyRegion){0, 0, 0, W, H, 1}, (NVNcopyRegion){0, 0, 0, W, H, 1}); b_fetch(&c, &o, ihs); b_fetch(&c, &ro, ih1); run(&c);
+      EXPECT("scaled texture sampled in a 1x pass: equal to its copy to 1x", 0, maxdiff(&o, &ro, 0, 0, W, H));
+      EXPECT("scaled texture sampled in a 1x pass: 1x copies made", t_s != 1.0f, g_lo_count - n0); }
     snprintf(nm, sizeof nm, "== %gx: %d checks, %d failed ==", t_s, count, fail); puts(nm); return fail != 0;
 }}
