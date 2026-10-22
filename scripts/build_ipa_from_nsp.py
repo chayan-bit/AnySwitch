@@ -693,6 +693,18 @@ def link_code(py, repo, out, env, logs, g):
     tmp.rename(dst); kf.write_text(f'{key}\n')
     PROG.end(str(dst))
 
+
+def write_pack(repo, ipa_env, dst, msl_mac, logs):
+    """--pack: build_ipa.sh with PACK=dst lays the game pack out from the IPA's own inputs (docs/development.md "Game packs"), plus the Mac shader libraries and both code dylibs;
+    big files enter as APFS clones and nothing is built with Xcode"""
+    PROG.stage('game pack', step=str(dst))
+    run(['bash', repo / 'dm/ios/tools/build_ipa.sh'], logs / 'build_pack.log', env=dict(ipa_env, PACK=str(dst), MSL_MAC=str(msl_mac)))
+    if not (dst / 'manifest.json').is_file(): raise BuildError(f'no manifest.json in {dst} (full output: {logs / "build_pack.log"})')
+    PROG.end(str(dst))
+    say(f'game pack: {dst}')
+    say(f'  check it: python3 {repo}/dm/tools/pack_manifest.py verify {dst}; boot it on the Mac: dm/host/dmhost {dst}')
+
+
 GLSLC_SECS = 30   # the longest capture run: Three Houses compiles its 9 shaders within 1.2 s of boot, and the run stops as soon as every file the profile names is there
 
 
@@ -1239,6 +1251,7 @@ def parse_args(argv):
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, off)')
     ap.add_argument('--exefs-patches', help='folder of community ExeFS patches (<name>/<build ID>.ips, IPS32 or .pchtxt, Atmosphere layout) applied before the rewrite to the modules whose build ID they name (default: the EXEFS_PATCHES setting, none)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
+    ap.add_argument('--pack', nargs='?', const='', metavar='DIR', help='write a game pack instead of an IPA (default <title ID>_build/pack): the same inputs laid out for the one-engine app and dmhost, big files as APFS clones, no Xcode build (docs/development.md "Game packs")')
     ap.add_argument('--mac-only', action='store_true', help='stop after the shader stages: build the Mac dev host and write <id>_build/mac_run.json for a Mac run (scripts/compat_run.py), no IPA')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check): write them as read and go on instead of stopping')
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
@@ -1315,7 +1328,7 @@ def main(args=None):
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
     mac_only = args.mac_only or MAC_ONLY
-    PROG.plan(1 + len(versions) + bool(fam['dlc']) + (3 if mac_only else 4))   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders, shader packs and the run-time steps added below), app build, IPA pack
+    PROG.plan(1 + len(versions) + bool(fam['dlc']) + (3 if mac_only or args.pack is not None else 4))   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders, shader packs and the run-time steps added below), app build, IPA pack
     PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     PROG.end()
@@ -1369,8 +1382,9 @@ def main(args=None):
     if mac_only:
         mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisional, env, logs); return
 
-    if free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
-    say(f'building the IPA → {out_ipa}')
+    if args.pack is None:
+        if free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
+        say(f'building the IPA → {out_ipa}')
     ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(game / 'RomFS'), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''))
     if app_version: ipa_env['DM_APP_VERSION'] = app_version
     # app icon: the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
@@ -1382,6 +1396,8 @@ def main(args=None):
     show_fps = SHOW_FPS if args.show_fps is None else args.show_fps
     ipa_env['DM_SHOW_FPS'] = '1' if show_fps else '0'
     if show_fps: say('frame-rate counter: on (DM_SHOW_FPS=0 in the app\'s Documents/env.txt turns it off)')
+    if args.pack is not None:
+        write_pack(repo, ipa_env, Path(os.path.expanduser(args.pack)).resolve() if args.pack else work / 'pack', sh if gfx == 'vulkan' else sh / 'cache', logs); return
     watch = IpaWatch(repo, work / 'ipa', out_ipa)
     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
     run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)

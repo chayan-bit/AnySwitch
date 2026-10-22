@@ -13,6 +13,9 @@
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.anyswitch.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
 #   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
 #   the IPA name, code modules, RomFS marker and shader tables come from the game profile
+#   PACK=<new folder> writes a game pack there instead of an IPA (docs/development.md "Game packs"): the same tables, pipeline archives and fonts, the code dylibs for iOS and the Mac
+#   (gen_embed.py --dylib), the iOS shader libraries and the Mac ones (MSL_MAC), the add-on content, the RomFS chunk store, icon and control data, then manifest.json
+#   (dm/tools/pack_manifest.py); big files enter as APFS clones (cp -c: no extra disk on the same volume), and nothing is built with Xcode
 set -u
 cd "$(dirname "$0")/.." || exit 1
 IOS=$PWD; DM=$(cd .. && pwd)
@@ -47,20 +50,29 @@ else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || 
 # <key>_b.metallib / .json they hold; SHADER_PACKS=0 ships the loose libraries. Pipelines replayed on this Mac for the archive must use the Mac packs then ($MSL_MAC/b-$V/pack, same --per-pack)
 PACKS=0; if [ "$GFXAPI" = nvn ] && [ "${SHADER_PACKS:-1}" != 0 ] && [ -f "$MSL_IOS/b-$V/pack/index.tsv" ]; then PACKS=1; fi
 
-t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)$([ $DM_SHOW_FPS = YES ] && echo ', frame-rate counter on')"
-t "generate Gen/ (host sources, embedded modules, tables)"
-rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
-python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
-F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"
-echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
-cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv Gen/dm/ || die "copy rewriter tables"
-if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
-else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"
-  if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" Gen/dm/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
+# Destinations: the app's Gen/dm (IPA), or the pack's profile/, pso/ios/ and font/ (PACK)
+if [ -n "${PACK:-}" ]; then
+  [ ! -e "$PACK" ] || [ -f "$PACK/manifest.json" ] || die "PACK=$PACK exists and is not a game pack: give a new folder"
+  PW=$PACK.partial; t "game pack: $PACK (built in $PW, moved in place when complete)"
+  rm -rf "$PW" && mkdir -p "$PW/profile" "$PW/pso/ios" "$PW/font" "$PW/code" "$PW/meta" || die "mkdir $PW"
+  DMO=$PW/profile; PSO_O=$PW/pso/ios; FONT_O=$PW/font
+else
+  t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)$([ $DM_SHOW_FPS = YES ] && echo ', frame-rate counter on')"
+  t "generate Gen/ (host sources, embedded modules, tables)"
+  rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
+  python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
+  F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"
+  echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
+  DMO=Gen/dm; PSO_O=Gen/dm; FONT_O=Gen/dm/font
+fi
+cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv "$DMO"/ || die "copy rewriter tables"
+if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$DMO"/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
+else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" "$DMO"/ || die "copy shader tables"
+  if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" "$DMO"/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
 # The game profile the host reads at boot (main.m loads dm/game.json before anything else)
-python3 "$DM/games/game.py" json "$GAME" Gen/dm || die "game.json"
+python3 "$DM/games/game.py" json "$GAME" "$DMO" || die "game.json"
 # The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes dm/settings.json in the app
-if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
+if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" "$DMO"/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
 # GPU architectures both pipeline archives below are built for (each holds one copy of every pipeline per architecture): PSO_ARCHS (names as the app's log line "this GPU: ..." prints
 # them), else the connected devices' own, read from their chip IDs by tools/device_gpu.py (read-only: lists devices, installs nothing), else every iOS GPU family with Metal 4
 if [ -n "${PSO_ARCHS:-}" ]; then t "GPU architectures: $PSO_ARCHS (PSO_ARCHS)"; else PSO_ARCHS=$(python3 tools/device_gpu.py) || PSO_ARCHS=; fi
@@ -89,11 +101,11 @@ if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ];
 fi
 HV=(); if [ -n "${PSO_HARVEST:-}" ]; then IFS=: read -ra HV <<< "$PSO_HARVEST"; else for h in "$W"/build/pso_harvest*.metallib; do [ -f "$h" ] && HV+=("$h"); done; fi
 for h in ${HV[@]+"${HV[@]}"}; do [ -f "$h" ] || die "no pipeline harvest $h (PSO_HARVEST)"; done
-if [ -n "${PSO_ARCHIVE:-}" ]; then cp "$PSO_ARCHIVE" Gen/dm/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"
+if [ -n "${PSO_ARCHIVE:-}" ]; then cp -c "$PSO_ARCHIVE" "$PSO_O"/pso_archive.metallib 2> /dev/null || cp "$PSO_ARCHIVE" "$PSO_O"/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"
 elif [ "$GFXAPI" = nvn ] && [ ${#HV[@]} -gt 0 ]; then
   t "pipeline archive: compile ${HV[*]} for the iOS GPUs (metal-tt)"
   mkdir -p "$O" && python3 "$DM/gfx/tools/dmsh_psoarch.py" "${HV[@]}" --libs "$MSL_MAC/b-$V" "$MSL_IOS/b-$V" --target-libs "$MSL_IOS/b-$V" --msl "$MSL_MAC/b-$V" \
-    ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cp "$O/pso_archive.metallib" Gen/dm/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
+    ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cp "$O/pso_archive.metallib" "$PSO_O"/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
 else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pipeline archive, pipelines compile on first use"; fi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
@@ -101,7 +113,7 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 # app ships, so it is built from the packed libraries once those are packed. The cap holds for all the architectures above (measured on a one-architecture build), so every
 # architecture fewer fits that many more pipelines
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
-  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp "$PSO_FLEX_ARCHIVE" Gen/dm/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
+  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp -c "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib 2> /dev/null || cp "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else
     [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
@@ -109,11 +121,11 @@ if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
     t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
     make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
       ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/pso_flex.metallib" \
-      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" Gen/dm/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
+      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" "$PSO_O"/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
   fi
 fi
 # Diagnostic build: DM_ENV_FILE=file → dm/env.txt in the bundle (main.m sets one environment variable per line at boot)
-if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy DM_ENV_FILE"; t "env: $(grep -v '^#' "$DM_ENV_FILE" | tr '\n' ' ')"; fi
+if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" "$DMO"/env.txt || die "copy DM_ENV_FILE"; t "env: $(grep -v '^#' "$DM_ENV_FILE" | tr '\n' ' ')"; fi
 # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
 if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
 # Guard: an app without its shader libraries boots to a blank clear colour (0 draws), so a missing or nearly empty library folder is an error, never a warning:
@@ -132,8 +144,41 @@ if [ "$GFXAPI" = nvn ] && [ -d "$MSL_MAC/$MSLDIR" ]; then
   [ $((NLIB * 10)) -ge $((NMAC * 9)) ] || die "only $NLIB iOS shaders in $MSL_IOS/$MSLDIR against $NMAC Mac ones in $MSL_MAC/$MSLDIR (chain $V): rebuild the iOS set"
 fi
 # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
-mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" Gen/dm/font/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
-"${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
+mkdir -p "$FONT_O" && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" "$FONT_O"/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
+"${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" "$FONT_O"/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
+# The RomFS chunk store at ROMSTORE (default $W/build/romfs.dmstore): reused when it exists (ROMSTORE_REBUILD=1 rebuilds it)
+romstore_ready() {
+  ROMSTORE=${ROMSTORE:-$W/build/romfs.dmstore}
+  if [ -f "$ROMSTORE" ] && [ "${ROMSTORE_REBUILD:-0}" != 1 ]; then t "chunk store: reusing $ROMSTORE (ROMSTORE_REBUILD=1 rebuilds it)"
+  else
+    TR=(); if [ -n "${ROMSTORE_TRACE:-}" ]; then IFS=: read -ra TRS <<< "$ROMSTORE_TRACE"; for f in "${TRS[@]}"; do TR+=(--trace "$f"); done; fi
+    RC=(python3 "$DM/tools/romstore/romstore.py" build "$ROMFS" "$ROMSTORE" ${TR[@]+"${TR[@]}"})
+    t "chunk store: building $ROMSTORE from $ROMFS (romstore.py, 2 threads)"
+    if python3 -c 'import zstandard' 2> /dev/null; then "${RC[@]}"; else nix-shell -p 'python3.withPackages(ps:[ps.zstandard])' --run "$(printf '%q ' "${RC[@]}")"; fi || die "romstore.py build"
+  fi
+}
+# Pack mode ends here: the parts an IPA would take from Gen/, DerivedData and the work folder are cloned into the pack, the code dylibs are linked, then the manifest
+clone() {   # APFS clone of a file or folder (no extra disk on the same volume); on another volume a real copy, said so
+  mkdir -p "$(dirname "$2")" || die "mkdir $(dirname "$2")"
+  cp -c -R "$1" "$2" 2> /dev/null || { t "[RED] cannot clone $1 into the pack (another volume?): copying"; rm -rf "$2"; cp -R "$1" "$2" || die "copy $1"; }
+}
+if [ -n "${PACK:-}" ]; then
+  if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
+  t "code dylibs (gen_embed.py --dylib)"
+  for P in ios macos; do python3 tools/gen_embed.py "$PATCHED" "$PW/code/embed.S" $MODS --title "$GAME" --dylib "$PW/code/$P.dylib" --target $P > /dev/null || die "code dylib $P"; done
+  rm -f "$PW/code/embed.S"
+  clone "$MSL_IOS/$MSLDIR" "$PW/msl/ios/$MSLDIR"
+  if [ -d "$MSL_MAC/$MSLDIR" ]; then clone "$MSL_MAC/$MSLDIR" "$PW/msl/macos/$MSLDIR"; else t "[RED] no Mac shader libraries $MSL_MAC/$MSLDIR (MSL_MAC): the pack boots on iOS only"; fi
+  if [ -n "$AOC" ] && [ -d "$AOC" ]; then clone "$AOC" "$PW/aoc"; t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
+  [ "$ROMFS_MODE" = store ] || t "IPA_ROMFS=$ROMFS_MODE ignored: a pack holds the RomFS as a chunk store"
+  romstore_ready; clone "$ROMSTORE" "$PW/romfs.dmstore"
+  ICON=${DM_ICON:-$(dirname "$ROMFS")/icon.jpg}; if [ -f "$ICON" ]; then clone "$ICON" "$PW/meta/icon.jpg"; else t "no icon ($ICON)"; fi
+  [ -f "$VNACP" ] && clone "$VNACP" "$PW/meta/control.nacp"
+  python3 "$DM/tools/pack_manifest.py" write "$PW" --title "$GAME" --chain "$V" --display-version "$DM_APP_VERSION" || die "pack_manifest.py"
+  rm -rf "$PACK" && mv "$PW" "$PACK" || die "move $PW to $PACK"
+  t "done: $PACK ($(du -sh "$PACK" | cut -f1) as du counts it; clones share their blocks with the sources)"
+  exit 0
+fi
 # App icon: the game's own icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one). DM_ICON can point at another image; by default the icon.jpg next to the RomFS is used.
 # It is scaled to a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes); with neither, no icon is set and the home-screen icon is blank.
 # The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set
@@ -171,14 +216,7 @@ if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pac
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
 if [ "$ROMFS_MODE" = store ]; then
-  ROMSTORE=${ROMSTORE:-$W/build/romfs.dmstore}
-  if [ -f "$ROMSTORE" ] && [ "${ROMSTORE_REBUILD:-0}" != 1 ]; then t "chunk store: reusing $ROMSTORE (ROMSTORE_REBUILD=1 rebuilds it)"
-  else
-    TR=(); if [ -n "${ROMSTORE_TRACE:-}" ]; then IFS=: read -ra TRS <<< "$ROMSTORE_TRACE"; for f in "${TRS[@]}"; do TR+=(--trace "$f"); done; fi
-    RC=(python3 "$DM/tools/romstore/romstore.py" build "$ROMFS" "$ROMSTORE" ${TR[@]+"${TR[@]}"})
-    t "chunk store: building $ROMSTORE from $ROMFS (romstore.py, 2 threads)"
-    if python3 -c 'import zstandard' 2> /dev/null; then "${RC[@]}"; else nix-shell -p 'python3.withPackages(ps:[ps.zstandard])' --run "$(printf '%q ' "${RC[@]}")"; fi || die "romstore.py build"
-  fi
+  romstore_ready
   t "RomFS not packed (IPA_ROMFS=store): after installing the app, copy the store with: python3 $DM/tools/romstore/romstore.py install $ROMSTORE --device <udid> --bundle $DM_BUNDLE_ID"
 elif [ "$ROMFS_MODE" = 0 ]; then t "RomFS not packed (IPA_ROMFS=0): the app reads Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"

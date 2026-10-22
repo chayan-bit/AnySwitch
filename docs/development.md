@@ -164,6 +164,10 @@ The engine holds no game-specific code; everything that differs per game is in t
   font/              shared-font stand-ins (optional)
 ```
 
+`scripts/build_ipa_from_nsp.py <NSP folder> --pack [DIR]` writes a pack (default `<title ID>_build/pack`) instead of an IPA, from the same inputs; `dm/ios/tools/build_ipa.sh` does the layout when given `PACK=<new folder>`.
+Big files (shader libraries, the chunk store, add-on content) enter as APFS clones, so a pack on the build's own volume costs almost no extra disk.
+`python3 dm/tools/pack_manifest.py verify <pack>` re-reads every file against the manifest, for example after copying a pack to another machine.
+
 ### Version contract
 
 `dm/host/dm_abi.h` holds four numbers, each bumped by hand in the commit that breaks compatibility: `DM_PACK_FORMAT` (this layout and the manifest keys), `DM_PROFILE_SCHEMA` (the keys of `game.json`), `DM_CODE_ABI` (what the rewritten code shares with the loader), `DM_SHADER_ABI` (what the host expects from the shader stages).
