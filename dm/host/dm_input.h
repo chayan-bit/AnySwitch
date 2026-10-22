@@ -17,6 +17,14 @@ uint64_t dm_input_samples(void);   // Cumulative number of times the game has sa
 // ORed bitwise and a stick uses the controller's value if it is non-zero. All 0 when no controller is connected, so values are bit-for-bit the same as before
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 
+// Vibration (hle_vibration.c): the game's HD rumble values. The front end tells the host whether it has haptic hardware (a game sees no vibration devices otherwise) and polls the latest value of each
+// device from its own thread; the game thread only stores, it never waits. Device 0 is the left actuator, 1 the right (a game with a single device uses 0)
+typedef struct { float amp_low, freq_low, amp_high, freq_high; } dm_vib;   // amplitude 0...1 and frequency in Hz (40...1252) of the low band (160 Hz idle) and the high band (320 Hz idle)
+void dm_vib_set_available(int on);              // haptic hardware (the device's, or a controller's) exists: any thread
+uint64_t dm_vib_get(int device, dm_vib *out);   // the latest value of the device, never blocks; returns its age in ns, UINT64_MAX when the game has not sent one (the idle value is returned)
+uint64_t dm_vib_serial(void);                   // values received so far (a cheap "anything new" check)
+int dm_vib_devices(void);                       // the most devices the game asked for (1 or 2), 0 when it has not asked
+
 // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
 // Fields read_start_ns/time_ns use the same host now_ns(); the front-end publish window must use the same helper, and a read interval that spans a publish must not be force-matched.
 // State changes + at most one activity witness per second, limit_reached after 1024 entries; no file is written when the environment variable is not set.
