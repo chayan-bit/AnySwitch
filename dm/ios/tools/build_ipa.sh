@@ -55,6 +55,16 @@ if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json 
 # PSO_HARVEST = harvest files separated by ':', default every $W/build/pso_harvest*.metallib: copy a device harvest (Documents/pso_harvest.metallib) there under its own name, for example
 # pso_harvest_ipad.metallib, and it is merged with the Mac one. No archive is no error: pipelines then compile on first use, as before
 MSL_MAC=${MSL_MAC:-$W/build/cache/metal_shader_cache}
+# Program pairs (dm/gfx/README.md, pipeline coverage): dmsh_pairs.py recovers the vertex / pixel shader pairs the title can draw with from its RomFS and main, without playing, into
+# $W/build/program_pairs.tsv (kept while newer than the tool), and prints how many of the title's shaders are in a pair: the harvest-free coverage check of a new title.
+# PAIRS=0 skips it, PAIRS=force rescans. Needs lz4 in python3, else it runs under nix-shell
+PAIRS_TSV=$W/build/program_pairs.tsv
+if [ "$GFXAPI" = nvn ] && [ "${PAIRS:-1}" != 0 ]; then
+  t "program pairs (dmsh_pairs.py)"; [ "${PAIRS:-1}" = force ] && rm -f "$PAIRS_TSV"
+  PC=(python3 "$DM/gfx/tools/dmsh_pairs.py" "$ROMFS" "$(dirname "$ROMFS")/ExeFS/main" "$PAIRS_TSV" --table "$GD/shader_pairs.tsv" --coverage "$GD/shader_map.tsv" --reuse)
+  if python3 -c 'import lz4' 2> /dev/null; then DM_GAME=$GAME "${PC[@]}"; else DM_GAME=$GAME nix-shell -p 'python3.withPackages(ps:[ps.lz4])' --run "$(printf '%q ' "${PC[@]}")"; fi \
+    || { rm -f "$PAIRS_TSV"; t "[RED] dmsh_pairs.py failed above: no program pairs"; }
+fi
 # Pipeline expansion (docs/stageB-pipeline-expansion.md): PSO_EXPAND = pso_user.tsv files of harvest runs separated by ':'; dmsh_psoexpand.py adds the pipelines their learned states give
 # other shader pairs and replays them through the host's warm-up on this Mac into $W/build/pso_harvest_expand.metallib, merged below like any harvest. PSO_EXPAND_ARGS = more flags (--max-bytes ...)
 if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ]; then
