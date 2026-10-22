@@ -1,20 +1,17 @@
 """build_ipa_from_nsp.build_mac_host: every library on the host's link line is built before the dry-run line is handed to clang.
-A stand-in dm/host/Makefile with a game header, two libraries and a link rule (no game, no clang). Run: python3 -I scripts/tests/test_build_mac_host.py"""
+A stand-in dm/host/Makefile with libraries and a link rule (no game, no clang). Run: python3 -I scripts/tests/test_build_mac_host.py"""
 import os
 from pathlib import Path
 import sys
 import tempfile
-import types
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build_ipa_from_nsp as b
 
 MAKEFILE = '''LIBS=%s
-gen/$(GAME)/game_profile.h:
-\t@mkdir -p $(dir $@); touch $@
 gen/%%.a:
 \t@mkdir -p $(dir $@); touch $@
-dmhost: gen/$(GAME)/game_profile.h $(LIBS)
+dmhost: $(LIBS)
 \tclang -o $@ main.c $(LIBS) -framework Cocoa
 '''
 
@@ -33,12 +30,23 @@ class MacHost(unittest.TestCase):
             real_run(cmd, log, **kw)
         b.run, orig = run, b.run
         self.addCleanup(setattr, b, 'run', orig)
-        b.build_mac_host(repo, Path(tmp.name) / 'out/dmhost', dict(os.environ), Path(tmp.name) / 'logs', types.SimpleNamespace(id='T'))
+        b.build_mac_host(repo, Path(tmp.name) / 'out/dmhost', dict(os.environ), Path(tmp.name) / 'logs')
         return links
 
     def test_builds_every_library_the_link_line_names(self):
         self.assertEqual(self.build(['gen/vpx/libvpx.a', 'gen/zstd/libzstd.a', 'gen/next/libnext.a']),
                          [[('gen/vpx/libvpx.a', True), ('gen/zstd/libzstd.a', True), ('gen/next/libnext.a', True)]])
 
+
+
+class RecordPack(unittest.TestCase):
+    def test_records_the_pack_in_an_existing_mac_run_json_only(self):
+        with tempfile.TemporaryDirectory() as t:
+            rj, pack = Path(t) / 'mac_run.json', Path(t) / 'pack'
+            self.assertFalse(b.record_pack(rj, pack))   # no --mac-only run: nothing to record into, nothing written
+            self.assertFalse(rj.exists())
+            rj.write_text('{"host": "h", "patched": "p"}\n')
+            self.assertTrue(b.record_pack(rj, pack))
+            self.assertEqual(b.json.loads(rj.read_text()), {'host': 'h', 'patched': 'p', 'pack': str(pack)})
 
 if __name__ == '__main__': unittest.main()

@@ -1,5 +1,5 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
-// The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
+// The code area (original text and patch area) is mapped read-only+execute straight from signed code (gen_embed.py: a code dylib or the app executable), and the loader only ever writes data.
 #include "dm.h"
 #include <TargetConditionals.h>
 #include <fcntl.h>
@@ -205,7 +205,7 @@ int dm_capability(const char *name) {
 }
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
-    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
+    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : g_profile.fps_target;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; dm_fps_state = m->base + m->fps_state_off; memcpy(dm_fps_state, &f, sizeof f);
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
@@ -345,26 +345,41 @@ void loader_hash_log(void) {
     }
 }
 
-#if TARGET_OS_IPHONE
-// iOS does not allow code loaded at run time to execute, and Apple allows an executable only one segment with execute permission (ITMS-90999): the image is compiled into this executable by dm/ios/tools/gen_embed.py --
-// the two code blocks (original text, patch area) are sections in __TEXT, and W (the rest of ro + data + bss) is a separate RW segment. The three blocks are not adjacent in the file; here one contiguous address range is reserved,
-// and they are vm_remap'ed back at their original relative positions: code pages with copy=FALSE (sharing the same signed pages with __TEXT, r-x), W with copy=TRUE (copy-on-write, paged only when used).
-// The run-time layout is byte-identical to the original image. Remapping signed pages to a new address and then executing them on iOS is exactly what libffi's trampoline table (FFI_EXEC_TRAMPOLINE_TABLE) does
+// iOS does not allow code loaded at run time to execute, and Apple allows an executable only one segment with execute permission (ITMS-90999): the image is linked as signed code by dm/ios/tools/gen_embed.py,
+// either into the app executable (the per-game IPA) or into a code dylib of its own (a pack's code/<platform>.dylib) -- the two code blocks (original text, patch area) are sections in __TEXT, and W (the rest of ro + data + bss) is a separate RW segment.
+// The three blocks are not adjacent in the file; here one contiguous address range is reserved, and they are vm_remap'ed back at their original relative positions: code pages with copy=FALSE (sharing the same signed pages with __TEXT, r-x),
+// W with copy=TRUE (copy-on-write, paged only when used). The run-time layout is byte-identical to the original image. Remapping signed pages to a new address and then executing them on iOS is exactly what libffi's trampoline table
+// (FFI_EXEC_TRAMPOLINE_TABLE) does. The Mac runs the same path from code/macos.dylib, so every Mac boot exercises the iPad's loading code
 #include <mach/mach.h>
+#include <dlfcn.h>
 static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned long size, boolean_t copy, vm_prot_t need) {
     vm_address_t a = to; vm_prot_t cur = 0, max = 0;
     kern_return_t kr = vm_remap(mach_task_self(), &a, size, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)from, copy, &cur, &max, VM_INHERIT_NONE);
     if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p → %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
     if ((cur & need) != need) die("%s permissions after vm_remap %#x, missing %#x", m->name, cur, need);
 }
-#define IMAGE_MH (&_mh_execute_header)
+// The image holding the embedded sections: the code dylib DM_CODE when set, else on the Mac <dir>/code/macos.dylib (the rewriter's folder), else on iOS this executable (the per-game IPA embeds the code)
+static const struct mach_header_64 *code_image(const char *dir) {
+    static const struct mach_header_64 *mh;
+    if (mh) return mh;
+    const char *path = getenv("DM_CODE");
+    char def[1024];
+    if (!path && !TARGET_OS_IPHONE) { snprintf(def, sizeof def, "%s/code/macos.dylib", dir); path = def; }
+    if (!path) return mh = &_mh_execute_header;
+    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!h) die("[RED] code image: %s (link it with dm/ios/tools/gen_embed.py --dylib)", dlerror());
+    Dl_info di; void *info = dlsym(h, "dm_code_info");
+    if (!info || !dladdr(info, &di)) die("[RED] code image %s has no _dm_code_info: not a code dylib from dm/ios/tools/gen_embed.py --dylib", path);
+    LOG("code image %s", path);
+    return mh = di.dli_fbase;
+}
 static void map_image(module_t *m, const char *dir) {
-    (void)dir;
+    const struct mach_header_64 *mh = code_image(dir);
     char sx0[17], sx1[17], dm[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name); snprintf(dm, sizeof dm, "__DM%sW", m->name);
     unsigned long z0, zw, z1;
-    const uint8_t *x0 = getsectiondata(IMAGE_MH, "__TEXT", sx0, &z0), *w = getsectiondata(IMAGE_MH, dm, "__img", &zw), *x1 = getsectiondata(IMAGE_MH, "__TEXT", sx1, &z1);
+    const uint8_t *x0 = getsectiondata(mh, "__TEXT", sx0, &z0), *w = getsectiondata(mh, dm, "__img", &zw), *x1 = getsectiondata(mh, "__TEXT", sx1, &z1);
     if (!x0 || !w || !x1) die("embedded sections %s / %s / %s missing", sx0, dm, sx1);
-    // Patch area before the base (patch_off < 0): W ends at the end of data (FILE_IMAGE_LEN); bss and the key page are zero pages from vm_allocate and are not in the executable
+    // Patch area before the base (patch_off < 0): W ends at the end of data (FILE_IMAGE_LEN); bss and the key page are zero pages from vm_allocate and are not in the image
     int front = m->patch_off < 0;
     if (z0 + zw != (front ? m->file_image_len : (uint64_t)m->patch_off) || (z0 & 0x3FFF) || (zw & 0x3FFF) || (z1 & 0x3FFF) || ((uintptr_t)x0 & 0x3FFF) || ((uintptr_t)w & 0x3FFF) || ((uintptr_t)x1 & 0x3FFF))
         die("%s embedded section layout mismatch (x0 %#lx w %#lx x1 %#lx, PATCH_OFF %#llx)", m->name, z0, zw, z1, (unsigned long long)m->patch_off);
@@ -379,47 +394,6 @@ static void map_image(module_t *m, const char *dir) {
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     m->base = (uint8_t *)base; install_key_page(m);
 }
-#else
-static uint8_t *slurp(const char *path, size_t *n) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) die("open %s", path);
-    struct stat st; fstat(fd, &st);
-    uint8_t *p = malloc(st.st_size);
-    if (read(fd, p, st.st_size) != st.st_size) die("read %s", path);
-    close(fd); *n = st.st_size; return p;
-}
-
-// Seal the code area immediately after copying into anonymous pages (16 KB pages): [0, text_end) and the patch area are read-only+execute, and from then on any write to the code area crashes on the spot;
-// what lies between (ro and data on the same page can only go together) is writable
-static void map_image(module_t *m, const char *dir) {
-    char path[1024]; snprintf(path, sizeof path, "%s/%s.patched.bin", dir, m->name);
-    size_t sz; uint8_t *raw = slurp(path, &sz);
-    if (m->patch_off < 0) {
-        // Patch area before the base: file = the first part of the image (text + ro + data) + patch area; bss and the key page are anonymous zero pages. The gap from the patch area's end to the base is left inaccessible (PROT_NONE)
-        uint64_t pre = (uint64_t)-m->patch_off, fl = m->file_image_len;
-        if (sz < fl) die("%s is shorter than FILE_IMAGE_LEN %#llx", path, (unsigned long long)fl);
-        m->size = m->image_size; m->patch_len = (sz - fl + 0x3FFF) & ~0x3FFFull;
-        if (m->patch_len > pre) die("%s patch area of %#llx bytes does not fit in the %#llx before the base", path, (unsigned long long)m->patch_len, (unsigned long long)pre);
-        uint8_t *a = mmap(NULL, pre + m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (a == MAP_FAILED) die("%s mmap %#llx", m->name, (unsigned long long)(pre + m->size));
-        m->base = a + pre;
-        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
-        uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
-        if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
-        if (mprotect(a, m->patch_len, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
-        if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
-        return;
-    }
-    m->size = (sz + 0x3FFF) & ~0x3FFFull;
-    m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (m->base == MAP_FAILED) die("%s mmap", m->name);
-    memcpy(m->base, raw, sz); free(raw); install_key_page(m);
-    uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
-    if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
-    uint64_t po = m->patch_off & ~0x3FFFull;
-    if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
-}
-#endif
 
 void load_modules(const char *dir, const char **names, int n) {
     // Map everything and parse the symbol tables first, then relocate all at once (cross-module symbols must all be in place first)
@@ -433,7 +407,7 @@ void load_modules(const char *dir, const char **names, int n) {
     create_keys();
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
-        t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
+        t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute (signed pages); from here on the loader only writes data
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;
@@ -445,7 +419,7 @@ void load_modules(const char *dir, const char **names, int n) {
     force_check();
     { void hlecount_seal(void); hlecount_seal(); }   // DM_HLECOUNT: relocation done, seal the counting stub pages as read-only executable
     if (getenv("DM_SYMCHECK")) LOG("DM_SYMCHECK: %lu symbol lookups at load time, hash and linear disagree %lu", g_symchk_n, g_symchk_bad);
-    if (g_flag.bootprof) LOG("① breakdown: mapping (read + copy + seal pages) %.1f ms, dynamic section parsing %.1f ms, gate registration %.1f ms, relocation + forced takeover %.1f ms, total %.1f ms",
+    if (g_flag.bootprof) LOG("① breakdown: mapping (code image + vm_remap) %.1f ms, dynamic section parsing %.1f ms, gate registration %.1f ms, relocation + forced takeover %.1f ms, total %.1f ms",
                              tm / 1e6, tp / 1e6, tg / 1e6, tr / 1e6, (now_ns() - t0) / 1e6);
 }
 

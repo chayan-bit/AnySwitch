@@ -234,6 +234,26 @@ def wait_for(pred, secs, proc, step=0.5):
     return pred()
 
 
+PACK_ENV = ('DM_PROFILE_DIR', 'DM_CODE', 'DM_ROMFS', 'DM_NVN_SHMAP', 'DM_MSL_DIR', 'DM_PSO_ARCHIVE', 'DM_PSO_FLEX_ARCHIVE', 'DM_FONT_DIR', 'DM_AOC_DIR')
+
+
+def host_launch(info, env, extra_env):
+    """The host's command line and environment for one boot. mac_run.json's 'pack' (a game pack, docs/development.md "Game packs") boots dmhost <pack>, which defaults every game path
+    from the pack, so those variables are dropped from the inherited environment; else dmhost <patched> with each path from mac_run.json. --env / --ab switches win either way"""
+    env = dict(env)
+    for k in ('DM_WINDOW', 'DM_AUDIO', 'DM_KEYS'): env.pop(k, None)   # headless and silent; input only through devctl
+    if info.get('pack'):
+        for k in PACK_ENV: env.pop(k, None)
+    else:
+        env.update(DM_ROMFS=info['romfs'], DM_MSL_DIR=info['msl_dir'], DM_NVN_SHMAP=info['shader_map'])
+        if info.get('aoc'): env['DM_AOC_DIR'] = info['aoc']
+        if info.get('profile_json'): env['DM_PROFILE_DIR'] = info['profile_json']   # the folder holding the game.json the host reads at boot
+    if info.get('games_dir'): env['DM_GAMES_DIR'] = info['games_dir']
+    if info.get('games_first'): env['DM_GAMES_FIRST'] = info['games_first']
+    env.update(extra_env)
+    return [info['host'], info.get('pack') or info['patched']], env
+
+
 def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
     """One boot in rd (host.log, shots/, save/): returns (exit code or None, ran the full budget, input sent, devctl liveness hang, the route's checkpoint failed to import)"""
     dmctl = _load('dmctl', SCRIPTS / 'dmctl')
@@ -251,15 +271,10 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
         except (Exception, SystemExit) as e: log(f'  [RED] checkpoint {ck}: {e}; a fresh save instead'); ck_failed = True; (rd / 'save').mkdir(exist_ok=True)
     else: (rd / 'save').mkdir()
     frames = ','.join(str(f) for f in range(shot_every, int((secs + boot_timeout) * 60) + shot_every, shot_every))   # enough for the budget at up to 60 fps
-    env = dict(os.environ, DM_ROMFS=info['romfs'], DM_SAVE=str(rd / 'save'), DM_TEMP=str(rd / 'temp'), DM_MSL_DIR=info['msl_dir'], DM_NVN_SHMAP=info['shader_map'],
-               DM_WATCH_STALL='60', DM_WATCH_SAMPLE=str(rd / 'stall_sample.txt'), DM_NVN_ZBLOCK='1', DM_NVN_SHOT=f'{frames}:{rd}/shots/%d.png')
-    for k in ('DM_WINDOW', 'DM_AUDIO', 'DM_KEYS'): env.pop(k, None)   # headless and silent; input only through devctl
-    if info.get('aoc'): env['DM_AOC_DIR'] = info['aoc']
-    if info.get('games_dir'): env['DM_GAMES_DIR'] = info['games_dir']
-    if info.get('games_first'): env['DM_GAMES_FIRST'] = info['games_first']
-    env.update(extra_env)   # --env / --ab switches win over the runner's own
+    argv, env = host_launch(info, dict(os.environ, DM_SAVE=str(rd / 'save'), DM_TEMP=str(rd / 'temp'), DM_WATCH_STALL='60', DM_WATCH_SAMPLE=str(rd / 'stall_sample.txt'),
+                                       DM_NVN_ZBLOCK='1', DM_NVN_SHOT=f'{frames}:{rd}/shots/%d.png'), extra_env)
     hl = rd / 'host.log'; f = open(hl, 'w')
-    p = subprocess.Popen([info['host'], info['patched']], env=env, cwd=rd, stdout=f, stderr=subprocess.STDOUT)
+    p = subprocess.Popen(argv, env=env, cwd=rd, stdout=f, stderr=subprocess.STDOUT)
     txt = lambda: hl.read_text(errors='replace')
     sent, full, hang = False, False, False
     try:

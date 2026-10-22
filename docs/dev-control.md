@@ -44,7 +44,7 @@ Export records such files in `guest_name_xattrs`, and import to a device refuses
 ### Build
 
 The channel exists only in dev builds.
-`make -C dm/host GAME=<id> DEVCTL=1 dmhost` defines `DM_DEVCTL` and adds `dm/host/devctl.c`; `dm/host/hle_devctl.c` compiles to nothing without the flag.
+`make -C dm/host DEVCTL=1 dmhost` defines `DM_DEVCTL` and adds `dm/host/devctl.c`; `dm/host/hle_devctl.c` compiles to nothing without the flag.
 The Makefile records the dev flag in `gen/game.stamp`, so switching between a dev and a product build always relinks.
 A product build has no channel: `strings dm/host/dmhost | grep -c devctl` gives 0 for a product build and 13 for a dev build.
 The iOS project takes the flag from the same compile command: run `dm/ios/tools/gen_build.py` (or `build_ipa.sh`) with `DEVCTL=1` in the environment, and `Gen/dm.xcconfig` gets `OTHER_CFLAGS = $(inherited) -DDM_DEVCTL`.
@@ -106,7 +106,7 @@ Stick vectors: `L(x,y)` and `R(x,y)`, with x and y from -1 to 1 (up is +y), so `
 Names are case-insensitive.
 The `DM_KEYS` seconds stamps (`8:A`) are refused, because the channel counts frames only; use `fN:` or `wait(N)`.
 Examples: `f1200:A`, `A*13/45`, `hold(ZL+LUp) wait(60) release`, `L(-0.25,-1)~90`, `T0.31x0.62`.
-The parser is `dm/host/devctl.c`; its unit test is `dm/host/tests/t_devctl.c` (27 checks, `make -C dm/host/tests GAME=<id> run`).
+The parser is `dm/host/devctl.c`; its unit test is `dm/host/tests/t_devctl.c` (27 checks, `make -C dm/host/tests run`).
 
 ### Client (`scripts/dmctl`)
 
@@ -126,7 +126,7 @@ It prints the host's reply and exits 0 for `ok`, `frame` and `done`, 1 for `err`
 ## Mac recipe
 
 ```sh
-make -C dm/host GAME=<id> DEVCTL=1 dmhost
+make -C dm/host DEVCTL=1 dmhost
 python3 scripts/checkpoint.py import <id> <name> --mac data/devctl/run/save
 W=data/nsp/<id>_build
 DM_ROMFS=$W/extract/<version>/RomFS DM_MSL_DIR=$W/shader/cache DM_AOC_DIR=$W/aoc \

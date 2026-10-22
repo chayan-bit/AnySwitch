@@ -4,6 +4,7 @@
 #define HLE_OE_SOURCE "../hle_oe.c"
 #endif
 #include HLE_OE_SOURCE
+struct dm_profile g_profile;   // no game profile: op_mode handheld, perf_mode follow (every value 0)
 #include <signal.h>
 #include <sys/wait.h>
 uint64_t now_ns(void) { return 0; }

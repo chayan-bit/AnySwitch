@@ -148,11 +148,8 @@ static const int g_devinfo[] = {
 // Age of Calamity 9.6, Link's Awakening 8, Odyssey 7.3, Three Houses 6.5); SDK 11 and later take 55.15
 __attribute__((weak)) int dm_sdk_major(void) { return 0; }   // loader.c; graphics unit tests have no loader
 static void nvn_api(int api[2]) {
-#ifdef DM_GAME_NVN_API_MAJOR
-    api[0] = DM_GAME_NVN_API_MAJOR; api[1] = DM_GAME_NVN_API_MINOR; LOG("[nvn] device API %d.%d (game profile device_api)", api[0], api[1]);
-#else
+    if (g_profile.nvn_api_major) { api[0] = g_profile.nvn_api_major; api[1] = g_profile.nvn_api_minor; LOG("[nvn] device API %d.%d (game profile device_api)", api[0], api[1]); return; }
     int m = dm_sdk_major(); api[0] = DM_SDK_OLD(m) ? 53 : g_devinfo[0]; api[1] = DM_SDK_OLD(m) ? 313 : g_devinfo[1]; LOG("[nvn] device API %d.%d (SDK %d)", api[0], api[1], m);
-#endif
 }
 NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out) {
     (void)d;
@@ -315,9 +312,9 @@ NVN(nvnTextureBuilderGetStorageAlignment, size_t, const NVNtextureBuilder *b) {
 static int g_key_mode[3]; static pthread_once_t g_key_once = PTHREAD_ONCE_INIT;
 static void key_init(void) {
     const char *tg = getenv("DM_NVN_TEX_GUEST");
-    g_key_mode[NVN_KEY_RENDER_COND] = nvn_auto_mode(getenv("DM_NVN_RENDER_COND"), DM_GAME_RENDER_COND);
-    g_key_mode[NVN_KEY_TEX_FLUSH] = nvn_auto_mode(tg, DM_GAME_TEX_FLUSH_UPLOAD);
-    g_key_mode[NVN_KEY_TEX_DIRTY] = nvn_auto_mode(tg, DM_GAME_TEX_DIRTY_UPLOAD);
+    g_key_mode[NVN_KEY_RENDER_COND] = nvn_auto_mode(getenv("DM_NVN_RENDER_COND"), g_profile.render_cond);
+    g_key_mode[NVN_KEY_TEX_FLUSH] = nvn_auto_mode(tg, g_profile.tex_flush_upload);
+    g_key_mode[NVN_KEY_TEX_DIRTY] = nvn_auto_mode(tg, g_profile.tex_dirty_upload);
 }
 int nvn_key_mode(int key) { pthread_once(&g_key_once, key_init); return key >= 0 && key < 3 ? g_key_mode[key] : NVN_AUTO_OFF; }
 typedef struct { const uint8_t *mem; uint64_t size; tex_t t; uint64_t stamp; const void *span; } flush_tex;   // stamp: dirty-page generation at registration (tex_dirty_upload); span: its tracked range (nvn_dirty_span), so a check needs no search over every pool
@@ -1474,7 +1471,7 @@ static void present_cfg(const win_t *o) {
     // with a fixed hard floor of 60 fps; the logic stays at 25 ticks, and the client's frame-counted UI logic is unaffected -
     // with the same save and the same input, the UI message streams of the two modes match message by message. Proof (before character select): r9 game / display 60 ×3 / display 120 ×2, 6 groups in total, uicmp consistent
     // (the save indicator is exempted as a timing race), and the timing differences of key messages are within game mode's own noise band; proof after entering a run is still missing, pending action script coverage
-    const char *m = getenv("DM_PRESENT_INTERVAL"); g_display_mode = m ? !strcmp(m, "display") : DM_GAME_PRESENT_DISPLAY;
+    const char *m = getenv("DM_PRESENT_INTERVAL"); g_display_mode = m ? !strcmp(m, "display") : g_profile.present_display;
     LOG("[nvn] present tick %d Hz, interval mode %s (%s; present interval set by the game %d; %s)", g_hz, g_display_mode ? "display (one frame per tick, a cut)" : "game (original semantics)",
         m ? "DM_PRESENT_INTERVAL" : "game profile present_interval", o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
 }
@@ -1523,7 +1520,7 @@ static int fstep_cpu_slowed(uint64_t presents) {
 static int fstep_hold(void) {
     static int h = -1;
     if (h < 0) {
-        const char *e = getenv("DM_FPS_HOLD"); h = e ? strcmp(e, "off") != 0 : DM_GAME_FPS_HOLD;
+        const char *e = getenv("DM_FPS_HOLD"); h = e ? strcmp(e, "off") != 0 : g_profile.fps_hold;
         if (!h) LOG("[nvn] frame step: frames are not held longer than the cap's vsyncs (%s)", e ? "DM_FPS_HOLD" : "game profile fps_hold");
     }
     return h;
@@ -1763,7 +1760,7 @@ static pthread_mutex_t g_vp_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_vp_gen;   // bumped per mapping request
 static struct vpool *vpool_of(const pool_t *o) { for (int i = 0; i < NVPOOL; i++) if (g_vp[i].pool == o && g_vp[i].base) return &g_vp[i]; return NULL; }
 static uint8_t *vpool_reserve(const pool_t *o) {   // → the reserved range, or NULL for a pool that keeps the alias
-    if (!(o->flags & 0x200) || o->size <= DM_GAME_APP_POOL) return NULL;
+    if (!(o->flags & 0x200) || o->size <= g_profile.app_pool) return NULL;
 #if TARGET_OS_IPHONE   // 1 GB: Monster Hunter Rise's buffers stay under 0x20100000 through its opening, its textures (32 GB in) are read through the page table, and 4 GB guest + 1 GB stays near the 5 GB proven on a phone
     uint64_t len = o->size < (1ull << 30) ? o->size : 1ull << 30;
 #else

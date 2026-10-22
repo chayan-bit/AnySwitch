@@ -47,6 +47,7 @@ jobs:
           python3 -I dm/games/tests/test_auto_defaults.py
           python3 -I dm/tools/tests/test_exefs_patches.py
           python3 -I dm/tools/tests/test_romstore.py
+          python3 -I dm/tools/tests/test_pack_manifest.py
           python3 -I scripts/tests/test_checkpoint.py
           python3 -I scripts/tests/test_compat_run.py
           python3 -I scripts/tests/test_build_mac_host.py
@@ -60,12 +61,15 @@ jobs:
           python3 -I dm/gfx/tests/test_chain_headers.py
           python3 -I dm/ios/tests/test_device_gpu.py
           python3 -I dm/ios/tests/test_build_defaults.py
+          python3 -I dm/ios/tests/test_gen_embed.py
 
   host-tests:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      # The host unit tests need a game profile only, no game files.
-      - run: make -C dm/host/tests GAME=0100F43008C44000 run
+      # The host unit tests need no game and no game files; the profile schema test reads every profile in dm/games.
+      - run: make -C dm/host/tests run
+      - run: make -C dm/host/tests profile-schema
+      - run: make -C dm/host/tests pack-check
       # The in-app settings registry and the haptics mapping: Foundation and plain C, no device
       - run: make -C dm/ios/tests run

@@ -1,28 +1,29 @@
-// iOS App entry: set the environment (game files, saves, shader libraries), write the host log to Documents/log.txt, create the window (front_ios.m), then run the host's dm_main on a big-stack thread.
-// The game files (RomFS) ship inside the App at <App>/romfs; Documents/romfs placed through the Files app is also accepted (lets you swap them without reinstalling),
-// and so is a chunk store of them, Documents/romfs.dmstore (dm/tools/romstore/romstore.py), which comes first.
+// iOS App entry: write the host log to Documents/log.txt, find the game files, then boot the game pack the app bundles (<App>/pack, docs/development.md "Game packs") the way
+// dmhost boots one on the Mac (dm_pack_require, dm_boot_game: environment, profile, host loading in the background), create the window (front_ios.m), then run dm_main on a big-stack thread.
+// The pack's code is this executable's own (gen_embed.py links it in). The game files: a chunk store at Documents/romfs.dmstore (dm/tools/romstore/romstore.py) comes first, then
+// Documents/romfs placed through the Files app (lets you swap them without reinstalling), then <App>/romfs (IPA_ROMFS=1).
 #import <UIKit/UIKit.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
-#include "game_profile.h"   // game profile constants (the RomFS marker path)
+#include "boot.h"
+#include "profile.h"   // the game profile (the RomFS marker path)
 #import "DmSettings.h"
 
 int dm_main(int argc, char **argv);   // dm/host/main.c compiled in with -Dmain=dm_main
-void dm_host_preload_start(int argc, char **argv);
 UIViewController *front_ios_root(void);
 void front_ios_focus_event(int ev);
 
 static char *g_argv[4]; static int g_argc;
 
-static NSString *romfs_locate(void) {
+static NSString *romfs_locate(const char *marker) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     NSString *store = [doc stringByAppendingPathComponent:@"romfs.dmstore"]; BOOL isdir = NO;   // the host checks the store itself when it mounts it (hle_fs.c)
     if ([fm fileExistsAtPath:store isDirectory:&isdir] && !isdir) return store;
     for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs"]])
-        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
+        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@(marker)]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
     return nil;
 }
 
@@ -30,7 +31,7 @@ static NSString *romfs_locate(void) {
 static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
-    NSString *res = NSBundle.mainBundle.resourcePath;
+    NSString *res = NSBundle.mainBundle.resourcePath, *pack = [res stringByAppendingPathComponent:@"pack"];
     for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // Keep game files and scratch data out of device backups (Documents is backed up by default; a RomFS placed there is many GB). Saves, logs and the pipeline list stay in the backup
     for (NSString *d in @[@"romfs", @"romfs.dmstore", @"temp"]) {
@@ -41,8 +42,8 @@ static int boot_env(void) {
     NSString *log = [doc stringByAppendingPathComponent:@"log.txt"], *prev = [doc stringByAppendingPathComponent:@"log.prev.txt"];
     [fm removeItemAtPath:prev error:nil]; [fm moveItemAtPath:log toPath:prev error:nil];
     if (freopen(log.fileSystemRepresentation, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    // Environment switch files (for on-device diagnostics: a sideloaded app cannot be given environment variables from outside): one KEY=VALUE per line, # starts a comment; Documents/env.txt takes precedence over dm/env.txt in the bundle (put there by build_ipa.sh's DM_ENV_FILE)
-    for (NSString *ef in @[[doc stringByAppendingPathComponent:@"env.txt"], [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"env.txt"]]) {
+    // Environment switch files (for on-device diagnostics: a sideloaded app cannot be given environment variables from outside): one KEY=VALUE per line, # starts a comment; Documents/env.txt takes precedence over the pack's profile/env.txt (put there by build_ipa.sh's DM_ENV_FILE)
+    for (NSString *ef in @[[doc stringByAppendingPathComponent:@"env.txt"], [pack stringByAppendingPathComponent:@"profile/env.txt"]]) {
         NSString *txt = [NSString stringWithContentsOfFile:ef encoding:NSUTF8StringEncoding error:nil];
         for (NSString *raw in [txt componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
             NSString *ln = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]; NSRange eq = [ln rangeOfString:@"="];
@@ -63,21 +64,21 @@ static int boot_env(void) {
             else fprintf(stderr, "boot: shader cache %s cleared (DM_CLEAR_SHADER_CACHE)\n", d.UTF8String);
         }
     }
-    NSString *romfs = romfs_locate();
-    if (!romfs) { fprintf(stderr, "boot: game files not found (<App>/romfs, Documents/romfs or Documents/romfs.dmstore)\n"); return 0; }
+    // The game files before the pack check: the pack holds no RomFS, so DM_ROMFS (set here) is the part the check accepts in its place
+    struct dm_profile prof = {0}; char why[512];
+    if (dm_profile_parse([pack stringByAppendingPathComponent:@"profile"].fileSystemRepresentation, &prof, why, sizeof why)) dm_pack_require(pack.fileSystemRepresentation);   // logs the reason, exits 78
+    NSString *romfs = romfs_locate(prof.romfs_marker);
+    if (!romfs) { fprintf(stderr, "boot: game files not found (Documents/romfs.dmstore, Documents/romfs or <App>/romfs)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
-    NSString *dm = [res stringByAppendingPathComponent:@"dm"];
-    setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
-    setenv("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
-    setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
-    NSString *aoc = [res stringByAppendingPathComponent:@"aoc"];   // add-on content: build_ipa.sh puts the RomFS extracted from the player's DLC NSPs at <App>/aoc/<index>/
-    if ([fm fileExistsAtPath:aoc]) setenv("DM_AOC_DIR", aoc.fileSystemRepresentation, 0);
     chdir(doc.fileSystemRepresentation);
-    g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(dm.fileSystemRepresentation); g_argc = 2;
-    dm_host_preload_start(g_argc, g_argv);   // Module tables / relocation / takeover run early in the background, in parallel with UIKit startup
+    NSString *fwcode = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"code.dylib"];   // the code linked as a dylib (build_ipa.sh CODE_DYLIB=1), not into this executable
+    if ([fm fileExistsAtPath:fwcode]) setenv("DM_CODE", fwcode.fileSystemRepresentation, 0);
+    dm_pack_require(pack.fileSystemRepresentation);   // a pack this engine cannot boot: the reason in log.txt, exit 78 (as dmhost)
+    if (dm_boot_game(pack.fileSystemRepresentation)) return 0;   // the rest of the environment from the pack, the profile, then module tables / relocation / takeover in the background, in parallel with UIKit startup
+    g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(pack.fileSystemRepresentation); g_argc = 2;   // the same two arguments dm_boot_game gave the early start
     return 1;
 }
 static int g_boot_ok;

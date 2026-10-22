@@ -153,7 +153,7 @@ The host itself defaults to off (the Mac host, its tests and tools), so the entr
 
 ### Per-game files
 
-A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `dm/settings.json` in the app.
+A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `pack/profile/settings.json` in the app.
 It holds two optional keys:
 
 - `"defaults": {"DM_KEY": "value"}` replaces the registry default for that game, for any registered key.
@@ -173,7 +173,7 @@ From highest to lowest priority:
    This is the developer's override, so the screen shows the row dimmed with "Set in env.txt" and refuses changes.
 2. The player's choice in `Documents/settings.json` (not the save folder, so a save restore never touches it).
 3. The Info.plist default (`plistKey`, written by `project.yml` and `build_ipa.sh`).
-4. The game's own default (`"defaults"` in `dm/settings.json`).
+4. The game's own default (`"defaults"` in `pack/profile/settings.json`).
 5. The default for the game's frame rate target (`defaultAtFps`, only the entries that have one).
 6. The registry default.
 
@@ -224,7 +224,7 @@ The game's HD rumble reaches the screen's two settings through three small piece
 `make -C dm/ios/tests run` builds and runs `t_settings.m` and `t_haptics.c` on the Mac.
 `t_settings.m` checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset and reset-all, the restart-pending state, per-game sections and defaults, capabilities, text limits, the slider display, the frame rate dependent defaults (Upscaling at 30 and 60 fps, a stored choice winning over them) and the flexible pipelines row.
 `t_haptics.c` checks the amplitude and frequency mapping.
-`make -C dm/host/tests GAME=<title id> run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
+`make -C dm/host/tests run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
 `python3 -I dm/games/tests/test_settings_defaults.py` checks the per-game files.
 Check the screen itself on both an iPad and an iPhone, in light and dark appearance, with the focus on each kind of row, and drive it with a controller as well as by touch.
 Check the player name editor with the touch keyboard and with a hardware keyboard, and the vibration rows with a controller attached and without.

@@ -2,6 +2,7 @@
 #include "../dm.h"
 #include <stdatomic.h>
 struct dm_flags g_flag;
+struct dm_profile g_profile;   // the game profile (profile.m): the unit test has none, every value is 0
 uint64_t g_t0_ns;
 void crash_thread_init(void) {}
 void guest_thread_init(void) {}

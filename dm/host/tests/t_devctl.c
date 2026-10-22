@@ -1,4 +1,4 @@
-// Dev input channel parser (devctl.c): every expected event is written out by hand. Build and run: make -C dm/host/tests GAME=<id> run (or clang -I.. t_devctl.c ../devctl.c)
+// Dev input channel parser (devctl.c): every expected event is written out by hand. Build and run: make -C dm/host/tests run (or clang -I.. t_devctl.c ../devctl.c)
 #include "../devctl.h"
 #include "../dm_input.h"
 #include <stdio.h>

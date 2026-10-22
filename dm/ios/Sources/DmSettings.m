@@ -233,7 +233,7 @@ static NSDictionary *gameFile(NSString *path) {
     static DmSettings *s; static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        NSString *game = [[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"settings.json"];
+        NSString *game = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"pack/profile/settings.json"];
         NSMutableArray *secs = [[DmSettings builtinSections] mutableCopy];
         [secs addObjectsFromArray:[DmSettings gameSectionsFromFile:game]];
         s = [[DmSettings alloc] initWithSections:secs gameDefaults:[DmSettings gameDefaultsFromFile:game] caps:nil storePath:[doc stringByAppendingPathComponent:@"settings.json"]
