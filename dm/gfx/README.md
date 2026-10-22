@@ -220,7 +220,7 @@ An app can ship those GPU binaries in an `MTLBinaryArchive`, so a known pipeline
 Nothing in it is per game: Metal keys an entry by the functions' hashes plus the whole pipeline descriptor the replay builds (`pso_desc`).
 
 1. **Harvest.** Run the game (Mac `dmhost` or the iOS app) with `DM_PSO_HARVEST=<path>` (`1` writes `pso_harvest.metallib` beside `pso_user.tsv`). The descriptor of every pipeline created is kept and the archive is written when warm-up ends, every 600 presents and on exit. A harvest file is replaced by each run, not extended, so keep each session's harvest under its own name.
-2. **Build.** `tools/dmsh_psoarch.py` extracts the pipeline script from one or more harvests and compiles it with `metal-tt` for the iOS GPUs against the chain's iOS libraries. `build_ipa.sh` runs it over every `$W/build/pso_harvest*.metallib` (`PSO_HARVEST` lists others, `PSO_ARCHIVE=<file>` ships a finished archive, `PSO_ARCHS` limits the GPU slices) and packs `dm/pso_archive.metallib`. Without a harvest the build continues without an archive.
+2. **Build.** `tools/dmsh_psoarch.py` extracts the pipeline script from one or more harvests and compiles it with `metal-tt` for the iOS GPUs against the chain's iOS libraries. `build_ipa.sh` runs it over every `$W/build/pso_harvest*.metallib` (`PSO_HARVEST` lists others, `PSO_ARCHIVE=<file>` ships a finished archive, GPU slices as for the flexible archive below) and packs `dm/pso_archive.metallib`. Without a harvest the build continues without an archive.
 3. **Run time.** `nvn/nvn_psoarch.m` wraps every pipeline creation. It loads `DM_PSO_ARCHIVE` (default `pso_archive.metallib` beside the shader map, `off` disables it), looks pipelines up with `MTLPipelineOptionFailOnBinaryArchiveMiss` and logs each miss with its shader keys (`[pso-archive] miss`). A missing, stale or unreadable archive only costs the lookup: the pipeline compiles as usual.
 4. **Expansion (optional).** `tools/dmsh_psoexpand.py` learns the fixed-function state of a short harvest and writes manifest records for statically known shader pairs the run never drew; `pso_replay` (`make -C dm/gfx/tests GAME=<id> pso_replay`) replays them through the host's own warm-up into a harvest that step 2 compiles. `build_ipa.sh` takes it from `PSO_EXPAND`.
 
@@ -306,9 +306,11 @@ A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (
 2. accelerator pairs: `split` and `tfx` pairs and the profile's same-variation table (`shader_pairs.tsv`);
 3. interface pairs.
 
-The archive is built for every iOS GPU family with Metal 4 (the GPUs that can open it), and each architecture holds its own copy of every pipeline, so the cap holds for the records times the architectures.
+Each GPU architecture the archive is built for holds its own copy of every pipeline, so the cap holds for the records times the architectures.
 The records are first chosen at an estimate (about 34 KB per pipeline per architecture); the archive is then built for one architecture and measured, and while that size times the architectures is over the cap the list is cut in proportion and measured again, since pipelines differ a lot in size.
-`PSO_ARCHS` (architecture names, as the app's `[pso-flex]` load line prints them) builds only those, which fits that many more pipelines under the same cap.
+By default `build_ipa.sh` builds both archives only for the GPU architectures of the connected devices: `ios/tools/device_gpu.py` lists them with `xcrun devicectl` (read-only, nothing is installed or copied) and maps each chip ID (the first field of the UDID) to its Metal GPU architecture.
+With no connected device, no device list or a chip not in its table, the build falls back to every iOS GPU family and the log line says why.
+`PSO_ARCHS` (architecture names, as the app's `[pso-flex]` load line prints them) overrides the detection; every architecture fewer fits that many more pipelines under the same cap.
 The build prints the architectures, how many records fit, what each tier gave, any cut and the size written.
 Before that, `ios/tools/pull_pso_user.py` copies the pipeline log (`Documents/pso_user.tsv`) from every reachable device that has the app installed (`PSO_PULL=0` skips it); the app always writes that log, off the render thread.
 `PSO_FLEX=0` skips the archive and `PSO_FLEX_ARCHIVE=path` takes a finished one.
