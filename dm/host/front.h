@@ -27,3 +27,7 @@ void dm_touch_set(const dm_touch *t, int n);
 // Timing: when a save write fails (disk full etc.) within one of the game's save transactions (between two Commits), so that this Commit is refused and the previously committed save is unchanged, it is called once per refused transaction;
 // the next transaction that succeeds commits as usual, and the front end need not do any recovery. err = the first failing errno (ENOSPC = 28 means out of space). Called on the game thread; the front end switches to the main thread itself and must not block
 void front_save_failed(int err);
+
+// A notice the player has to see, such as the shader libraries missing from the app (nvn_mtl.m). The iOS front end shows an alert on the main thread; the default weak implementation (nvn_mtl.m) logs it in red.
+// May be called from any thread, including before the first window exists, and does not block
+void front_notice(const char *title, const char *msg);
