@@ -3,7 +3,7 @@
 #   → (a game that compiles shaders at run time: capture them, by booting it in the Mac host for a few seconds; an Unreal game: decode its shaders with its own Oodle, the same way)
 #   → split out the shaders and check them against the profile's tables (shader_split.py) (a Vulkan game without SPIR-V files, Super Mario Galaxy, boots the same way to capture the SPIR-V shaders it generates;
 #   a game with Trinity packs, Pokémon Legends: Z-A, has them decoded for the split by its own Oodle decoder, run in the Mac host's tool mode)
-#   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A Vulkan game (main imports Vulkan, not NVN: Hades) skips the NVN shader steps: vk_shaders.py translates its SPIR-V shaders instead.
+#   → iOS shader libraries (dmsh_build.py) → shader packs of the Mac and iOS libraries (dmsh_pack.py: without them the game boots seconds later) → build_ipa.sh. A Vulkan game (main imports Vulkan, not NVN: Hades) skips the NVN shader steps: vk_shaders.py translates its SPIR-V shaders instead.
 #   Which of these steps a game needs follows from its files (dm/games/profile_guess.py shader_sources), not from its profile. A game with no matching profile is surveyed (<NSP folder>/<title ID>_survey/survey.md), then gets a provisional profile guessed from
 #   the survey (<NSP folder>/<title ID>_build/profile/<title ID>/, outside the repository, found through DM_GAMES_DIR) and a best-effort IPA that may not boot; SURVEY_ONLY / --survey-only stops after the survey.
 #   MAC_ONLY / --mac-only stops after the shader stages instead of building the IPA: it builds the Mac dev host (DEVCTL=1) and writes <id>_build/mac_run.json, what a Mac run of the game needs (scripts/compat_run.py).
@@ -12,7 +12,7 @@
 #   without keyboard input a missing value is not asked for but reported as an error; exit code 0 on success, 1 on error, 130 when interrupted). Command-line options entered in Spyder's run configuration work the same way.
 # Uses only three things: this repository, a folder holding one game's NSPs (the base game plus the updates listed in the profile's shader_versions are required; DLC NSPs, when present, are packed too and unlock the add-on content already in the game), and prod.keys.
 # Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, kept for the next build unless KEEP_EXTRACTED / --no-keep-extracted), aoc/ (each DLC's RomFS by index), tools/ (nx_extract, and the Mac host for a run-time shader capture), patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
-# The rewrite, the shader split and the iOS (or Vulkan) shaders are reused when all their inputs are as at their last successful run (the game files, the tools, the profile, Xcode and spirv-cross: fingerprint() keys beside their output).
+# The rewrite, the shader split, the iOS (or Vulkan) shaders and the shader packs are reused when all their inputs are as at their last successful run (the game files, the tools, the profile, Xcode and spirv-cross: fingerprint() keys beside their output).
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
 # The Python running this file needs lz4, capstone and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress).
@@ -1015,7 +1015,7 @@ class ShaderWatch:
         pairs = {ln.split()[0] for ln in open(g.table('shader_pairs.tsv'), errors='replace') if ln.strip() and not ln.startswith('#')}
         order = sorted(keys - pairs) + sorted(keys & pairs)
         self.pos, self.n = {k: i for i, k in enumerate(order)}, len(order)
-        chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
+        chain = chain_of(g)
         self.out, self.tmp, self.t0, self.t1, self.w = ios / f'b-{chain}', tmp, time.time(), None, None
         self.hits, self.fin, self.top = set(), set(), -1
 
@@ -1046,6 +1046,10 @@ class ShaderWatch:
                 'note': f'{ext[".bin"]:,} not cached' if ext['.bin'] else ''}
 
 
+def chain_of(g):   # the chain version the profile's dmsh_chain.h names: the b-<chain> folder of every shader stage
+    return re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
+
+
 def toolchain():   # the compilers' versions, part of the shader stages' keys
     return ('cmd', ['xcodebuild', '-version']), ('cmd', ['spirv-cross', '--revision'])
 
@@ -1058,7 +1062,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, provisional=False, split_ke
     if provisional:
         PROG.set(step='chain header')
         run([py, repo / 'dm/gfx/tools/dmsh_chain.py', '--header'], logs / 'dmsh_chain.log', env=env)   # the profile's chain version header (dmsh_build checks it)
-    chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
+    chain = chain_of(g)
     libs = ios / f'b-{chain}'; kf = libs.with_name(libs.name + '.key')
     if split_key:
         PROG.set(step='checking the inputs')
@@ -1091,6 +1095,31 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, provisional=False, split_ke
     else: PROG.end()
     if key: kf.write_text(f'{key}\n{note}\n')
     return ios
+
+
+def pack_shaders(py, repo, sh, env, logs, g):
+    """Shader packs (dm/gfx/README.md, "Shader packs") for the Mac and the iOS libraries of the chain: without them the host opens one library per shader at run time (Pokemon Sword's boot programs: about 4 s
+    more before the first frame) and build_ipa.sh ships loose libraries. The iOS set takes its MSL from the Mac one with the same arguments (a pipeline archive compiles a Mac harvest against the iOS pack of the same number).
+    --hot takes the profile's seed list (pso_manifest.tsv), the one harvest list a build from NSPs has. Reused when the iOS shader stage's key (its file beside b-<chain>), the tools, the profile and Xcode are as at the last
+    successful run; without that key (a provisional profile) the packs are made again, which only relinks the .air files dmsh_pack.py keeps"""
+    chain = chain_of(g); mac, ios = sh / 'cache' / f'b-{chain}', sh / 'ios' / f'b-{chain}'
+    kf = ios.with_name(ios.name + '.pack.key')
+    PROG.stage('shader packs', step='checking the inputs')
+    if env.get('SHADER_PACKS') == '0': PROG.end('SHADER_PACKS=0: loose libraries'); return
+    try: shader_key = ios.with_name(ios.name + '.key').read_text().partition('\n')[0]
+    except OSError: shader_key = ''
+    args = ['--map', g.table('shader_map.tsv'), '--hot', g.table('pso_manifest.tsv'), '-j', env.get('J', '1')]
+    key = fingerprint(shader_key, ('files', tool_files(repo)), ('files', profile_files(g)), toolchain()[0], [getattr(a, 'name', a) for a in args[:-2]], env=env) if shader_key else None
+    if key and all((d / 'pack/index.tsv').is_file() for d in (mac, ios)) and (note := reused(kf, key)) is not None:
+        PROG.end(f'{note}, reused (inputs unchanged)'); return
+    rmtree(kf)
+    for side, d in (('Mac', mac), ('iOS', ios)):
+        PROG.set(step=f'{side} packs')
+        run([py, repo / 'dm/gfx/tools/dmsh_pack.py', '--msl', mac, '--target', d, *args], logs / f'dmsh_pack_{side.lower()}.log', env=env)
+    m = re.search(r'packs (\d+) shaders (\d+)', (ios / 'pack/index.tsv').read_text().partition('\n')[0])
+    note = f'{int(m.group(2)):,} shaders in {m.group(1)} packs' if m else ''
+    if key: kf.write_text(f'{key}\n{note}\n')
+    PROG.end(note)
 
 
 def build_vk_shaders(py, repo, roots, sh, env, logs, g, reuse=True):
@@ -1262,7 +1291,7 @@ def main(args=None):
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
     mac_only = args.mac_only or MAC_ONLY
-    PROG.plan(1 + len(versions) + bool(fam['dlc']) + (3 if mac_only else 4))   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders and the run-time steps added below), app build, IPA pack
+    PROG.plan(1 + len(versions) + bool(fam['dlc']) + (3 if mac_only else 4))   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders, shader packs and the run-time steps added below), app build, IPA pack
     PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     PROG.end()
@@ -1281,7 +1310,7 @@ def main(args=None):
     if gfx == 'vulkan': say(f'Vulkan game ({src["graphics"][1]}): vk_shaders.py translates the shaders instead of the NVN shader chain')
     for on, k in ((glslc, 'glslc_capture'), (vkcap, 'vk_capture'), (uedec, 'ue_decode'), (gfx == 'nvn' and src['oodle_packs'][0], 'oodle_packs')):
         if on: say(src[k][1])
-    PROG.add(glslc + vkcap + uedec + (gfx == 'nvn'))
+    PROG.add(glslc + vkcap + uedec + 2 * (gfx == 'nvn'))
     aoc = extract_aoc(nx, keys, work, app, fam, logs)
     base = next((dirs[v] for v in versions if picks[v][1] is None), dirs[versions[0]])   # the folder the base game was extracted to alone
     # the app name and bundle ID both come from the base NSP: the game name in its control data, and a bundle ID from its title ID; a setting / the command line overrides them
@@ -1311,6 +1340,7 @@ def main(args=None):
         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] else None
         skey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional, oodle)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, provisional, skey)
+        pack_shaders(py, repo, sh, env, logs, g)
     if mac_only:
         mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisional, env, logs); return
 

@@ -87,6 +87,8 @@ At run time `nvn/nvn_mtl.m` reads the index, maps `refl.bin`, opens every pack o
 A key in no pack loads from its own library, with a log line each time.
 The argument encoder is built from the reflected argument ids (`newArgumentEncoderWithArguments:`), so no function reflection is needed.
 `build_ipa.sh` ships the packs instead of the loose libraries they cover when `<iOS b-V>/pack/index.tsv` exists (`SHADER_PACKS=0` ships the loose ones), and its shader guard counts the index's keys.
+`scripts/build_ipa_from_nsp.py` runs both pack commands after the iOS shaders (stage "shader packs", `--hot` the profile's `pso_manifest.tsv`, reused while the shader stage's key, the tools and the profile are unchanged), so a build from NSPs never ships loose libraries by accident.
+A host that finds no `pack/index.tsv` logs a `[RED]` line naming the folder (without packs every boot program opens its own library, seconds of extra boot on a game with hundreds), unless `DM_SHADER_PACKS=off`.
 Packing changes every function hash, so a pipeline archive must be rebuilt from replayed harvest records after packing (`dmsh_psoexpand.py --build`, then `dmsh_psoarch.py`); harvests recorded against loose libraries do not match packed pipelines, and `dmsh_psoarch.py` leaves out their pipelines on a library the packs cover. Repacking (a new hot list or pack size) also changes the hashes, so rebuild the archive after it.
 If the app finds neither packs nor loose libraries it shows an alert instead of drawing nothing.
 
