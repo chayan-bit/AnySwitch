@@ -146,7 +146,8 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 // The footer says what the focused spot can do (dm_hints_for_focus)
 - (void)updateHints {
     DmFocusKind k = DmFocusCategory; BOOL locked = NO;
-    if (_inPane && _row < (NSInteger)_rows.count) {
+    if (_editing) k = DmFocusEditor;
+    else if (_inPane && _row < (NSInteger)_rows.count) {
         DmRowView *r = _rows[(NSUInteger)_row]; locked = r.locked;
         switch (r.kind) {
             case DmItemReset: k = DmFocusRestore; break;
@@ -157,6 +158,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
                 break;
         }
     }
+    _hints.onScrim = _editing;
     NSArray *h = dm_hints_for_focus(k, locked, _armed);
     if (![h isEqual:_shownHints]) { _shownHints = h; [_hints setHints:h]; }
 }
@@ -224,9 +226,9 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     e.onCancel = ^{ [w textEditorClosed]; };
     e.frame = self.view.bounds; e.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _editor = e; _editing = YES; _editB = (_prev & 1ull << DMB_B) != 0;
-    [self.view addSubview:e]; [e open];
+    [self.view addSubview:e]; [self.view bringSubviewToFront:_hints]; [self updateHints]; [e open];   // the footer stays above the scrim and names the editor's buttons
 }
-- (void)textEditorClosed { _editing = NO; _editor = nil; _baselined = NO; [self becomeFirstResponder]; }   // what the controller holds now does nothing until it is released
+- (void)textEditorClosed { _editing = NO; _editor = nil; _baselined = NO; [self updateHints]; [self becomeFirstResponder]; }   // what the controller holds now does nothing until it is released
 - (void)cancelEditor { [_editor cancel]; }
 - (void)step:(Dir)d {
     if (!_inPane) {

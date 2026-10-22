@@ -274,8 +274,16 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
 
 #pragma mark - Hint bar
 
-@implementation DmHintBar { NSArray<NSArray<NSString *> *> *_hints; NSMutableArray<UIView *> *_parts; BOOL _compact; }
-- (instancetype)initWithFrame:(CGRect)f { if ((self = [super initWithFrame:f])) { _parts = [NSMutableArray array]; self.userInteractionEnabled = NO; } return self; }
+@implementation DmHintBar { NSArray<NSArray<NSString *> *> *_hints; NSMutableArray<UILabel *> *_parts; BOOL _compact; }
+- (instancetype)initWithFrame:(CGRect)f {
+    if ((self = [super initWithFrame:f])) { _parts = [NSMutableArray array]; self.userInteractionEnabled = NO; __weak DmHintBar *w = self; dm_on_style(self, ^{ [w paintParts]; }); }
+    return self;
+}
+- (void)setOnScrim:(BOOL)s { _onScrim = s; [self paintParts]; }
+- (void)paintParts {   // glyph tag 1, text tag 2
+    UIColor *ink = _onScrim ? [UIColor colorWithWhite:0.95 alpha:1] : DmUI.text, *glyphInk = _onScrim ? [UIColor colorWithWhite:0.17 alpha:1] : DmUI.bg;
+    for (UILabel *l in _parts) { if (l.tag == 1) { l.textColor = glyphInk; l.backgroundColor = ink; } else l.textColor = ink; }
+}
 - (CGFloat)heightWithCompact:(BOOL)c { _compact = c; return c ? 30 : 40; }
 - (void)setHints:(NSArray<NSArray<NSString *> *> *)h {
     _hints = h; for (UIView *v in _parts) [v removeFromSuperview]; [_parts removeAllObjects];
@@ -283,9 +291,8 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
         UILabel *g = [UILabel new]; g.text = p[0]; g.textAlignment = NSTextAlignmentCenter; g.layer.masksToBounds = YES; g.tag = 1;
         UILabel *t = [UILabel new]; t.text = p[1]; t.tag = 2;
         [self addSubview:g]; [self addSubview:t]; [_parts addObject:g]; [_parts addObject:t];
-        __weak UILabel *wg = g, *wt = t; dm_on_style(self, ^{ wg.textColor = DmUI.bg; wg.backgroundColor = DmUI.text; wt.textColor = DmUI.text; });
     }
-    [self setNeedsLayout];
+    [self paintParts]; [self setNeedsLayout];
 }
 - (void)layoutSubviews {
     [super layoutSubviews];

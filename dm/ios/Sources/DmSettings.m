@@ -310,6 +310,7 @@ void dm_settings_boot(void) { [[DmSettings shared] applyToEnvironment]; }
 NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed) {
     NSMutableArray *h = [NSMutableArray array];
     if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
+    if (kind == DmFocusEditor) return @[@[@"↵", @"Save"], @[@"B", @"Cancel"]];   // the controller's other buttons are paused while the editor is up
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;
@@ -318,7 +319,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
         case DmFocusRestore: [h addObject:@[@"A", @"Restore"]]; break;
         case DmFocusRestoreAll: [h addObject:@[@"A", armed ? @"Confirm" : @"Restore"]]; break;
         case DmFocusRestart: [h addObject:@[@"A", @"Restart"]]; break;
-        case DmFocusCategory: break;
+        case DmFocusCategory: case DmFocusEditor: break;
     }
     [h addObject:@[@"B", @"Back"]]; [h addObject:@[@"L R", @"Category"]];
     return h;

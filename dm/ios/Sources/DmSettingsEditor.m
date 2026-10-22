@@ -62,7 +62,7 @@
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyboardChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];
         __weak DmEditorView *w = self;
         dm_on_style(self, ^{ DmEditorView *e = w; if (!e) return;
-            e.backgroundColor = [UIColor colorWithWhite:0 alpha:e.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 0.55 : 0.35];
+            e.backgroundColor = [UIColor colorWithWhite:0 alpha:e.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 0.8 : 0.78];
             e->_panel.layer.backgroundColor = dm_cg(e, DmUI.panel); e->_box.layer.backgroundColor = dm_cg(e, DmUI.row);
             e->_title.textColor = DmUI.text; e->_detail.textColor = DmUI.sub; e->_field.textColor = DmUI.text; e->_field.tintColor = DmUI.accentText; e->_msg.textColor = DmUI.warn; [e refresh]; });
     }

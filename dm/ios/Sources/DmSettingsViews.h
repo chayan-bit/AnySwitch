@@ -55,6 +55,7 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemReset
 @end
 
 @interface DmHintBar : UIView
+@property (nonatomic) BOOL onScrim;   // the bar sits over the editor's dimming scrim: light text in both styles
 - (void)setHints:(NSArray<NSArray<NSString *> *> *)hints;   // {glyph, text} pairs, laid out left to right and kept at the right edge
 - (CGFloat)heightWithCompact:(BOOL)compact;
 @end
