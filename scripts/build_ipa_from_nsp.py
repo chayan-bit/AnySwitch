@@ -694,11 +694,11 @@ def link_code(py, repo, out, env, logs, g):
     PROG.end(str(dst))
 
 
-def write_pack(repo, ipa_env, dst, msl_mac, logs, work):
+def write_pack(repo, ipa_env, dst, logs, work):
     """--pack: build_ipa.sh with PACK=dst lays the game pack out from the IPA's own inputs (docs/development.md "Game packs"), plus the Mac shader libraries and both code dylibs;
     big files enter as APFS clones and nothing is built with Xcode. A <id>_build/mac_run.json (--mac-only) gets the pack, so compat runs boot dmhost <pack> (record_pack)"""
     PROG.stage('game pack', step=str(dst))
-    run(['bash', repo / 'dm/ios/tools/build_ipa.sh'], logs / 'build_pack.log', env=dict(ipa_env, PACK=str(dst), MSL_MAC=str(msl_mac)))
+    run(['bash', repo / 'dm/ios/tools/build_ipa.sh'], logs / 'build_pack.log', env=dict(ipa_env, PACK=str(dst)))
     if not (dst / 'manifest.json').is_file(): raise BuildError(f'no manifest.json in {dst} (full output: {logs / "build_pack.log"})')
     PROG.end(str(dst))
     say(f'game pack: {dst}')
@@ -1394,7 +1394,10 @@ def main(args=None):
     if args.pack is None:
         if free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
         say(f'building the IPA → {out_ipa}')
-    ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(game / 'RomFS'), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''))
+    # MSL_MAC: the Mac libraries and packs of this work folder; build_ipa.sh's own default ($W/build/cache) does not exist here, which left the IPA without its flexible pipeline archive
+    msl_mac = sh if gfx == 'vulkan' else sh / 'cache'
+    ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(game / 'RomFS'), MSL_IOS=str(ios), MSL_MAC=str(msl_mac), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name,
+                   DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''))
     if app_version: ipa_env['DM_APP_VERSION'] = app_version
     # app icon: the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').exists()), None)
@@ -1406,7 +1409,7 @@ def main(args=None):
     ipa_env['DM_SHOW_FPS'] = '1' if show_fps else '0'
     if show_fps: say('frame-rate counter: on (DM_SHOW_FPS=0 in the app\'s Documents/env.txt turns it off)')
     if args.pack is not None:
-        write_pack(repo, ipa_env, Path(os.path.expanduser(args.pack)).resolve() if args.pack else work / 'pack', sh if gfx == 'vulkan' else sh / 'cache', logs, work); return
+        write_pack(repo, ipa_env, Path(os.path.expanduser(args.pack)).resolve() if args.pack else work / 'pack', logs, work); return
     watch = IpaWatch(repo, work / 'ipa', out_ipa)
     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
     run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
