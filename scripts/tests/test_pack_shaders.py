@@ -15,6 +15,8 @@ import build_ipa_from_nsp as b
 V = 'abc123abc123'
 RECORD = 'xcrun -sdk macosx metal -c -fpreserve-invariance; xcrun -sdk macosx metallib'   # dmsh_build.py's Mac record: the compile line dmsh_pack.py repeats
 KEYS = ('00000000000000a1_b', '00000000000000b2_b')
+# the system xcrun, whatever the shell: a nix-shell (the Python modules the other tests need) puts its own xcrun and SDK first, which has no metal
+ENV = {k: v for k, v in os.environ.items() if k not in ('DEVELOPER_DIR', 'SDKROOT')} | {'PATH': '/usr/bin:' + os.environ['PATH'], 'J': '1'}
 
 
 def libs(d):   # a chain folder as dmsh_build.py leaves it: <key>_b.metal / .metallib / .json
@@ -22,8 +24,8 @@ def libs(d):   # a chain folder as dmsh_build.py leaves it: <key>_b.metal / .met
     cc, ln = (shlex.split(x) for x in RECORD.split(';'))
     for k in KEYS:
         src = d / f'{k}.metal'; src.write_text('#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(1, 0, 0, 1); }\n')
-        subprocess.run([*cc, src, '-o', f'{src}.air'], check=True, capture_output=True)
-        subprocess.run([*ln, f'{src}.air', '-o', d / f'{k}.metallib'], check=True, capture_output=True)
+        subprocess.run([*cc, src, '-o', f'{src}.air'], check=True, capture_output=True, env=ENV)
+        subprocess.run([*ln, f'{src}.air', '-o', d / f'{k}.metallib'], check=True, capture_output=True, env=ENV)
         os.unlink(f'{src}.air')
         (d / f'{k}.json').write_text(json.dumps({'key': k, 'chain': V, 'stage': 'ps', 'entry': 'main0', 'bindings': [], 'chain_metal': RECORD}))
 
@@ -56,7 +58,7 @@ class PackShaders(unittest.TestCase):
         kf = self.sh / 'ios' / f'b-{V}.key'
         if ios_key: kf.write_text(f'{ios_key}\nnote\n')
         else: b.rmtree(kf)
-        b.pack_shaders(sys.executable, self.repo, self.sh, dict(os.environ, J='1'), self.root / 'logs', self.g)
+        b.pack_shaders(sys.executable, self.repo, self.sh, ENV, self.root / 'logs', self.g)
 
     def index(self, side): return [l.split('\t')[0] for l in (self.sh / side / f'b-{V}' / 'pack' / 'index.tsv').read_text().splitlines() if not l.startswith('#')]
 
