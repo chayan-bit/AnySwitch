@@ -695,26 +695,31 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
     return out
 
 
-def build_mac_host(repo, out, env, logs, g, devctl=False):
-    """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's.
-    devctl: a dev build with the dev input channel (DEVCTL=1, docs/dev-control.md), reused while the compile line and every source and header it reads are unchanged"""
+def build_mac_host(repo, out, env, logs, devctl=False):
+    """The Mac host (one for every game: it reads the profile at boot, profile_json), built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path
+    with spaces and dm/host/dmhost may be another build's. devctl: a dev build with the dev input channel (DEVCTL=1, docs/dev-control.md), reused while the compile line and every source and header it reads are unchanged"""
     host, dev = repo / 'dm/host', ['DEVCTL=1'] if devctl else []
-    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h'], logs / 'mac_host_make.log', env=env, cwd=host)
-    dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', *dev, 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
+    dry = subprocess.run(['make', '-n', '-B', *dev, 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
     cmd = shlex.split(line)
     libs = [a for a in cmd if a.endswith('.a') and not os.path.isabs(a)]   # the dry run only prints the link line: build every library it names (read from the line, so a library added to the Makefile needs no change here)
-    if libs: run(['make', '-s', f'GAME={g.id}', *libs], logs / 'mac_host_make.log', env=env, cwd=host)
+    if libs: run(['make', '-s', *libs], logs / 'mac_host_make.log', env=env, cwd=host)
     cmd[cmd.index('-o') + 1] = out
     kf, key = out.with_name(out.name + '.key'), None
     if devctl:
-        key = fingerprint(cmd, ('files', host_inputs(repo) + [host / f'gen/{g.id}/game_profile.h'] + profile_files(g)), ('cmd', ['clang', '--version']), env=env)
+        key = fingerprint(cmd, ('files', host_inputs(repo)), ('cmd', ['clang', '--version']), env=env)
         if out.is_file() and reused(kf, key) is not None: return out
     rmtree(kf); out.parent.mkdir(parents=True, exist_ok=True)
     run(cmd, logs / ('mac_dev_host_build.log' if devctl else 'mac_host_build.log'), env=env, cwd=host)
     if key: kf.write_text(f'{key}\n')
     return out
+
+
+def profile_json(g, d):   # the resolved profile the host reads at boot: d/game.json (dm/games/game.py json, from the profile as it is now); returns d for DM_PROFILE_DIR
+    import game as gamemod
+    gamemod.write_if_changed(Path(d) / 'game.json', gamemod.json_text(gamemod.Game(g.dir)))
+    return Path(d)
 
 
 def host_inputs(repo):   # the sources and headers the Mac host is compiled from (dm/host, dm/gfx and the third-party headers; not tests, tools or build output)
@@ -728,7 +733,7 @@ def host_inputs(repo):   # the sources and headers the Mac host is compiled from
 def mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisional, env, logs):
     """--mac-only: the Mac dev host, then <id>_build/mac_run.json with what a run needs; returns its path. The Mac shader libraries are sh/cache/b-<chain> (NVN) or sh/vk (Vulkan)"""
     PROG.stage('Mac dev host')
-    host = build_mac_host(repo, work / 'tools/dmhost-dev', env, logs, g, devctl=True)
+    host = build_mac_host(repo, work / 'tools/dmhost-dev', env, logs, devctl=True)
     msl = sh / ('vk' if gfx == 'vulkan' else 'cache')
     if gfx != 'vulkan':
         chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
@@ -736,6 +741,7 @@ def mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisiona
     keys = [p.read_text().split('\n', 1)[0] for p in sorted([patched.with_name(patched.name + '.key'), sh / 'pkg.key', host.with_name(host.name + '.key'), *sh.glob('ios/*.key')]) if p.is_file()]
     info = {'title_id': g.id, 'name': g.get('name', ''), 'version': pkg_ver, 'gfx': gfx, 'provisional': provisional, 'host': str(host), 'patched': str(patched),
             'romfs': str(game / 'RomFS'), 'aoc': str(aoc or ''), 'msl_dir': str(msl), 'shader_map': str(g.table('shader_map.tsv')), 'profile_dir': str(g.dir),
+            'profile_json': str(profile_json(g, work / 'tools/profile')),
             'games_dir': env.get('DM_GAMES_DIR', ''), 'games_first': env.get('DM_GAMES_FIRST', ''), 'fingerprint': hashlib.sha256('\n'.join(keys).encode()).hexdigest()[:16]}
     out = work / 'mac_run.json'; out.write_text(json.dumps(info, indent=1) + '\n')
     PROG.end(host.name)
@@ -743,10 +749,10 @@ def mac_run_info(repo, work, g, pkg_ver, game, patched, aoc, sh, gfx, provisiona
     return out
 
 
-def boot_mac(host, patched, henv, rd, log, secs, done=lambda: False):
+def boot_mac(host, patched, g, henv, rd, log, secs, done=lambda: False):
     """Boot the game in the Mac host (headless and silent: no DM_WINDOW, no DM_AUDIO) with its output in log, until done() says so, the host exits, or secs pass;
-    then SIGTERM (the host's graceful exit), a kill 5 s later. Returns the host's exit code, None when it was still running"""
-    t0 = time.time()
+    then SIGTERM (the host's graceful exit), a kill 5 s later. The profile goes to rd/profile/game.json. Returns the host's exit code, None when it was still running"""
+    t0 = time.time(); henv = dict(henv, DM_PROFILE_DIR=str(profile_json(g, rd / 'profile')))
     with open(log, 'w') as f:
         p = subprocess.Popen([str(host), str(patched)], env=henv, cwd=rd, stdout=f, stderr=subprocess.STDOUT)
         try:
@@ -777,7 +783,7 @@ def capture_glslc(repo, dirs, pkg_ver, patched, work, env, logs, g):
         PROG.end('reused'); return
     if todo != [pkg_ver]: raise BuildError(f'the run-time shader capture runs the packed version {pkg_ver}\'s code; {", ".join(v for v in todo if v != pkg_ver)} needs a capture of its own')
     PROG.set(step='building the Mac host')
-    host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
+    host = build_mac_host(repo, work / 'tools/dmhost', env, logs)
     d = dirs[pkg_ver]; cap, rd, log = d / 'glslc_capture.partial', work / 'tmp/glslc_run', logs / 'glslc_capture.log'
     rmtree(cap); rmtree(rd)
     for s in ('save', 'temp'): (rd / s).mkdir(parents=True)
@@ -789,7 +795,7 @@ def capture_glslc(repo, dirs, pkg_ver, patched, work, env, logs, g):
     def done():   # every file the profile names is there (Three Houses: within its first frames)
         got = glslc_done(cap); PROG.set(done=len(got & want if want else got))
         return bool(want and got >= want)
-    rc = boot_mac(host, patched, henv, rd, log, GLSLC_SECS, done)
+    rc = boot_mac(host, patched, g, henv, rd, log, GLSLC_SECS, done)
     got = glslc_done(cap)
     if rc is not None and not (want and got >= want): host_stopped(log, rc, time.time() - t0)
     if not got or (want and not got >= want):
@@ -821,7 +827,7 @@ def decode_ue_shaders(repo, dirs, pkg_ver, patched, work, env, logs, g):
         say(f'reusing the decoded shader archives: {", ".join(str(d / "ue_shaders") for d in dirs.values())}')
         PROG.end('reused'); return
     PROG.set(step='building the Mac host')
-    host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
+    host = build_mac_host(repo, work / 'tools/dmhost', env, logs)
     t0, total = time.time(), 0
     for v, d in todo.items():
         jd, rd, log = work / f'tmp/ue_job_{v}', work / 'tmp/ue_run', logs / f'ue_decode_{v}.log'
@@ -833,7 +839,7 @@ def decode_ue_shaders(repo, dirs, pkg_ver, patched, work, env, logs, g):
         say(f'{v}: ' + '; '.join(f'{x["name"]} {x["shaders"]:,} shaders' for x in listing) + f'; decoding {n:,} with the game\'s Oodle in the Mac host')
         PROG.set(step=f'{v}: decoding {n:,} shaders in the Mac host')
         henv = dict(env, DM_ROMFS=str(dirs[pkg_ver] / 'RomFS'), DM_SAVE=str(rd / 'save'), DM_TEMP=str(rd / 'temp'), DM_MSL_DIR=str(rd / 'msl'), DM_OODLE_JOB=str(jd / 'oodle.job'))
-        rc = boot_mac(host, patched, henv, rd, log, UE_DECODE_SECS)
+        rc = boot_mac(host, patched, g, henv, rd, log, UE_DECODE_SECS)
         if rc != 0 or not (jd / 'oodle.job.out').exists():
             PROG.end(ok=False)
             PROG.say(f'---- last lines of {log} ----\n' + ''.join(collections.deque(open(log, errors='replace'), maxlen=20)).rstrip('\n'))
@@ -869,7 +875,7 @@ def capture_vk(repo, d, patched, work, env, logs, g):
     if want and vk_done(out) >= want:
         say(f'reusing the captured run-time shaders: {out}'); PROG.end('reused'); return out
     PROG.set(step='building the Mac host')
-    host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
+    host = build_mac_host(repo, work / 'tools/dmhost', env, logs)
     cap, rd, log = d / 'vk_capture.partial', work / 'tmp/vk_run', logs / 'vk_capture.log'
     rmtree(cap); rmtree(rd); cap.mkdir(parents=True)
     for x in ('save', 'temp', 'msl'): (rd / x).mkdir(parents=True)
@@ -882,7 +888,7 @@ def capture_vk(repo, d, patched, work, env, logs, g):
         got = vk_done(cap); n = len(got & want if want else got); PROG.set(done=n)
         if n != last['n']: last['n'], last['t'] = n, time.time()
         return bool((want and got >= want) or (not want and n and time.time() - last['t'] > 20))
-    rc = boot_mac(host, patched, henv, rd, log, VK_CAPTURE_SECS, done)
+    rc = boot_mac(host, patched, g, henv, rd, log, VK_CAPTURE_SECS, done)
     got = vk_done(cap)
     if rc is not None and not (want and got >= want): host_stopped(log, rc, time.time() - t0)
     if not got or (want and not got >= want):
@@ -939,7 +945,7 @@ def heap_check(repo, d, patched, work, env, logs, g):
     HEAP_CHECK_NNMAIN_SECS in nnMain without one (Engage sets none): a few seconds. The keys go into the profile (profile_guess.py heap_signals), which is stamped"""
     PROG.stage('heap check')
     host, rd, log = work / 'tools/dmhost', work / 'tmp/heap_run', logs / 'heap_check.log'
-    PROG.set(step='building the Mac host'); build_mac_host(repo, host, env, logs, g)
+    PROG.set(step='building the Mac host'); build_mac_host(repo, host, env, logs)
     rmtree(rd)
     for x in ('save', 'temp', 'msl'): (rd / x).mkdir(parents=True)
     # a fresh save and temporary storage, no shader libraries (only the heap request matters), the profile's shader map
@@ -952,7 +958,7 @@ def heap_check(repo, d, patched, work, env, logs, g):
         if 'SetHeapSize OOM' in text or '[mem] heap ' in text: return True
         if '>>> nnMain' in text: seen.setdefault('nnmain', time.time())
         return time.time() - seen.get('nnmain', time.time()) > HEAP_CHECK_NNMAIN_SECS
-    rc = boot_mac(host, patched, henv, rd, log, HEAP_CHECK_SECS, done)
+    rc = boot_mac(host, patched, g, henv, rd, log, HEAP_CHECK_SECS, done)
     text = log.read_text(errors='replace'); rmtree(rd)
     sig = {k: v for k, v in pg.heap_signals(text, g).items() if g.get(k, '') != v[0]}
     for k, (v, why) in sig.items(): say(f'heap check: {k} {v}: {why}')
@@ -1337,7 +1343,7 @@ def main(args=None):
         ios = build_vk_shaders(py, repo, [game / 'RomFS'] + ([cap] if cap else []), sh, env, logs, g, reuse=not (provisional or ALLOW_DAMAGED))
     else:
         # Trinity packs: the split decodes them with the packed version's own Oodle decoder, in the Mac host built for the profile
-        oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] else None
+        oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs)), 'DM_OODLE_MODULES': str(patched), 'DM_PROFILE_DIR': str(profile_json(g, work / 'tools/profile'))}) if src['oodle_packs'][0] else None
         skey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional, oodle)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, provisional, skey)
         pack_shaders(py, repo, sh, env, logs, g)
@@ -1372,7 +1378,7 @@ def main(args=None):
         say(f'  after installing the app, copy it: python3 {repo}/dm/tools/romstore/romstore.py install {store} --device <udid> --bundle {bundle_id}  (IPA_ROMFS=1 packs the files into the IPA instead)')
     if provisional:
         say(f'[RED] this IPA was built from a provisional game profile and the game may not boot: {g.dir}')
-        say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/internals')
+        say(f'  bring-up on the Mac: make -C dm/host dmhost, DM_GAMES_DIR="{g.dir.parent}" python3 dm/games/game.py json {g.id} <dir>, then DM_PROFILE_DIR=<dir>; see docs/internals')
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted

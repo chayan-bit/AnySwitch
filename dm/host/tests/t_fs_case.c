@@ -41,6 +41,7 @@ static int entry_count(void) {
 }
 static void *create_race(void *p) { return (void *)(uintptr_t)h_fs_CreateFile(p, 0); }
 module_t g_mod[MAX_MOD]; int g_nmod;   // Module table (MountSave picks save fixes by main build ID): this unit test loads no modules
+struct dm_profile g_profile;   // no game profile: every value is 0
 int main(void) {
     char root[1024], save[1024], p[1100];
     const char *tmp = getenv("TMPDIR");

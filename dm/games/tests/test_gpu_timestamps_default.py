@@ -1,4 +1,4 @@
-"""gpu_timestamps profile key: the default is segment (audit rank 10), a per-title `gpu_timestamps submission` wins, a bad value is refused, and the run-time env override still sits ahead of the profile macro in nvn_mtl.m.
+"""gpu_timestamps profile key: the default is segment (audit rank 10), a per-title `gpu_timestamps submission` wins, a bad value is refused, and the run-time env override still sits ahead of the profile value in nvn_mtl.m.
 No game data: the profiles here are built in a temp folder. Run: python3 -I dm/games/tests/test_gpu_timestamps_default.py"""
 from pathlib import Path
 import re
@@ -16,7 +16,7 @@ BASE = 'title_id\t0100000000000000\nprogram_id\t0100000000000000\nname\tSyntheti
 def macro(extra=''):
     with tempfile.TemporaryDirectory() as t:
         d = Path(t) / '0100000000000000'; d.mkdir(); (d / 'game.tsv').write_text(BASE + extra)
-        return re.search(r'DM_GAME_GPU_TS_SEGMENT (\d)', game.header(game.Game(d))).group(1)
+        return str(int(game.resolve(game.Game(d))['gpu_ts_segment']))
 
 
 class GpuTimestampsDefault(unittest.TestCase):
@@ -27,11 +27,11 @@ class GpuTimestampsDefault(unittest.TestCase):
     def test_bad_value_is_refused(self):
         with self.assertRaises(SystemExit): macro('gpu_timestamps\tfoo\n')
 
-    def test_env_override_still_wins_over_the_profile_macro(self):   # the only reader of the macro is seg_ts() in dm/gfx/nvn/nvn_mtl.m
+    def test_env_override_still_wins_over_the_profile_value(self):   # the only reader of the value is seg_ts() in dm/gfx/nvn/nvn_mtl.m
         src = (GAMES.parent / 'gfx' / 'nvn' / 'nvn_mtl.m').read_text(encoding='utf-8')
         m = re.search(r'static int seg_ts\(void\) \{.*?\n', src)
         self.assertIsNotNone(m)
-        self.assertRegex(m.group(0), r'getenv\("DM_NVN_GPU_TS"\).*e && \*e \? !strcmp\(e, "segment"\) : DM_GAME_GPU_TS_SEGMENT')
+        self.assertRegex(m.group(0), r'getenv\("DM_NVN_GPU_TS"\).*e && \*e \? !strcmp\(e, "segment"\) : g_profile\.gpu_ts_segment')
 
 
 if __name__ == '__main__': unittest.main()

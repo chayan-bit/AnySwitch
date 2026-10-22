@@ -62,6 +62,8 @@ static void host_preload(int argc, char **argv) {
     g_t0_ns = proc_start_mono_ns();
     flags_init();
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
+    // The game profile: game.json in DM_PROFILE_DIR, else in <dir> beside the rewriter tables (the iOS app loads it earlier, for the RomFS marker)
+    if (!g_profile.id) dm_profile_load(getenv("DM_PROFILE_DIR") ?: argv[1]);
     // Time zone: the game converts absolute time to local time along two paths, both ending in the host libc -- nn::time::ToCalendarTime (hle_time.c, localtime_r) and the guest libc's
     // localtime_r / mktime (hle_table.c wires them straight to the host). So only when the host follows the system time zone do the original game's screens (chronicle discovery time etc.) show this machine's time.
     // Only deterministic comparison (DM_FIXED_TIME) pins it to UTC: the same replay must convert to the same calendar time on this machine (UTC+8) and on the second Mac (UTC+9)
@@ -86,12 +88,12 @@ static void host_preload(int argc, char **argv) {
     int i = 2;
     for (; i < argc && strcmp(argv[i], "--") && n < MAX_MOD; i++) names[n++] = argv[i];
     if (i < argc && !strcmp(argv[i], "--")) for (i++; i < argc && g_argc < 63; i++) g_argv[g_argc++] = argv[i];
-    else if (*DM_GAME_ARGS) {   // no "--" on the command line (the iOS app, the NSP script's Mac runs): the game profile's game_args, split at spaces
-        char *s = strdup(DM_GAME_ARGS);
+    else if (*g_profile.game_args) {   // no "--" on the command line (the iOS app, the NSP script's Mac runs): the game profile's game_args, split at spaces
+        char *s = strdup(g_profile.game_args);
         for (char *t = strtok(s, " "); t && g_argc < 63; t = strtok(NULL, " ")) g_argv[g_argc++] = t;
-        LOG("game arguments from the game profile: %s", DM_GAME_ARGS);
+        LOG("game arguments from the game profile: %s", g_profile.game_args);
     }
-    if (!n) { static const char *def[] = DM_GAME_MODULES; for (int k = 0; k < DM_GAME_NMOD && n < MAX_MOD; k++) names[n++] = def[k]; }   // default module list from the game profile's modules (Mario: main sdk)
+    if (!n) for (int k = 0; k < g_profile.nmod && n < MAX_MOD; k++) names[n++] = g_profile.modules[k];   // default module list from the game profile's modules (Mario: main sdk)
     load_modules(argv[1], names, n);
     dm_sdk_major();   // logs the SDK version, which SDK-dependent behaviour follows (loader.c)
     uint64_t ta = now_ns();

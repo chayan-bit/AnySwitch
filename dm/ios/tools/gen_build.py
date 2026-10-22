@@ -6,7 +6,6 @@
 # Usage: gen_build.py <dm/host dir> <Gen dir>
 import os, shlex, subprocess, sys
 host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
-subprocess.run(['make', '-s', '-C', host, 'game_profile'], check=True)   # generate the game profile header for real first (make -n below only prints; GAME comes from the environment)
 cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost'], capture_output=True, text=True, check=True).stdout
 # The host's own link command (-o dmhost) first, then the per-file compile commands of the libraries it depends on (libvpx): header paths keep this order, so the host's headers are found first
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]

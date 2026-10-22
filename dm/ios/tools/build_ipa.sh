@@ -57,6 +57,8 @@ cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHE
 if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
 else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"
   if [ -f "$GD/cb_extent.tsv" ]; then cp "$GD/cb_extent.tsv" Gen/dm/ || die "copy cb_extent.tsv"; fi; fi   # optional: without it the host copies whole uniform bindings
+# The game profile the host reads at boot (main.m loads dm/game.json before anything else)
+python3 "$DM/games/game.py" json "$GAME" Gen/dm || die "game.json"
 # The game's own sections of the in-app settings screen (docs/settings.md): dm/games/<id>/settings.json becomes dm/settings.json in the app
 if [ -f "$GD/settings.json" ]; then cp "$GD/settings.json" Gen/dm/settings.json || die "copy settings.json"; t "settings: $GD/settings.json"; fi
 # GPU architectures both pipeline archives below are built for (each holds one copy of every pipeline per architecture): PSO_ARCHS (names as the app's log line "this GPU: ..." prints

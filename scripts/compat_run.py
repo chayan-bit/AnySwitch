@@ -255,6 +255,7 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
                DM_WATCH_STALL='60', DM_WATCH_SAMPLE=str(rd / 'stall_sample.txt'), DM_NVN_ZBLOCK='1', DM_NVN_SHOT=f'{frames}:{rd}/shots/%d.png')
     for k in ('DM_WINDOW', 'DM_AUDIO', 'DM_KEYS'): env.pop(k, None)   # headless and silent; input only through devctl
     if info.get('aoc'): env['DM_AOC_DIR'] = info['aoc']
+    if info.get('profile_json'): env['DM_PROFILE_DIR'] = info['profile_json']   # the folder holding the game.json the host reads at boot
     if info.get('games_dir'): env['DM_GAMES_DIR'] = info['games_dir']
     if info.get('games_first'): env['DM_GAMES_FIRST'] = info['games_first']
     env.update(extra_env)   # --env / --ab switches win over the runner's own

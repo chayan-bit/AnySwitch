@@ -14,10 +14,9 @@
 HLE_FORCE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", "CPU boost mode; the host does not scale clocks", void, h_oe_CpuBoost, int m) { (void)m; }
 // DisplayVersion = char[16] (the application's display version): the value from that version's control data (NACP), chosen by main's build ID (the game profile's build rows); unknown builds get 1.0.0
 HLE_FORCE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", "display version (by the main build ID)", void, h_oe_DispVer, char *v) {
-    static const struct { const char *build, *ver; } k[] = {DM_GAME_DISPLAY_VERSIONS};
     const char *ver = "1.0.0";
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
-        for (unsigned j = 0; j < sizeof k / sizeof *k; j++) if (!strcmp(g_mod[i].build_id, k[j].build)) ver = k[j].ver;
+        for (int j = 0; j < g_profile.nversions; j++) if (!strcmp(g_mod[i].build_id, g_profile.versions[j].build)) ver = g_profile.versions[j].ver;
     memset(v, 0, 16); strlcpy(v, ver, 16);
 }
 HLE_FORCE("_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_", "system / application volume balance; the host always reports 1:1", void, h_oe_GetVolBal, float *sys, float *app) { *sys = 1.0f; *app = 1.0f; }
@@ -99,11 +98,8 @@ static font_t font_get(int type) {
 static size_t font_skip(void) {
     static int skip = -1;
     if (skip < 0) {
-#ifdef DM_GAME_SHARED_FONT_TTF
-        skip = DM_GAME_SHARED_FONT_TTF ? 8 : 0; LOG("shared font: %s (game profile shared_font)", skip ? "the TTF itself" : "BFTTF header + TTF");
-#else
-        int m = dm_sdk_major(); skip = DM_SDK_OLD(m) ? 8 : 0; LOG("shared font: %s (SDK %d)", skip ? "the TTF itself" : "BFTTF header + TTF", m);
-#endif
+        if (g_profile.shared_font_ttf >= 0) { skip = g_profile.shared_font_ttf ? 8 : 0; LOG("shared font: %s (game profile shared_font)", skip ? "the TTF itself" : "BFTTF header + TTF"); }
+        else { int m = dm_sdk_major(); skip = DM_SDK_OLD(m) ? 8 : 0; LOG("shared font: %s (SDK %d)", skip ? "the TTF itself" : "BFTTF header + TTF", m); }
     }
     return (size_t)skip;
 }

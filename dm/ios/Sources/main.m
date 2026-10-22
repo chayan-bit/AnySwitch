@@ -6,7 +6,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
-#include "game_profile.h"   // game profile constants (the RomFS marker path)
+#include "profile.h"   // the game profile (the RomFS marker path)
 #import "DmSettings.h"
 
 int dm_main(int argc, char **argv);   // dm/host/main.c compiled in with -Dmain=dm_main
@@ -22,7 +22,7 @@ static NSString *romfs_locate(void) {
     NSString *store = [doc stringByAppendingPathComponent:@"romfs.dmstore"]; BOOL isdir = NO;   // the host checks the store itself when it mounts it (hle_fs.c)
     if ([fm fileExistsAtPath:store isDirectory:&isdir] && !isdir) return store;
     for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs"]])
-        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
+        if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@(g_profile.romfs_marker)]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
     return nil;
 }
 
@@ -63,13 +63,14 @@ static int boot_env(void) {
             else fprintf(stderr, "boot: shader cache %s cleared (DM_CLEAR_SHADER_CACHE)\n", d.UTF8String);
         }
     }
+    NSString *dm = [res stringByAppendingPathComponent:@"dm"];
+    dm_profile_load(getenv("DM_PROFILE_DIR") ?: dm.fileSystemRepresentation);   // the game profile (dm/game.json, put there by build_ipa.sh): the RomFS marker below and everything the host reads
     NSString *romfs = romfs_locate();
     if (!romfs) { fprintf(stderr, "boot: game files not found (<App>/romfs, Documents/romfs or Documents/romfs.dmstore)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
-    NSString *dm = [res stringByAppendingPathComponent:@"dm"];
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
     setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
