@@ -154,6 +154,18 @@ class Bookkeeping(unittest.TestCase):
         self.assertEqual(cr.env_pairs(['DM_MSL_DIR=/a/b-c/d', 'X=1,2 Y=on']), {'DM_MSL_DIR': '/a/b-c/d', 'X': '1,2', 'Y': 'on'})
         with self.assertRaises(SystemExit): cr.env_pairs(['nope'])
 
+    def test_host_launch_from_a_pack_or_a_patched_folder(self):
+        info = {'host': '/h/dmhost', 'patched': '/w/patched', 'romfs': '/w/romfs.dmstore', 'msl_dir': '/w/msl', 'shader_map': '/g/shader_map.tsv', 'aoc': '/w/aoc', 'profile_json': '/w/profile'}
+        argv, env = cr.host_launch(info, {'DM_SAVE': '/s', 'DM_KEYS': 'x'}, {'DM_NICK': 'n'})
+        self.assertEqual(argv, ['/h/dmhost', '/w/patched'])
+        self.assertEqual((env['DM_ROMFS'], env['DM_MSL_DIR'], env['DM_AOC_DIR'], env['DM_PROFILE_DIR'], env['DM_SAVE'], env['DM_NICK']), ('/w/romfs.dmstore', '/w/msl', '/w/aoc', '/w/profile', '/s', 'n'))
+        self.assertNotIn('DM_KEYS', env)
+        argv, env = cr.host_launch(dict(info, pack='/p/pack'), {'DM_SAVE': '/s', 'DM_ROMFS': '/stale', 'DM_CODE': '/stale.dylib'}, {'DM_MSL_DIR': '/test'})
+        self.assertEqual(argv, ['/h/dmhost', '/p/pack'])
+        self.assertEqual(env['DM_SAVE'], '/s')                  # the caller's own values stay
+        self.assertNotIn('DM_ROMFS', env); self.assertNotIn('DM_CODE', env); self.assertNotIn('DM_PROFILE_DIR', env)   # the pack defaults them
+        self.assertEqual(env['DM_MSL_DIR'], '/test')            # --env still wins
+
     def test_route_file(self):
         ck, secs, seq = cr.read_route('# a route\ncheckpoint start\nsecs 120\nf700:A*12/90\nwait(30) LLeft~40  # walk\n')
         self.assertEqual((ck, secs, seq), ('start', 120.0, 'f700:A*12/90 wait(30) LLeft~40'))

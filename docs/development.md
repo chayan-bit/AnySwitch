@@ -154,7 +154,8 @@ The engine holds no game-specific code; everything that differs per game is in t
 
 ```
 <pack root>/
-  manifest.json      title_id, the four version numbers (abi), platforms
+  manifest.json      title_id, the four version numbers (abi), platforms, module build ids, and the inventory's count, size and sha256 (small: the engine reads it before every boot)
+  files.tsv          the inventory: path, size and sha256 of every other file (dm/tools/pack_manifest.py verify reads it)
   profile/           game.json (the resolved dm/games profile), <module>.fixups / .gates / .cuts / .obs / .sites.tsv, shader_map.tsv, c1_full.tsv, cb_extent.tsv, pso_manifest.tsv, settings.json
   code/              ios.dylib, macos.dylib (the rewritten modules, dm/ios/tools/gen_embed.py --dylib)
   msl/<platform>/    shader libraries (b-<chain>/...)

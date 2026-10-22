@@ -1,5 +1,5 @@
-# pack_manifest.py on a scratch pack: write records the engine's numbers, the platforms present, the module build ids and every file; verify passes on the untouched pack and names
-# each kind of difference (a changed, missing or extra file, a stale number).
+# pack_manifest.py on a scratch pack: write records the engine's numbers, the platforms present, the module build ids and every file (files.tsv, named by the small manifest.json);
+# verify passes on the untouched pack and names each kind of difference (a changed, missing or extra file, an edited inventory, a stale number).
 import json, re, subprocess, sys, tempfile
 from pathlib import Path
 TOOL = Path(__file__).resolve().parents[1] / 'pack_manifest.py'
@@ -22,8 +22,10 @@ def main():
         assert m['format'] == ABI['DM_PACK_FORMAT'] and m['title_id'] == '0100ABF008968000', m
         assert m['abi'] == {'profile_schema': ABI['DM_PROFILE_SCHEMA'], 'code': ABI['DM_CODE_ABI'], 'shader': ABI['DM_SHADER_ABI']}, m['abi']
         assert m['platforms'] == ['macos'] and m['modules'] == {'main': 'abcd'}, m
-        assert sorted(m['files']) == ['code/macos.dylib', 'msl/macos/b-1/a_b.metallib', 'profile/game.json', 'profile/main.fixups.tsv', 'romfs.dmstore'], m['files']
-        assert m['files']['romfs.dmstore']['size'] == 5
+        inv = {l.split('\t')[0]: l.split('\t')[1:] for l in (r / 'files.tsv').read_text().splitlines() if not l.startswith('#')}
+        assert sorted(inv) == ['code/macos.dylib', 'msl/macos/b-1/a_b.metallib', 'profile/game.json', 'profile/main.fixups.tsv', 'romfs.dmstore'], inv
+        assert inv['romfs.dmstore'][0] == '5' and m['inventory']['files'] == 5 and m['inventory']['file'] == 'files.tsv', (inv, m['inventory'])
+        assert 'files' not in m and len((r / 'manifest.json').read_bytes()) < 2048   # the engine parses the manifest at every boot: it stays small
         assert run('verify', str(r)).returncode == 0
 
         def bad(change, want):
@@ -36,6 +38,8 @@ def main():
         bad(lambda: ((r / 'romfs.dmstore').write_text('stoRe'), lambda: (r / 'romfs.dmstore').write_text('store'))[1], 'changed: romfs.dmstore')
         bad(lambda: ((r / 'msl/macos/b-1/a_b.metallib').rename(r / 'x'), lambda: (r / 'x').rename(r / 'msl/macos/b-1/a_b.metallib'))[1], 'missing: msl/macos/b-1/a_b.metallib')
         bad(lambda: ((r / 'extra.bin').write_text('?'), lambda: (r / 'extra.bin').unlink())[1], 'not in the manifest: extra.bin')
+        inv_raw = (r / 'files.tsv').read_text()
+        bad(lambda: ((r / 'files.tsv').write_text(inv_raw.replace('romfs.dmstore\t5', 'romfs.dmstore\t6')), lambda: (r / 'files.tsv').write_text(inv_raw))[1], 'changed: files.tsv')
 
         def stale():
             m2 = dict(m, abi=dict(m['abi'], code=m['abi']['code'] + 1)); (r / 'manifest.json').write_text(json.dumps(m2)); return lambda: None
