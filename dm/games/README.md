@@ -17,7 +17,8 @@ Everything game-specific belongs here. Code reads the profile; it does not hard-
 | Who | Picks the profile with | Reads |
 |---|---|---|
 | Shader tools (`shader_split.py`, `dmsh_chain.py`, `dmsh_build.py`, `dmsh_facts.py`) | `DM_GAME=<id>` | tables, `shader_*` keys |
-| Host (`make -C dm/host`, `dm/gfx/tests`) | `GAME=<id>` | `gen/<id>/game_profile.h`, generated from `game.tsv` by `game.py header` |
+| Host (`dm/host/dmhost`, one build for every game) | nothing at build time | `game.json`, written by `game.py json <id> <dir>` and read at boot: a pack's `profile/`, `DM_PROFILE_DIR`, or the rewriter output folder |
+| Graphics tests (`make -C dm/gfx/tests`) | `GAME=<id>` | `game.json`, written by `game.py json <id> <dir>` into the build folder |
 | `dm/ios/tools/build_ipa.sh` | `GAME=<id>` | app name, bundle ID, IPA name, modules, RomFS marker, tables |
 | `scripts/build_ipa_from_nsp.py` | the NSPs' title ID | everything above. With no matching profile it writes a survey, then a provisional profile outside the repository and a best-effort IPA (`--survey-only` stops after the survey) |
 
@@ -99,5 +100,5 @@ These are not profile keys: the tools read them from the game files each time, b
    1. `DM_GAME=<id> dmsh_chain.py --header`
    2. `DM_GAME=<id> [IOSOUT=…] dmsh_build.py <pkg> <cache>`
    3. `c1_guard.py <cache>/b-<V> dm/games/<id>/c1_full.tsv` and `cb_extent.py <cache>/b-<V> dm/games/<id>/cb_extent.tsv`
-5. **Host bring-up.** Run `make -C dm/host GAME=<id>`, then work through the bring-up loop in docs/internals. Code that only fits one game is gated by its build ID (`dm_main_build()`), never left to run on every game.
+5. **Host bring-up.** Run `make -C dm/host dmhost` (one host for every game) and `python3 dm/games/game.py json <id> <rewriter output folder>`, then work through the bring-up loop in docs/internals. Code that only fits one game is gated by its build ID (`dm_main_build()`), never left to run on every game.
 6. **IPA.** Use `GAME=<id> dm/ios/tools/build_ipa.sh`, or the NSP script, which now finds the profile.

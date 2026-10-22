@@ -224,7 +224,7 @@ The game's HD rumble reaches the screen's two settings through three small piece
 `make -C dm/ios/tests run` builds and runs `t_settings.m` and `t_haptics.c` on the Mac.
 `t_settings.m` checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset and reset-all, the restart-pending state, per-game sections and defaults, capabilities, text limits, the slider display, the frame rate dependent defaults (Upscaling at 30 and 60 fps, a stored choice winning over them) and the flexible pipelines row.
 `t_haptics.c` checks the amplitude and frequency mapping.
-`make -C dm/host/tests GAME=<title id> run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
+`make -C dm/host/tests run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
 `python3 -I dm/games/tests/test_settings_defaults.py` checks the per-game files.
 Check the screen itself on both an iPad and an iPhone, in light and dark appearance, with the focus on each kind of row, and drive it with a controller as well as by touch.
 Check the player name editor with the touch keyboard and with a hardware keyboard, and the vibration rows with a controller attached and without.

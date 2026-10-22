@@ -67,9 +67,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      # The host unit tests need no game and no game files; the parity test reads every profile in dm/games.
+      # The host unit tests need no game and no game files; the profile schema test reads every profile in dm/games.
       - run: make -C dm/host/tests run
-      - run: make -C dm/host/tests profile-parity
+      - run: make -C dm/host/tests profile-schema
       - run: make -C dm/host/tests pack-check
       # The in-app settings registry and the haptics mapping: Foundation and plain C, no device
       - run: make -C dm/ios/tests run

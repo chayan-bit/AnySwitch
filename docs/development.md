@@ -95,7 +95,7 @@ Each game has a profile in `dm/games/<id>/`:
 - the shader tables: `shader_map.tsv`, `shader_facts.tsv`, `shader_pairs.tsv`, `c1_full.tsv`, `cb_extent.tsv`, `pso_manifest.tsv`;
 - `dmsh_chain.h` holds the chain version.
 
-The shader tools pick a profile with `DM_GAME=<id>`; `make -C dm/host` and `build_ipa.sh` pick it with `GAME=<id>`. Profiles are named after the base game's title ID. There is no default game: without `GAME` / `DM_GAME` the tools stop and list the profiles. `python3 dm/games/game.py list` lists the profiles. Host code that relies on one build's fixed addresses checks that build's ID.
+The shader tools pick a profile with `DM_GAME=<id>`; `build_ipa.sh` and `make -C dm/gfx/tests` pick it with `GAME=<id>`. The host is built once for every game and reads the profile at boot from `game.json` (`python3 dm/games/game.py json <id> <dir>`). Profiles are named after the base game's title ID. There is no default game: without `GAME` / `DM_GAME` the tools stop and list the profiles. `python3 dm/games/game.py list` lists the profiles. Host code that relies on one build's fixed addresses checks that build's ID.
 
 To add a game:
 1. Run `scripts/build_ipa_from_nsp.py` on its NSP folder. With no matching profile, it writes a survey to `<title ID>_survey/survey.md`. The survey covers the modules, SDK, engine, containers, rewrite sites, and the imports compared with the host's hooks. It then writes a provisional profile into `<title ID>_build/profile/<title ID>/` (outside the repository; tools find it through `DM_GAMES_DIR`) with the keys `dm/games/profile_guess.py` reads off the game files: the graphics API, the modules to load, where the shaders come from, the memory partition, SDK and engine presets. After the rewrite it sets `mem_used` from the rewritten modules and, for a game with virtual address memory that sets a heap, boots it on the Mac until its heap request (the heap check, a few seconds) to size the heap region. Then it generates the shader tables and chain header and packs a best-effort IPA that may not boot. `--survey-only` stops after the survey, `--no-heap-check` skips the heap check, and `--profile-out` puts the profile elsewhere. `--provisional` does all this for a game that has a profile, to test the guesses; `python3 dm/games/profile_guess.py --check` compares the static guesses with every profile. Details in [dm/games/README.md](../dm/games/README.md).
@@ -117,14 +117,18 @@ $W/build/nx_extract/nx_extract <prod.keys> <base NSP> - $W/data/v0
 $W/build/nx_extract/nx_extract <prod.keys> <base NSP> <update NSP> $W/data/$VER $W/data/v0/RomFS
 # 2. rewrite the profile's code modules
 for m in $(python3 dm/games/game.py $G modules); do python3 dm/tools/patch_nso.py $W/data/$VER/ExeFS/$m $W/build/patched_$VER $m; done
+# 2b. the Mac code dylib the host maps the rewritten modules from (<patched>/code/macos.dylib), and the profile the host reads at boot (<patched>/game.json)
+mkdir -p $W/build/patched_$VER/code
+python3 dm/ios/tools/gen_embed.py $W/build/patched_$VER $W/build/patched_$VER/code/embed.S $(python3 dm/games/game.py $G modules) --title $G --dylib $W/build/patched_$VER/code/macos.dylib --target macos
+python3 dm/games/game.py json $G $W/build/patched_$VER
 # 3. shaders: extract from every version in the profile's shader_versions (comma-separated, base first), then translate into <cache>/b-<chain version>/
 DM_GAME=$G python3 dm/gfx/tools/shader_split.py $W/data/v0/RomFS,$W/data/$VER/RomFS $W/data/v0/ExeFS/main,$W/data/$VER/ExeFS/main $W/shader/pkg dm/games/$G/shader_map.tsv dm/games/$G/shader_facts.tsv dm/games/$G/shader_pairs.tsv
 DM_GAME=$G python3 dm/gfx/tools/dmsh_chain.py --header
 DM_GAME=$G python3 dm/gfx/tools/dmsh_build.py $W/shader/pkg $W/build/cache/metal_shader_cache
 python3 dm/gfx/tools/c1_guard.py $W/build/cache/metal_shader_cache/b-<chain version> dm/games/$G/c1_full.tsv
 python3 dm/gfx/tools/cb_extent.py $W/build/cache/metal_shader_cache/b-<chain version> dm/games/$G/cb_extent.tsv
-# 4. the host, and the button-icon font for the Nintendo-extension shared font
-make -C dm/host GAME=$G dmhost
+# 4. the host (one build for every game), and the button-icon font for the Nintendo-extension shared font
+make -C dm/host dmhost
 python3 dm/tools/make_ext_font.py $W/build/font/nintendo_ext.ttf
 # 5. run on the Mac
 DM_ROOT=$W DM_ROMFS=$W/data/$VER/RomFS DM_SAVE=$W/run/save DM_TEMP=$W/run/temp DM_MSL_DIR=$W/build/cache/metal_shader_cache DM_FONT_DIR=$W/build/font dm/host/dmhost $W/build/patched_$VER

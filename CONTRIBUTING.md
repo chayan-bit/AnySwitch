@@ -52,7 +52,7 @@ brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 ```
 
-Build and test with plain `make`, for example `make -C dm/host/tests GAME=0100F43008C44000 run`.
+Build and test with plain `make`, for example `make -C dm/host/tests run`.
 Wrappers that queue heavy jobs on a particular machine are a personal convenience and are not part of the project.
 
 The packing script, its options, building by hand and per-game notes are in [docs/development.md](docs/development.md).
@@ -77,7 +77,7 @@ The rest needs a Metal device or the iOS toolchain and runs locally.
 
 | Suite | Command | CI |
 |---|---|---|
-| Host unit tests (no game files, a profile only) | `make -C dm/host/tests GAME=0100F43008C44000 run` | yes |
+| Host unit tests (no game files, a profile only) | `make -C dm/host/tests run` | yes |
 | Python: profiles | `python3 -I dm/games/tests/test_gpu_timestamps_default.py` | yes |
 | Python: ExeFS patches (needs `lz4`, `capstone`) | `python3 -I dm/tools/tests/test_exefs_patches.py` | yes |
 | Python: checkpoints | `python3 -I scripts/tests/test_checkpoint.py` | yes |

@@ -73,12 +73,13 @@ $(B)/t_gate_cost: t_gate_cost.c t_gate_cost.S t_condvar_stub.c ../entry.S ../hle
 	clang -O1 -Wall -Wno-unused-function -I.. -o $@ t_gate_cost.c t_gate_cost.S t_condvar_stub.c ../entry.S ../hle.c ../hle_thread.c
 $(B)/t_sync_tsan: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h ../profile.h | $(B)
 	clang -O1 -g -fsanitize=thread -Wno-unused-function -DDM_TEST_HOOKS -I.. -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
-# Run-time profile parity with the compile-time header it replaces, for every profile in dm/games: game.py writes both, t_profile.m (built per profile against its header) compares every field
+# Every profile in dm/games: game.py json writes its game.json, t_profile.m checks profile.m accepts it (id, chain version) and refuses each kind of bad game.json
 PROFILES = $(sort $(notdir $(patsubst %/game.tsv,%,$(wildcard ../../games/*/game.tsv))))
-profile-parity: t_profile.m ../profile.m ../profile.h ../dm_abi.h ../../games/game.py | $(B)
-	@set -e; for id in $(PROFILES); do d=$(B)/profile/$$id; python3 ../../games/game.py header $$id $$d/game_profile.h; python3 ../../games/game.py json $$id $$d; \
-	  clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -include $$d/game_profile.h -include ../../games/$$id/dmsh_chain.h -o $$d/t_profile t_profile.m ../profile.m -framework Foundation; \
-	  $$d/t_profile $$d | tail -1; done; echo "profile parity: $(words $(PROFILES)) profiles, all equal"
+profile-schema: $(B)/t_profile ../../games/game.py
+	@set -e; for id in $(PROFILES); do d=$(B)/profile/$$id; python3 ../../games/game.py json $$id $$d; \
+	  $(B)/t_profile $$d $$id "$$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' ../../games/$$id/dmsh_chain.h)"; done; echo "profile schema: $(words $(PROFILES)) profiles ok"
+$(B)/t_profile: t_profile.m ../profile.m ../profile.h ../dm_abi.h | $(B)
+	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_profile.m ../profile.m -framework Foundation
 # The pack version contract (boot.m dm_pack_check): scratch packs built from one profile's game.json
 PACK_ID = $(firstword $(PROFILES))
 pack-check: $(B)/t_pack ../../games/game.py
@@ -86,7 +87,7 @@ pack-check: $(B)/t_pack ../../games/game.py
 	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID) 2>/dev/null
 $(B)/t_pack: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
 	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
-.PHONY: run tsan profile-parity pack-check
+.PHONY: run tsan profile-schema pack-check
 tsan: $(B)/t_audio_spsc_tsan $(B)/t_sync_tsan
 	$(B)/t_audio_spsc_tsan
 	T_SYNC_SECS=10 $(B)/t_sync_tsan
