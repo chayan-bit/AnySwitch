@@ -116,7 +116,10 @@ static NSHashTable *g_res_objects;
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
 enum { RS_SITES = 16 }; static struct { int line; uint64_t n, bytes; } g_rs_site[RS_SITES]; static uint64_t g_rs_rm, g_rs_commits, g_rs_commit_ns;
 #define res_add(r) res_add_at((r), __LINE__)
-static void res_add_at(id<MTLResource> r, int line) {
+// res_add_at / res_remove / mtl_pool_del each have their own autorelease pool: they run on game threads (pool Finalize, the first mtl_addr of a pool, TextureFinalize), whose implicit pool is never drained, and every
+// weak-table add / lookup autoreleases the entries it probes (loaded weak = retained + autoreleased), not only the object passed in. Without the pool each call pinned some other entry for good: freed memory pools' no-copy buffers
+// stayed alive with their guest pages wired (1052 buffers, 128 MB after one scene change; 1862 after 50 minutes on a tablet), and "freed but alive" in the memory readout line never went down
+static void res_add_at(id<MTLResource> r, int line) { @autoreleasepool {
     if (!r) return;
     pthread_mutex_lock(&g_res_mu);
     if (!g_res_objects) g_res_objects = [NSHashTable weakObjectsHashTable];
@@ -126,8 +129,8 @@ static void res_add_at(id<MTLResource> r, int line) {
     [g_res_objects addObject:r];
     g_res_dirty = 1;
     pthread_mutex_unlock(&g_res_mu);
-}
-static void res_remove(id<MTLResource> r) {
+} }
+static void res_remove(id<MTLResource> r) { @autoreleasepool {
     if (!r) return;
     pthread_mutex_lock(&g_res_mu);
     if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
@@ -135,7 +138,7 @@ static void res_remove(id<MTLResource> r) {
     [g_res_objects removeObject:r];
     g_res_dirty = 1; g_rs_rm++;
     pthread_mutex_unlock(&g_res_mu);
-}
+} }
 // DM_RES_CHECK=1 (diagnostic): if textures / buffers the shader accesses through the argument block are not in the residency set, print the first 40 (textures are attributed to the actual allocation via parent texture / underlying buffer)
 static int g_res_check_on;
 static void res_check(id r, const char *what, int reg) {
@@ -420,7 +423,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     pthread_mutex_unlock(&g_mu);
 }
 
-void mtl_pool_del(const void *mem) {
+void mtl_pool_del(const void *mem) { @autoreleasepool {
     g_reg_gen++;
     pthread_mutex_lock(&g_mu);
     // The no-copy buffer goes through deferred release (out of the residency set and unreferenced after submitted commands complete). It used to be removed only from g_keep while the residency set still held a strong reference: after the pool was freed the buffer stayed alive wrapping that guest memory,
@@ -430,7 +433,7 @@ void mtl_pool_del(const void *mem) {
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
             [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); break; }
     pthread_mutex_unlock(&g_mu);
-}
+} }
 
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is re-sorted when next used. Caller holds g_mu
@@ -1577,11 +1580,13 @@ static void up_diag(void) {
     static uint64_t said_swaps = ~0ull, last_ns; static int lines, follow; uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
     int chg = g_up_swaps != said_swaps, fol = follow && now - last_ns >= 5000000000ull; if ((!chg && !fol) || lines >= 200) return;
     if (chg && last_ns && now - last_ns < 1000000000ull) return; last_ns = now; said_swaps = g_up_swaps; lines++; follow = chg;
+    @autoreleasepool {   // allObjects / weak lookups autorelease every object they return; up_flush also runs between submissions, outside the submission's pool
     unsigned long alive = 0, inres = 0; uint64_t abytes = 0; NSArray *olds = g_up_old.allObjects;
     pthread_mutex_lock(&g_res_mu); unsigned long nres = (unsigned long)g_res_objects.allObjects.count; for (id<MTLBuffer> o in olds) { alive++; abytes += o.length; inres += [g_res_objects containsObject:o]; } pthread_mutex_unlock(&g_res_mu);
     pthread_mutex_lock(&g_deferred_mu); unsigned long ndef = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
     MLOG("upload staging blocks%s: %llu created in total, swapped within a batch %llu times (%llu MB of old blocks swapped out); swapped-out blocks still alive now %lu, %llu MB, still in the residency set %lu; GPU allocated %llu MB, residency set %lu objects, deferred-release queue %lu", fol && !chg ? " (settled)" : "",
          (unsigned long long)g_up_blocks_new, (unsigned long long)g_up_swaps, (unsigned long long)(g_up_swap_bytes >> 20), alive, (unsigned long long)(abytes >> 20), inres, (unsigned long long)(g_dev.currentAllocatedSize >> 20), nres, ndef);
+}
 }
 static id<MTLBuffer> up_alloc(size_t n, size_t *off) {
     size_t need = (n + 255u) & ~((size_t)255u);
@@ -2069,7 +2074,14 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_deferred_mu); unsigned long nd = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
-    pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n; uint64_t ghost_puts = g_ghost_puts; pthread_mutex_unlock(&g_smu);
+    // By category (the memory that can grow): bytes of live pools (guest memory wrapped, counted again in GPU allocated), packaged textures with their spares and snapshots, and c1 buffers (exclusive 64 KiB ones grow with every shader when the title's c1_full.tsv is stale)
+    uint64_t pk_n = 0, pk_b = 0, sp_n = 0, sp_b = 0, shd_b = 0, pool_b = 0;
+    pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n; uint64_t ghost_puts = g_ghost_puts;
+    for (uint32_t i = 0; i < g_by_serial.cap; i++) { id v = (__bridge id)g_by_serial.vals[i]; if (![v isKindOfClass:[NvPkg class]]) continue; NvPkg *pk = v;
+        pk_n++; pk_b += pk->tex.allocatedSize; shd_b += pk->shd.length + pk->spare_shd.length; if (pk->spare) { sp_n++; sp_b += pk->spare.allocatedSize; } }
+    pthread_mutex_unlock(&g_smu);
+    pthread_mutex_lock(&g_mu); for (int i = 0; i < g_npool; i++) pool_b += g_pools[i].hi - g_pools[i].lo; pthread_mutex_unlock(&g_mu);
+    os_unfair_lock_lock(&g_c1_lock); uint64_t c1_n = g_c1_banks.count + g_c1_exclusive, c1_x = g_c1_exclusive, c1_b = g_c1_alloc_bytes; os_unfair_lock_unlock(&g_c1_lock);
     unsigned long dead_n = 0; unsigned long long dead_mb = 0;
     // Objects read from a weak table come back retained + autoreleased: the frame hook runs on a guest thread with no autorelease pool that drains, so without this wrapper every buffer counted would be pinned for good (the readout creating the leak itself)
     int pres = 0; @autoreleasepool { pthread_mutex_lock(&g_mu); pres = g_pool_res_n; for (id<MTLBuffer> b in g_dead_pools) { dead_n++; dead_mb += b.length; } pthread_mutex_unlock(&g_mu); } dead_mb >>= 20;   // host objects held by serial (textures / packaged textures / programs): if it climbs along with GPU allocated, textures are not being released
@@ -2078,7 +2090,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #if TARGET_OS_IPHONE
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
-    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (evicted with pools %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, (unsigned long long)g_alias_evicted, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail);
+    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (evicted with pools %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s; by category: live pools %llu MB, packaged textures %llu %llu MB (spares %llu %llu MB, snapshots %llu MB), c1 buffers %llu (exclusive %llu) %llu MB", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, (unsigned long long)g_alias_evicted, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail,
+         (unsigned long long)(pool_b >> 20), (unsigned long long)pk_n, (unsigned long long)(pk_b >> 20), (unsigned long long)sp_n, (unsigned long long)(sp_b >> 20), (unsigned long long)(shd_b >> 20), (unsigned long long)c1_n, (unsigned long long)c1_x, (unsigned long long)(c1_b >> 20));
     if (g_rs != 1.0f) {   // internal resolution: live scaled textures and their memory, then the textures made at 1x and the demotions by reason
         char why[512]; int o = 0; os_unfair_lock_lock(&g_rs_lk);
         uint64_t n = g_rs_n, mb = g_rs_bytes >> 20, mb1 = g_rs_bytes1 >> 20, dem = 0;
