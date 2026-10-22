@@ -2644,6 +2644,13 @@ static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 // ---------- Shader mapping table: Switch control section hash → PC metallib (produced by dm/gfx/tools/shader_map.py) ----------
 static NSMutableDictionary<NSString *, NSArray *> *g_shmap;
 static NSString *g_shmap_path, *g_msl_dir;
+static int pack_open(void);   // 1 = shader packs indexed
+// A message the player has to see (the iOS front end shows an alert, front_ios.m); without a front end it is a red log line
+__attribute__((weak)) void front_notice(const char *title, const char *msg) { MLOG("[RED] %s: %s", title, msg); }
+static int any_metallib(NSString *dir) {   // the folder holds at least one shader library (stops at the first)
+    for (NSString *f in [NSFileManager.defaultManager enumeratorAtPath:dir]) if ([f hasSuffix:@".metallib"]) return 1;
+    return 0;
+}
 static NSString *exe_rel(const char *rel) {
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
@@ -2670,6 +2677,9 @@ static void shmap_load_(void) {
     // Library directory = <DM_MSL_DIR or default cache>/b-<translation chain version>: the version comes from the game profile's dmsh_chain.h (tools/dmsh_chain.py); a host built from an old source tree only accepts libraries of the old version
     g_msl_dir = [NSString stringWithFormat:@"%@/b-%s", m ? @(m) : [NSString stringWithFormat:@"%s%s/build/cache/metal_shader_cache", getenv("DM_ROOT") ?: getenv("HOME"), getenv("DM_ROOT") ? "" : "/dm-work"], DMSH_CHAIN];
     if (![NSFileManager.defaultManager fileExistsAtPath:g_msl_dir]) MLOG("[RED] shader library directory %s does not exist: translation chain version %s of this source tree has not been built yet (dm/gfx/tools/dmsh_build.py)", g_msl_dir.UTF8String, DMSH_CHAIN);
+    int packs = [NSFileManager.defaultManager fileExistsAtPath:g_msl_dir] && pack_open();
+    if (!packs && !any_metallib(g_msl_dir))   // nothing would ever draw: say so on screen, not only in the log (an app installed without build_ipa.sh's msl/ step showed a blank clear colour)
+        front_notice("Shader libraries missing", [NSString stringWithFormat:@"No shader libraries for chain %s in %@. Every draw is skipped. Rebuild and reinstall the app with dm/ios/tools/build_ipa.sh.", DMSH_CHAIN, g_msl_dir].UTF8String);
     NSString *cp = [[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"c1_full.tsv"];   // Same directory as the mapping table (Mac: dm/games/<id>; iOS: dm/ inside the App, copied along by build_ipa.sh)
     NSString *ct = cp ? [NSString stringWithContentsOfFile:cp encoding:NSUTF8StringEncoding error:nil] : nil;
     NSString *head = ct ? [[ct componentsSeparatedByString:@"\n"] firstObject] : nil;
@@ -2826,6 +2836,60 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     dispatch_data_t d = dispatch_data_create(m, len, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ munmap(m, len); });
     return [g_dev newLibraryWithData:d error:err];
 }
+// Shader packs (tools/dmsh_pack.py, dm/gfx/README.md): <library dir>/pack/ links every shader into a few large libraries, entry points renamed k<key>_<entry>, with every
+// reflection json in refl.bin and index.tsv naming each key's pack, json slice and layer flag. Opening one small library per shader at every scene change was a large share of the scene-change stall;
+// the packs are opened once (all of them in the background from shmap_load, or on the spot by the first shader that needs one) and stay resident. DM_SHADER_PACKS=off ignores them.
+// A key in no pack loads from its own library as before, logged every time
+typedef struct { uint32_t pack, off, len, layer; } pack_ent;
+static NSDictionary<NSString *, NSNumber *> *g_pack_idx;
+static pack_ent *g_pack_ent;
+static NSData *g_pack_refl;
+static int g_pack_n;
+static __strong id<MTLLibrary> *g_pack_lib;
+static pthread_mutex_t *g_pack_mu;
+static _Atomic uint64_t g_pack_load_ns;
+static id<MTLLibrary> pack_lib(uint32_t n, NSError **err) {
+    pthread_mutex_lock(&g_pack_mu[n]);
+    id<MTLLibrary> l = g_pack_lib[n];
+    if (!l) {
+        uint64_t t = bp_now();
+        l = g_pack_lib[n] = lib_from_file([NSString stringWithFormat:@"%@/pack/%u.metallib", g_msl_dir, n], err);
+        g_pack_load_ns += bp_now() - t;
+        if (l) MLOG("[pack] shader pack %u opened in %.1f ms (%lu functions)", n, (bp_now() - t) / 1e6, (unsigned long)l.functionNames.count);
+        else MLOG("[RED] shader pack %u failed to open: %s", n, err && *err ? (*err).localizedDescription.UTF8String : "?");
+    }
+    pthread_mutex_unlock(&g_pack_mu[n]);
+    return l;
+}
+static int pack_open(void) {
+    const char *e = getenv("DM_SHADER_PACKS");
+    if (e && !strcmp(e, "off")) { MLOG("shader packs off (DM_SHADER_PACKS=off): one library per shader"); return 0; }
+    NSString *dir = [g_msl_dir stringByAppendingPathComponent:@"pack"];
+    NSString *txt = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:@"index.tsv"] encoding:NSUTF8StringEncoding error:nil];
+    if (!txt) { MLOG("no shader packs in %s: one library per shader (dm/gfx/tools/dmsh_pack.py builds them)", dir.UTF8String); return 0; }
+    NSData *refl = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"refl.bin"] options:NSDataReadingMappedAlways error:nil];
+    NSArray<NSString *> *lines = [txt componentsSeparatedByString:@"\n"];
+    NSMutableDictionary *idx = [NSMutableDictionary dictionaryWithCapacity:lines.count];
+    pack_ent *ent = calloc(lines.count, sizeof *ent); uint32_t n = 0, np = 0;
+    for (NSString *ln in lines) {
+        if (!ln.length || [ln hasPrefix:@"#"]) continue;
+        NSArray<NSString *> *c = [ln componentsSeparatedByString:@"\t"];
+        if (c.count < 5) continue;
+        pack_ent p = { (uint32_t)c[1].intValue, (uint32_t)c[2].longLongValue, (uint32_t)c[3].intValue, (uint32_t)c[4].intValue };
+        if (!refl || (uint64_t)p.off + p.len > refl.length) { MLOG("[RED] shader pack index %s: %s past the end of refl.bin: packs not used", dir.UTF8String, c[0].UTF8String); free(ent); return 0; }
+        ent[n] = p; idx[c[0]] = @(n++); np = MAX(np, p.pack + 1);
+    }
+    g_pack_lib = (__strong id<MTLLibrary> *)calloc(np, sizeof(id)); g_pack_mu = calloc(np, sizeof *g_pack_mu);
+    for (uint32_t i = 0; i < np; i++) pthread_mutex_init(&g_pack_mu[i], NULL);
+    g_pack_n = (int)np; g_pack_ent = ent; g_pack_refl = refl; g_pack_idx = idx;
+    MLOG("shader packs: %u shaders in %u packs (%s), opened in the background", n, np, dir.UTF8String);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        uint64_t t = bp_now();
+        for (uint32_t i = 0; i < np; i++) @autoreleasepool { pack_lib(i, NULL); }   // one at a time: a pack the submit thread needs first shares the disk with one open, not all
+        MLOG("[pack] all %u shader packs open after %.1f ms", np, (bp_now() - t) / 1e6);
+    });
+    return 1;
+}
 // NVN depth mode (nvnDeviceSetDepthMode): every vertex library has two entry points (dmsh_build.py vs_depth): main0 rewrites z for the GL convention (near = -w, NVN's default),
 // main0_z leaves z as is (near = 0, which Link's Awakening, 13 Sentinels and Engage set). Loading picks by the mode the game set, so no game needs a setting for it
 static _Atomic int g_depth_zero, g_vs_loaded;
@@ -2836,10 +2900,17 @@ void mtl_set_depth_zero(int on) {
     if (n) MLOG("[RED] depth mode changed after %d vertex shaders were loaded: they keep the old convention", n);
 }
 static NvShader *shader_load(NSString *pc, int stage) {
-    NSError *e = nil;
-    NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
-    id<MTLLibrary> lib = lib_from_file(lp, &e);
-    NSData *jd = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]];
+    NSError *e = nil; id<MTLLibrary> lib; NSData *jd; NSString *pfx = @"";   // pfx: a pack names the entry points k<key>_<entry>
+    NSNumber *pi = g_pack_idx[pc];
+    if (pi) {
+        const pack_ent *pe = &g_pack_ent[pi.unsignedIntValue];
+        lib = pack_lib(pe->pack, &e); t_lib_layer = (int)pe->layer;
+        jd = [g_pack_refl subdataWithRange:NSMakeRange(pe->off, pe->len)]; pfx = [NSString stringWithFormat:@"k%@_", pc];
+    } else {
+        if (g_pack_idx) MLOG("[pack] shader %s is in no pack: loaded from its own library", pc.UTF8String);
+        lib = lib_from_file([NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc], &e);
+        jd = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]];
+    }
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (!lib || !j) { MLOG("[RED] failed to load shader %s: %s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "no reflection json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("[RED] shader %s has translation chain version %s, but this host expects %s", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
@@ -2849,18 +2920,19 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (o->rf.dyn && !DM_GAME_TEX_DYN_SLOTS) {   // dynamic texture handles (TEXD / SAMPD) only where the profile says the game picks them from c2's tables, as before otherwise
         free(o->rf.c1); MLOG("[RED] shader %s reflection conversion failed: a texture handle the translator could not trace to one slot (profile key tex_dyn_slots off)", pc.UTF8String); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
-    NSString *entry = j[@"entry"];
+    NSString *entry = [pfx stringByAppendingString:j[@"entry"]];
     if (stage == 0) {
         atomic_fetch_add(&g_vs_loaded, 1);
-        if (atomic_load(&g_depth_zero)) { if (j[@"entry_z"]) entry = j[@"entry_z"]; else RED_ONCE(85, "vertex shader %s has no near=0 entry (entry_z): depth stays in the GL convention", pc.UTF8String); }
+        if (atomic_load(&g_depth_zero)) { if (j[@"entry_z"]) entry = [pfx stringByAppendingString:j[@"entry_z"]]; else RED_ONCE(85, "vertex shader %s has no near=0 entry (entry_z): depth stays in the GL convention", pc.UTF8String); }
     }
     o->fn = [lib newFunctionWithName:entry]; o->lib = lib; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);   // lib: Metal 4 pipelines name functions by library (nvn_flexpso.m)
+    if (!o->fn) { MLOG("[RED] shader %s: no entry point %s in its library", pc.UTF8String, entry.UTF8String); return nil; }
     if (stage == 0) o->layer_out = t_lib_layer;   // writes the layer (render_target_array_index, named in the library's metadata): its passes are layered and its pipelines get an input class (pso_desc)
     // A function that declares function constants cannot go into a pipeline until it is specialized, even when every constant is optional. SPIRV-Cross declares one for shaders that read a
     // texel buffer (spvLinearTextureAlignmentOverride, used only through is_function_constant_defined; one of Pokémon Legends: Z-A's imgui pixel shaders, 2bd5037003980716): an empty set of
     // values keeps its default. Without it the first pipeline with that shader failed Metal's validation (`fragmentFunction main0 cannot be used to build a pipeline state`)
     if (j[@"entry_tf"]) {   // transform feedback capture entry point (dmsh_build.py vs_tf) and the bytes per vertex of each feedback buffer
-        o->tf_fn = [lib newFunctionWithName:j[@"entry_tf"]]; NSArray *ts = j[@"tf_strides"];
+        o->tf_fn = [lib newFunctionWithName:[pfx stringByAppendingString:j[@"entry_tf"]]]; NSArray *ts = j[@"tf_strides"];
         for (NSUInteger b = 0; b < 4 && b < ts.count; b++) o->tf_stride[b] = (uint16_t)[ts[b] unsignedIntValue];
         if (!o->tf_fn) MLOG("[RED] shader %s: no transform feedback entry point %s in its library", pc.UTF8String, [j[@"entry_tf"] UTF8String]);
     }
@@ -2869,9 +2941,13 @@ static NvShader *shader_load(NSString *pc, int stage) {
         if (f) o->fn = f; else MLOG("[RED] shader %s: specializing its function constants failed: %s", pc.UTF8String, fe.localizedDescription.UTF8String);
     }
     if (o->rf.nb) {
-        o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
         int max_aid = -1;
         for (int i = 0; i < o->rf.nb; i++) max_aid = MAX(max_aid, o->rf.b[i].aid + (o->rf.b[i].n ? o->rf.b[i].n - 1 : 0));   // an array takes n entries
+        // Every entry is 8 bytes (a GPU address or resource ID, written by encode_args), so the encoder is built from that layout, not reflected from the function: reflecting it
+        // asks the Metal compiler service for function reflection, a large share of a shader's load on an empty shader cache (every shader with an argument buffer
+        // with an argument buffer reflect to exactly this length)
+        MTLArgumentDescriptor *ad = [MTLArgumentDescriptor argumentDescriptor]; ad.dataType = MTLDataTypePointer; ad.index = 0; ad.arrayLength = (NSUInteger)(max_aid + 1);
+        o->ae = [g_dev newArgumentEncoderWithArguments:@[ad]];
         o->arg_len = o->ae.encodedLength;
         if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7) || max_aid >= NVN_REFL_MAXARG)
             MDIE("shader %s has an unexpected argument buffer layout: encodedLength=%lu maxAid=%d", o->key, (unsigned long)o->arg_len, max_aid);
