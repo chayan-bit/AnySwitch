@@ -135,7 +135,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
         @{@"id": @"audio", @"title": @"Audio", @"icon": @"speaker.wave.2", @"settings": @[
             slider(@"DM_VOLUME", @"DMVolume", @"Volume", @"The game's sound level. The device's own volume still applies on top.", 0, 1.0, 0.05, @"1")]},
         @{@"id": @"performance", @"title": @"Performance", @"icon": @"speedometer", @"settings": @[
-            @{@"key": @"DM_FPS_TARGET", @"label": @"Frame rate cap", @"type": @"choice", @"default": @"0", @"apply": @"restart", @"requires": @"fstep",
+            @{@"key": @"DM_FPS_TARGET", @"label": @"Frame rate cap", @"type": @"choice", @"default": @"0", @"apply": @"restart", @"requires": @"fpscap",
               @"detail": @"Game decides leaves the frame rate to the game. 30 or 60 caps it, which can run cooler.",
               @"options": @[@{@"value": @"0", @"label": @"Game decides"}, @{@"value": @"30", @"label": @"30 fps"}, @{@"value": @"60", @"label": @"60 fps"}]},
             @{@"key": @"DM_SHOW_FPS", @"plistKey": @"DMShowFPS", @"label": @"Frame rate counter", @"type": @"toggle", @"default": @"0",

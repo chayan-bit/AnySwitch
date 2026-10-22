@@ -192,6 +192,12 @@ static void read_layout(module_t *m, const char *dir) {
 // target, 0 = the game's own interval logic. The profile's fps_target, overridden by DM_FPS_TARGET (0, 30 or 60); the graphics layer decides the steps and paces presents
 // (hle_nvn.c fstep_tick)
 uint8_t *dm_fps_state;
+int dm_capability(const char *name) {
+    if (!name) return 0;
+    if (!strcmp(name, "fstep")) return dm_fps_state != NULL;
+    if (!strcmp(name, "fpscap")) return dm_fps_state != NULL || dm_fps_lock_present();
+    return 0;
+}
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;

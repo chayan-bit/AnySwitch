@@ -120,7 +120,7 @@ int main(void) { @autoreleasepool {
       DmSetting *l = find(s, @"DM_LANG"); CHECK(l.restart && l.type == DmSettingChoice, "language is a restart choice"); EQ([s valueForKey:@"DM_LANG"], @"en-US"); EQ([l normalized:@"EN-GB"], @"en-GB"); EQ([l normalized:@"klingon"], nil);
       DmSetting *sc = find(s, @"DM_CONTROLS_SCALE"); EQ([sc displayValue:@"1.25"], @"125%");   // unchanged
       DmSetting *r = find(s, @"DM_RENDER_SCALE"); EQ([r displayValue:@"0.85"], @"85%"); EQ([r normalized:@"0.2"], @"0.5");
-      DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fstep"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides"); }
+      DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fpscap"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides"); }
 
     // 9. text settings: trimmed, case kept, control characters refused, capped in characters and in bytes (the host copies 32 bytes), exported and locked like the others
     { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); DmSetting *n = find(s, @"DM_NICK");
@@ -176,14 +176,16 @@ int main(void) { @autoreleasepool {
       CHECK(![s isAvailable:f] && ![s isAvailable:r], "hidden without the capability"); CHECK([s isAvailable:find(s, @"DM_SHAKE_G")], "an unconditional setting is always shown");
       DmSection *perf = nil; for (DmSection *sec in s.visibleSections) if ([sec.ident isEqualToString:@"performance"]) perf = sec; CHECK(perf != nil, "the page still has the fps counter");
       for (DmSetting *st in [s visibleSettingsInSection:perf]) CHECK(![st.key isEqualToString:@"DM_FPS_TARGET"], "frame cap hidden");
-      [have addObject:@"fstep"]; CHECK([s isAvailable:f] && [s isAvailable:r], "shown with it"); CHECK([[s visibleSettingsInSection:perf] containsObject:f], "listed");
+      [have addObject:@"fstep"]; CHECK([s isAvailable:r] && ![s isAvailable:f], "the render scale needs the stubs, the frame cap needs a cap of any kind");
+      [have addObject:@"fpscap"]; CHECK([s isAvailable:f] && [s isAvailable:r], "shown with them"); CHECK([[s visibleSettingsInSection:perf] containsObject:f], "listed");
+      [have removeObject:@"fstep"]; CHECK([s isAvailable:f] && ![s isAvailable:r], "an engine frame limit alone gives the cap but not the render scale");
       DmSettings *all = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK([all isAvailable:find(all, @"DM_FPS_TARGET")], "no provider: shown");
       NSDictionary *only = @{@"id": @"x", @"title": @"X", @"settings": @[@{@"key": @"DM_ONLY", @"label": @"Only", @"type": @"toggle", @"default": @"0", @"requires": @"nothing"}]};
       DmSettings *e = makeEx(@[only], nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK(e.sections.count == 1 && e.visibleSections.count == 0, "an empty page is not listed");
       DmSettings *h = makeEx(builtin, nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), env, @{}); CHECK([h setValue:@"30" forKey:@"DM_FPS_TARGET"], "stored anyway"); EQ([h valueForKey:@"DM_FPS_TARGET"], @"30"); }
 
     // 14. the registry's own consistency: every `requires` names a known capability, every entry has a label and a detail, every slider default is inside its range
-    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", nil];
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", nil];
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) {
           if (st.requires) CHECK([known containsObject:st.requires], "%s requires unknown %s", st.key.UTF8String, st.requires.UTF8String);
           CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);
