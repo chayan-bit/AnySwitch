@@ -23,5 +23,11 @@ assert re.findall(r'\$\{IPA_ROMFS[^}]*\}', SH) == ['${IPA_ROMFS:-store}'], 'one 
 assert '"$ROMFS_MODE" = store' in SH and '"$ROMFS_MODE" = 0' in SH, 'the branches follow ROMFS_MODE'
 assert '${PSO_FLEX:-1}' in SH and '${PSO_FLEX:-0}' not in SH, 'the flexible pipeline archive is on by default'
 assert 'IPA_ROMFS=1' in SH.split('set -u')[0] and 'IPA_ROMFS=1' in DOCS, 'the loose-files option is documented in the script and in docs/development.md'
-print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default')
+SRC = Path(__file__).resolve().parents[1] / 'Sources'
+# The game's settings.json: build_ipa.sh copies it into the bundled pack's profile folder (DMO, Gen/pack/profile, which project.yml bundles as pack/), and DmSettings.m reads it from there
+dmo = re.findall(r'^  DMO=(\S+); PSO_O=', SH, re.M)   # the PACK branch's, then the IPA's
+yml = (Path(__file__).resolve().parents[1] / 'project.yml').read_text(encoding='utf-8')
+assert dmo[-1:] == ['Gen/pack/profile'] and '"$GD/settings.json" "$DMO"/settings.json' in SH and '- path: Gen/pack ' in yml, 'the IPA bundles the game settings at pack/profile/settings.json'
+assert '@"pack/profile/settings.json"' in (SRC / 'DmSettings.m').read_text(encoding='utf-8'), 'DmSettings.m reads the game settings where the IPA puts them'
+print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile')
 sys.exit(0)
