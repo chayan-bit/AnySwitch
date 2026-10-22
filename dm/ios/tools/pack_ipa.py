@@ -6,6 +6,7 @@
 # bigger files are streamed here, their CRC patched into the local header afterwards (no data descriptors). Zip64 fields wherever a size, an offset or the entry count passes its 32 / 16-bit field.
 # Usage: pack_ipa.py <out.ipa> [--store .a:.b] [--skip <archive path>]... <archive path>=<source folder>...
 #   --skip: an archive path left out of the walk of the folder that holds it (folders a stale app build still has, the signature); a mapping of its own still adds it
+#   --skip-list: a file of such archive paths, one per line (the loose shader libraries a shader pack replaces, too many for the command line)
 #   Writes <out.ipa>.partial and renames it at the end; prints "pack: N entries, X bytes" first (the NSP script's progress total, X = the files' bytes) and a summary line last
 import argparse, collections, concurrent.futures as cf, os, stat, struct, sys, time, zlib
 
@@ -127,6 +128,7 @@ def main():
     ap.add_argument('out'); ap.add_argument('maps', nargs='+', metavar='archive_path=folder')
     ap.add_argument('--store', default='', help='suffixes stored without compressing, separated by ":"')
     ap.add_argument('--skip', action='append', default=[], help='an archive path left out of the folder walk that would add it')
+    ap.add_argument('--skip-list', help='a file of archive paths to skip, one per line')
     a = ap.parse_args()
     maps = []
     for m in a.maps:
@@ -135,7 +137,8 @@ def main():
         maps.append((arc.strip('/'), src))
     store = tuple(s.lower() for s in a.store.split(':') if s)
     t0 = time.time()
-    es = entries(maps, {s.strip('/') for s in a.skip})
+    skips = a.skip + (open(a.skip_list).read().split('\n') if a.skip_list else [])
+    es = entries(maps, {s.strip('/') for s in skips if s})
     total = sum(e.st.st_size for e in es if e.st and stat.S_ISREG(e.st.st_mode))
     print(f'pack: {len(es)} entries, {total} bytes', flush=True)
     part = a.out + '.partial'

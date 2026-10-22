@@ -235,21 +235,33 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     return 1;
 }
 
-// Save write failed (most likely the phone's storage is full): show a notice on the main thread without blocking the game. hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
+// A notice the player has to see (front.h): an alert on the main thread, without blocking the caller.
+// Called at boot (shader libraries missing, nvn_mtl.m) the key window may not exist yet, so it retries for a few seconds instead of dropping the alert
+static void notice_show(NSString *t, NSString *m, int tries) {
+    UIViewController *vc = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    if (!vc) {
+        if (tries > 0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{ notice_show(t, m, tries - 1); }); return; }
+        LOG("[RED] front end: no window for the alert \"%s\"", t.UTF8String); return;
+    }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [vc presentViewController:a animated:YES completion:nil];
+}
+void front_notice(const char *title, const char *msg) {
+    LOG("front end: telling the player: %s: %s", title, msg);
+    NSString *t = @(title), *m = @(msg);
+    dispatch_async(dispatch_get_main_queue(), ^{ notice_show(t, m, 20); });
+}
+
+// Save write failed (most likely the phone's storage is full). hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
 // the iOS front end used not to implement it, so there was only a log line and the player never learned that progress was not being saved
 void front_save_failed(int err) {
-    LOG("front end: save data write failed errno=%d, telling the player", err);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *vc = nil;
-        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
-        while (vc.presentedViewController) vc = vc.presentedViewController;
-        if (!vc) { LOG("[RED] front end: no window for the save-failure alert errno=%d", err); return; }
-        NSString *m = err == ENOSPC ? @"Storage is full, so progress was not saved. Free up space and save again."
-                                    : [NSString stringWithFormat:@"Saving failed (errno %d); progress was not saved.", err];
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Save failed" message:m preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:a animated:YES completion:nil];
-    });
+    char m[128];
+    if (err == ENOSPC) snprintf(m, sizeof m, "Storage is full, so progress was not saved. Free up space and save again.");
+    else snprintf(m, sizeof m, "Saving failed (errno %d); progress was not saved.", err);
+    front_notice("Save failed", m);
 }
 
 // Audio session: the frames RemoteIO asks for in each callback follow the I/O buffer duration, about 21 ms by default on iOS (1024 frames at 48 kHz). The game keeps only 4 blocks × 5 ms = 20 ms in flight,

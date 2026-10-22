@@ -279,7 +279,8 @@ def main():
         line = replay(os.path.abspath(man), {'DM_PSO_ARCHIVE': os.path.abspath(o.check)})
         print(line)
         m = re.search(r'archive (\d+) hits / (\d+) misses', line)
-        moved = relinked_away(out, o.refl)
+        packed = os.path.exists(os.path.join(o.refl, 'pack', 'index.tsv')) and os.environ.get('DM_SHADER_PACKS') != 'off'   # shader packs are driver-linked: nothing relinks away
+        moved = set() if packed else relinked_away(out, o.refl)
         want = sum(1 for b in out if {k for k in keys(b)[:2] if k} & moved)
         logged = {tuple(x) for x in re.findall(r'miss #\d+: render pipeline vertex (\S+) fragment (\S+)', text(os.path.abspath(man) + '.log'))}
         odd = {p for p in logged if not set(p) & moved}

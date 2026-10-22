@@ -63,6 +63,33 @@ Binding conventions followed during translation (the NVN driver's layout, the sa
 - the address of storage buffer r is at `c[0][base + 16r]`, with base: vertex 0x110, compute 0x310, fragment 0x510;
 - the window origin is at the top left and the depth range is 0 to 1, the same as Metal, so nothing is flipped during translation.
 
+### Shader packs
+
+The chain writes one library per shader, so every new shader at a scene change used to cost a file open, a library load, a json read and a function reflection.
+`tools/dmsh_pack.py` links a chain version's shaders into a few large libraries in `b-<V>/pack/`:
+
+- `<n>.metallib`: driver-linked packs of `--per-pack` shaders (default 200: a pack that a draw needs before the background pass reaches it is opened on the spot, and a small one opens in a few milliseconds; the total open time and memory do not depend on the size), grouped by the shader map's container column; every entry point is renamed `k<key>_<entry>`, so names are unique and stable;
+- `refl.bin`: every reflection json back to back; `index.tsv`: per key, its pack, its json slice and its layer flag;
+- `.air/`: the compiled AIR per key, reused by a rerun, which then only relinks (never shipped).
+
+A pipeline archive embeds every library its pipelines name, whole, so the shaders the archive covers must not be spread over many packs.
+`--hot <list>...` takes harvest lists (`pso_user.tsv`, `pso_manifest.tsv`, a `dmsh_psoexpand.py -o` manifest) and puts their shaders, in first-use order, into the first packs, apart from the rest; the archive then embeds only those, and the shaders a launch needs first are in the first pack the background pass opens.
+Give it every list the archive will be built from, including the expansion manifest when `PSO_EXPAND` is used (`dmsh_psoexpand.py <lists> --map ... --refl <Mac b-V> -o expand.tsv` needs no packs).
+Build the Mac set first, then the iOS set with the same `--per-pack` and `--hot`, since a pipeline archive compiles a Mac harvest against the iOS pack of the same number (`dmsh_psoarch.py` refuses packs whose indexes differ):
+
+```sh
+python3 dm/gfx/tools/dmsh_pack.py --msl <Mac b-V> --target <Mac b-V> --map dm/games/<id>/shader_map.tsv --hot <lists>
+python3 dm/gfx/tools/dmsh_pack.py --msl <Mac b-V> --target <iOS b-V> --map dm/games/<id>/shader_map.tsv --hot <lists>
+python3 dm/gfx/tools/dmsh_pack.py --msl <Mac b-V> --target <iOS b-V> --check
+```
+
+At run time `nvn/nvn_mtl.m` reads the index, maps `refl.bin`, opens every pack once on a background thread (a shader that needs a pack first opens it on the spot) and keeps them resident.
+A key in no pack loads from its own library, with a log line each time.
+The argument encoder is built from the reflected argument ids (`newArgumentEncoderWithArguments:`), so no function reflection is needed.
+`build_ipa.sh` ships the packs instead of the loose libraries they cover when `<iOS b-V>/pack/index.tsv` exists (`SHADER_PACKS=0` ships the loose ones), and its shader guard counts the index's keys.
+Packing changes every function hash, so a pipeline archive must be rebuilt from replayed harvest records after packing (`dmsh_psoexpand.py --build`, then `dmsh_psoarch.py`); harvests recorded against loose libraries do not match packed pipelines, and `dmsh_psoarch.py` leaves out their pipelines on a library the packs cover. Repacking (a new hot list or pack size) also changes the hashes, so rebuild the archive after it.
+If the app finds neither packs nor loose libraries it shows an alert instead of drawing nothing.
+
 ## Directory structure
 
 | Location | Contents |
@@ -90,6 +117,7 @@ The scripts in `tools/`; usage is written in each file's header:
 |---|---|
 | `dmsh_xlate/` | The shader translation tool (C#), which references the translation library in `dm/third_party/ryujinx` |
 | `dmsh_psoarch.py` | Compiles a pipeline harvest (`DM_PSO_HARVEST`) with `metal-tt` into the precompiled pipeline archive the app ships (`build_ipa.sh` runs it; see [Precompiled pipeline archives](#precompiled-pipeline-archives)) |
+| `dmsh_pack.py` | Links a chain version's shader libraries into a few large packs (`b-<V>/pack/`, entry points renamed `k<key>_<entry>`, reflection in `refl.bin`) that the host opens once instead of one library per shader; `build_ipa.sh` ships them in place of the loose libraries (see [Shader packs](#shader-packs)) |
 | `dmsh_build.py` | Drives the whole translation chain to produce the shader libraries; when the environment variable `IOSOUT=directory` is set, it also produces the iOS version |
 | `dmsh_chain.py`, `dmsh_chain.lock` | Translation chain version and tool fingerprints |
 | `dmsh_facts.py` | Reads the answer table `shader_facts.tsv` (which `shader_split.py` writes) |
@@ -136,6 +164,7 @@ The tests in `dm/gfx/tests` compile the production code in directly and need a M
 | `t_fuse_check`, `t_reorder_chain`, `t_defer_chain`, `t_zskip`, `t_xv`, `t_ub`, `t_pfv`, `t_rt_range`, `t_rt_range_shape`, `t_rt_range_ro`, `t_rt_depth_ro` | Compile the replay layer `nvn_mtl.m` in directly and check the various optimization and diagnostic logic inside the replay layer |
 | `test_tbdr_budget.py` | The parsing in `tools/tbdr_budget.py` |
 | `test_shader_split_zlib.py` | `tools/shader_split.py` finds shaders compressed in a zlib stream inside a module image (middleware such as YEBIS keeps its shaders that way) |
+| `t_pack`, `test_pack.py` | Shader packs: `tools/dmsh_pack.py` packs three chain-built shaders, and the host's loader gives the same shaders from the packs as from their own libraries (no game files) |
 | `t_psoarch`, `test_psoarch.py` | Precompiled pipeline archive: harvest, lookup hits and misses, and `tools/dmsh_psoarch.py` archives built with `metal-tt` (no game files) |
 
 ## Common run-time switches
@@ -148,6 +177,7 @@ Resource locations:
 |---|---|
 | `DM_NVN_SHMAP=path` | The shader map. The default is `../games/<id>/shader_map.tsv` relative to the executable's directory; `c1_full.tsv` and `pso_manifest.tsv` are taken from the same directory |
 | `DM_MSL_DIR=directory` | The parent directory of the shader libraries; the host loads from `b-<V>/` beneath it. When running the host on a Mac, set it to `$DM_ROOT/build/cache/metal_shader_cache` |
+| `DM_SHADER_PACKS=off` | Ignore the shader packs in `b-<V>/pack/` and load one library per shader |
 | `DM_PSO_MANIFEST=path` or `off` | Use a different warm-up manifest, or turn warm-up off |
 | `DM_PSO_RECORD=path` | Appends the shaders and pipelines used in this run to a file, for re-recording the warm-up manifest |
 | `DM_PSO_ARCHIVE=path` or `off` | Precompiled pipeline archive looked up before compiling a pipeline (default: `pso_archive.metallib` beside the shader map, put in the app by `build_ipa.sh`) |

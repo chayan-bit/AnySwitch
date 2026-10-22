@@ -43,6 +43,9 @@ The deeper write-up is in [docs/development.md](docs/development.md) and [dm/gfx
 - **Precompiled pipeline archives.**
   Compiled GPU pipelines are shipped inside the IPA, so a known pipeline is created without a driver compile and the first-use stutter goes away.
   Harvest, build and run-time lookup: [dm/gfx/README.md](dm/gfx/README.md#precompiled-pipeline-archives).
+- **Packed shader libraries.**
+  The translated shaders ship as a few hundred packed Metal libraries instead of one file per shader; the app opens them once in the background and keeps them, so a scene change no longer opens a library per new shader.
+  How packs are built, loaded and shipped: [dm/gfx/README.md](dm/gfx/README.md#shader-packs).
 - **Community ExeFS patches.**
   IPS, IPS32 and `.pchtxt` patches are applied at build time: [docs/exefs-patches.md](docs/exefs-patches.md).
 - **For developers: checkpoint saves and a dev input channel.**

@@ -36,6 +36,9 @@ V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$GD/dmsh_chain.h")
 if [ -z "${GFXAPI:-}" ]; then if ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$'; then GFXAPI=nvn; elif [ -f "$MSL_IOS/vk/vk_shaders.metallib" ]; then GFXAPI=vulkan; else GFXAPI=nvn; fi; fi
 if [ "$GFXAPI" = vulkan ]; then [ -f "$MSL_IOS/vk/vk_shaders.metallib" ] || die "no iOS Vulkan shader library $MSL_IOS/vk (dm/gfx/tools/vk_shaders.py \"$ROMFS\" <Mac dir> --ios \"$MSL_IOS\")"
 else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"; fi
+# Shader packs (dm/gfx/README.md, "Shader packs"): once dm/gfx/tools/dmsh_pack.py has packed the iOS libraries into $MSL_IOS/b-$V/pack, the app ships the packs instead of the loose
+# <key>_b.metallib / .json they hold; SHADER_PACKS=0 ships the loose libraries. Pipelines replayed on this Mac for the archive must use the Mac packs then ($MSL_MAC/b-$V/pack, same --per-pack)
+PACKS=0; if [ "$GFXAPI" = nvn ] && [ "${SHADER_PACKS:-1}" != 0 ] && [ -f "$MSL_IOS/b-$V/pack/index.tsv" ]; then PACKS=1; fi
 
 t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)$([ $DM_SHOW_FPS = YES ] && echo ', frame-rate counter on')"
 t "generate Gen/ (host sources, embedded modules, tables)"
@@ -69,7 +72,7 @@ fi
 # other shader pairs and replays them through the host's warm-up on this Mac into $W/build/pso_harvest_expand.metallib, merged below like any harvest. PSO_EXPAND_ARGS = more flags (--max-bytes ...)
 if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ]; then
   IFS=: read -ra PE <<< "$PSO_EXPAND"; t "pipeline expansion of ${PE[*]}"
-  DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_psoexpand.py" "${PE[@]}" --map "$GD/shader_map.tsv" --refl "$MSL_MAC/b-$V" \
+  DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_psoexpand.py" "${PE[@]}" --map "$GD/shader_map.tsv" --refl "$MSL_MAC/b-$V" \
     ${PSO_EXPAND_ARGS:-} --build "$W/build/pso_harvest_expand.metallib" || t "[RED] pipeline expansion failed above: the archive holds the harvests only"
 fi
 HV=(); if [ -n "${PSO_HARVEST:-}" ]; then IFS=: read -ra HV <<< "$PSO_HARVEST"; else for h in "$W"/build/pso_harvest*.metallib; do [ -f "$h" ] && HV+=("$h"); done; fi
@@ -91,7 +94,7 @@ if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
     PL=(); for p in "$PAIRS_TSV" "$GD/shader_pairs.tsv"; do [ -f "$p" ] && PL+=("$p"); done
     t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
-    make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
+    make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
       ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/pso_flex.metallib" \
       ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" Gen/dm/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
   fi
@@ -101,12 +104,19 @@ if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy
 # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
 if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
 # Guard: an app without its shader libraries boots to a blank clear colour (0 draws), so a missing or nearly empty library folder is an error, never a warning:
-# it needs at least one library and, when the Mac libraries of the same chain are present, 90% of their count
-NLIB=$(find "$MSL_IOS/$MSLDIR" -name '*.metallib' 2>/dev/null | wc -l | tr -d ' ')
+# it needs at least one shader and, when the Mac libraries of the same chain are present, 90% of their count. A shader counts once whether it ships in a shader pack
+# (dmsh_pack.py's index, every pack it names present) or as its own <key>_b.metallib
+lib_keys() { find "$1" -maxdepth 1 -name '*_b.metallib' 2> /dev/null | sed 's|.*/||; s|\.metallib$||'; }
+if [ "$GFXAPI" = vulkan ]; then NLIB=$(find "$MSL_IOS/$MSLDIR" -name '*.metallib' 2> /dev/null | wc -l | tr -d ' ')
+elif [ $PACKS = 1 ]; then PI=$MSL_IOS/$MSLDIR/pack/index.tsv
+  for n in $(grep -v '^#' "$PI" | cut -f2 | sort -u); do [ -f "$MSL_IOS/$MSLDIR/pack/$n.metallib" ] || die "shader pack $n named in $PI is missing"; done
+  [ -f "$MSL_IOS/$MSLDIR/pack/refl.bin" ] || die "no $MSL_IOS/$MSLDIR/pack/refl.bin"
+  NLIB=$( { grep -v '^#' "$PI" | cut -f1; lib_keys "$MSL_IOS/$MSLDIR"; } | sort -u | wc -l | tr -d ' ')
+else NLIB=$(lib_keys "$MSL_IOS/$MSLDIR" | wc -l | tr -d ' '); fi
 [ "$NLIB" -ge 1 ] || die "no iOS shader libraries in $MSL_IOS/$MSLDIR (chain $V: build them with dm/gfx/tools/dmsh_build.py); the app would show a blank picture"
-if [ -d "$MSL_MAC/$MSLDIR" ]; then
-  NMAC=$(find "$MSL_MAC/$MSLDIR" -name '*.metallib' | wc -l | tr -d ' ')
-  [ $((NLIB * 10)) -ge $((NMAC * 9)) ] || die "only $NLIB iOS shader libraries in $MSL_IOS/$MSLDIR against $NMAC Mac ones in $MSL_MAC/$MSLDIR (chain $V): rebuild the iOS set"
+if [ "$GFXAPI" = nvn ] && [ -d "$MSL_MAC/$MSLDIR" ]; then
+  NMAC=$(lib_keys "$MSL_MAC/$MSLDIR" | wc -l | tr -d ' ')
+  [ $((NLIB * 10)) -ge $((NMAC * 9)) ] || die "only $NLIB iOS shaders in $MSL_IOS/$MSLDIR against $NMAC Mac ones in $MSL_MAC/$MSLDIR (chain $V): rebuild the iOS set"
 fi
 # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
 mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" Gen/dm/font/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
@@ -139,8 +149,14 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app; [ -d "$APP" ] || APP=$(grep -
 # the app sets DM_AOC_DIR at launch, the host reports them as owned and mounts them from it) and the RomFS
 rm -rf "$APP/msl" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
 P=Payload/DmIOS.app; MAPS=("$P=$APP" "$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR")
+SKIPS=$O/pack_skip.txt; : > "$SKIPS" || die "write $SKIPS"
+if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pack holds stay out
+  echo "$P/msl/$MSLDIR/pack/.air" > "$SKIPS"; awk -F'\t' -v d="$P/msl/$MSLDIR/" '!/^#/ { print d $1 ".metallib"; print d $1 ".json" }' "$MSL_IOS/$MSLDIR/pack/index.tsv" >> "$SKIPS"
+  t "shader packs: $(ls "$MSL_IOS/$MSLDIR/pack/"*.metallib | wc -l | tr -d ' ') packs for $(grep -vc '^#' "$MSL_IOS/$MSLDIR/pack/index.tsv") shaders replace their loose libraries"
+  [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
+else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
 MAPS+=("$P/romfs=$ROMFS")
 t "pack IPA (already-compressed game files stored, everything else deflated)"
-python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs "${MAPS[@]}" || die "pack_ipa"
+python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip-list "$SKIPS" "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"
