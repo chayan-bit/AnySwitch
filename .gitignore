@@ -12,6 +12,7 @@ data/
 *.exefs
 *.bin
 *.ipa
+*.dmstore
 
 # Build output
 build/
