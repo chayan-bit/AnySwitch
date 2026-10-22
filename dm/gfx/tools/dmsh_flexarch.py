@@ -3,10 +3,14 @@
 # the runtime can ask for, compiled for the target GPUs with metal-tt into an MTL4Archive (dm/pso_flex.metallib in the app).
 # The descriptors come from the runtime's own code: tools/pso_flexbench.m replays the records through nvn_mtl.m pso_desc + nvn_flexpso.m flexpso_desc on this Mac and serializes them
 # (MTL4PipelineDataSetSerializer); the libraries are relinked by the metal driver as dmsh_psoarch.py does, and those whose function hashes move (constant-only shaders) are left out.
-# Records (what to put in): --records pso_user*.tsv (R records of harvest runs: the "harvest" set) and, for the "full" set, --pairs program_pairs.tsv / shader_pairs.tsv (every statically
-# known shader pair, as a record with no vertex or colour state; exact once vertex shaders pull their attributes, step 4 of the doc).
+# Records (what to put in), in tiers filled in this order until the size cap (--max-mb, default 300; 0 = no cap):
+#   1. harvested and learned: --records pso_user*.tsv (R records of harvest runs and of devices, whose pipeline log is always on);
+#   2. accelerator pairs: --pairs lines whose rules are not iface alone (split, tfx) and the same-variation table (shader_pairs.tsv);
+#   3. interface pairs: --pairs lines found by the generic iface rule alone.
+#   A pair becomes a record with no vertex or colour state: the unspecialized pipeline of that pair with no vertex layout, exact for draws whose layout is empty.
+#   The cap counts records at the measured archive size per pipeline (KB_EACH); the size written is printed, a [RED] line when it is over.
 # --check: replays the records against the archive written (a macOS archive, --platform macos) and prints the hit rate, the archive's open time and memory footprint; --check-only skips the build.
-# Usage: dmsh_flexarch.py --records <tsv>... [--pairs <tsv>...] --msl <Mac b-V dir> --target-libs <dir> -o <out.metallib> [--platform ios|macos] [--arch applegpu_g16g ...] [--check]
+# Usage: dmsh_flexarch.py --records <tsv>... [--pairs <tsv>...] [--max-mb 300] --msl <Mac b-V dir> --target-libs <dir> -o <out.metallib> [--platform ios|macos] [--arch applegpu_g16g ...] [--check]
 #   Environment: DM_NVN_SHMAP (shader map), DM_MSL_DIR (the Mac library root holding b-<V>), as for pso_flexbench. The output is game-derived: write it only under the gitignored build output
 import os, re, sys, json, glob, argparse, tempfile, subprocess, concurrent.futures as cf
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,6 +19,8 @@ import dmsh_psoarch as A
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.join(HERE, '../tests/pso_flexbench')
 SKEY = 432   # sizeof(pso_skey) on arm64 (nvn_pso_skey.h; tests/t_pso_skey checks the layout)
+KB_EACH = {'ios': 34, 'macos': 21}   # archive KB per record, measured for applegpu_g16g; library sharing between records makes it an upper bound
+TIERS = ('harvested and learned', 'accelerator pairs', 'interface pairs')
 
 
 def pair_record(v, p):
@@ -25,19 +31,31 @@ def pair_record(v, p):
     return 'R\t' + bytes(b).hex()
 
 
-def records(o):
-    out, seen = [], set()
+def tiers(o):
+    """[[record]] per TIERS entry, deduplicated across tiers"""
+    t, seen = ([], [], []), set()
+    def add(i, r):
+        if r[2:] not in seen: seen.add(r[2:]); t[i].append(r)
     for path in o.records:
         for l in open(path):
             c = l.rstrip('\n').split('\t')
-            if c[0] == 'R' and len(c) > 1 and len(c[1]) == 2 * SKEY and c[1] not in seen: seen.add(c[1]); out.append('R\t' + c[1])
-    nh = len(out)
+            if c[0] == 'R' and len(c) > 1 and len(c[1]) == 2 * SKEY: add(0, 'R\t' + c[1])
     for path in o.pairs:
         for l in open(path):
             if l.startswith('#') or not l.strip(): continue
-            v, p = l.split()[:2]
-            r = pair_record(v, p)
-            if r[2:] not in seen: seen.add(r[2:]); out.append(r)
+            c = l.split()
+            add(2 if len(c) > 2 and c[2] == 'iface' else 1, pair_record(c[0], c[1]))
+    return t
+
+
+def records(o):
+    """(records in tier order up to the cap, how many are harvested), printing what each tier gives"""
+    cap = o.max_mb * 1024 // KB_EACH[o.platform] if o.max_mb else float('inf')
+    out, nh = [], None
+    for name, rs in zip(TIERS, tiers(o)):
+        take = rs[:max(0, int(min(len(rs), cap - len(out))))]
+        print(f'tier {name}: {len(take)} of {len(rs)} records' + ('' if len(take) == len(rs) else f' (cap {o.max_mb} MB reached)'))
+        out += take; nh = len(take) if nh is None else nh
     return out, nh
 
 
@@ -83,6 +101,7 @@ def main():
     a.add_argument('--records', nargs='*', default=[]); a.add_argument('--pairs', nargs='*', default=[])
     a.add_argument('--msl', required=True); a.add_argument('--target-libs', required=True); a.add_argument('-o', required=True)
     a.add_argument('--platform', choices=A.TARGET, default='ios'); a.add_argument('--arch', nargs='*', default=[]); a.add_argument('--check', action='store_true')
+    a.add_argument('--max-mb', type=int, default=300, help='archive size cap in MB, filled tier by tier (0 = no cap)')
     a.add_argument('--check-only', action='store_true', help='only replay the records against the existing -o archive')
     o = a.parse_args()
     if not os.access(BENCH, os.X_OK): sys.exit(f'[RED] build {BENCH} first: make -C dm/gfx/tests GAME=<id> pso_flexbench')
@@ -96,7 +115,9 @@ def main():
         print(bench(man, {'BENCH_SCRIPT': script}))
         kept, left = build(script, o.msl, o.target_libs, o.o, o.platform, o.arch)
         archs = subprocess.run(['xcrun', 'metal-lipo', o.o, '-archs'], capture_output=True, text=True).stdout.split()
-        print(f'wrote {o.o} ({os.path.getsize(o.o) / 1048576:.1f} MB, {" ".join(archs)}): {kept} pipelines, {left} left out (constant-only libraries: compiled on a worker at run time)')
+        mb = os.path.getsize(o.o) / 1048576
+        print(f'wrote {o.o} ({mb:.1f} MB, {" ".join(archs)}): {kept} pipelines, {left} left out (constant-only libraries: compiled on a worker at run time)'
+              + (f' [RED] over the {o.max_mb} MB cap: lower KB_EACH' if o.max_mb and mb > o.max_mb else ''))
         if o.check: print('check:', bench(man, {'BENCH_ARCHIVE': o.o}))
 
 

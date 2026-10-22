@@ -48,6 +48,8 @@ jobs:
           python3 -I dm/gfx/tests/test_psoexpand.py
           python3 -I dm/gfx/tests/test_shader_split_zlib.py
           python3 -I dm/gfx/tests/test_tbdr_budget.py
+          python3 -I dm/gfx/tests/test_pairs.py
+          python3 -I dm/gfx/tests/test_flexarch.py
 
   host-tests:
     runs-on: macos-15

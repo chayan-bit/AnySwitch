@@ -119,5 +119,6 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	python3 test_psoarch.py   # runs t_psoarch: harvest -> lookup, then metal-tt archives (macOS looked up, iOS built)
 	MTL_DEBUG_LAYER=1 ./t_passgpu
 	MTL_DEBUG_LAYER=1 ./t_flexpso
-	DM_GAME=$(GAME) python3 test_pairs.py   # tools/dmsh_pairs.py split rule and coverage
+	DM_GAME=$(GAME) python3 test_pairs.py   # tools/dmsh_pairs.py split and iface rules, coverage
+	python3 test_flexarch.py   # tools/dmsh_flexarch.py archive tiers and size cap
 .PHONY: run
