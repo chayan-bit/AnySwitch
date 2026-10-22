@@ -18,6 +18,9 @@ enum { NVN_CT_FLOAT = 0, NVN_CT_UINT, NVN_CT_INT };                             
 #define NVN_REFL_MAXB 64
 #define NVN_REFL_MAXARG 192   // argument buffer entries of one shader (an array binding takes n of them)
 #define NVN_REFL_MAXV 32
+#define NVN_RS_NONE 0xff      // nvn_rbind.sidx of a binding without a render_scale entry
+#define NVN_RS_MAXIDX 71      // render_scale has 73 entries: [0] the render target, [1 + sidx] the textures and images
+enum { NVN_RSF_UNSUPPORTED = 1, NVN_RSF_NEEDS_SCALE = 2, NVN_RSF_IMAGE_STORE = 4, NVN_RSF_COHERENT = 8 };   // Ryujinx.Graphics.Shader TextureUsageFlags
 
 typedef struct {
     uint8_t kind, rw;        // rw: storage buffer access is read_write / write / device
@@ -25,6 +28,7 @@ typedef struct {
     uint16_t reg, aid;       // D3D register number, index within the argument buffer
     uint16_t off;            // TEXU / SAMPU: byte offset of the handle within the uniform buffer; SBUFU: of the 64-bit storage buffer address
     uint8_t n;               // TEXD / SAMPD: array length (argument buffer entries aid .. aid + n - 1)
+    uint8_t sidx, sfl;       // Internal resolution (dmsh_build.py rscale): the binding's support_buffer render_scale index (render_scale[1 + sidx], NVN_RS_NONE = none) and Ryujinx TextureUsageFlags
 } nvn_rbind;
 typedef struct {
     int nb, abi, nv;         // Binding count, argument buffer slot, vertex input count
@@ -33,6 +37,7 @@ typedef struct {
     uint16_t tg[3];          // Compute thread group size (none = 0)
     uint8_t route_b, has_c1; // Route B; has a c1 constant segment
     uint8_t bindless;        // Has TEXU / SAMPU bindings (which texture is read is known only at replay time)
+    uint8_t frag_coord;      // Reads FragCoord (Ryujinx UsesFragCoord): its x and y are divided by render_scale[0]
     uint8_t dyn;             // Has TEXD / SAMPD bindings: c2's texture and sampler tables hold slot indices for this shader
     uint8_t drv_read[3];     // B: reads driver segments c0 / c2 at runtime (indices 0, 2; gathered statically from the MSL at packaging time, tools/dmsh_build.py drv_reads)
     uint16_t c1_len;         // Length of the c1 constant segment (B; 0 / 256 / 512 / 768 across the whole library)

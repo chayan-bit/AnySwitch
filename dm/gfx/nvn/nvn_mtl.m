@@ -24,6 +24,7 @@
 #include "nvn_autostat.h"   // run-time modes of the keys moving to detection, [shot] statistics
 #include "nvn_refl.h"
 #include "nvn_cover.h"
+#include "nvn_rscale.h"   // DM_INTERNAL_RES: internal resolution (parsed and logged; targets stay at 1x for now)
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
 #include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready (or waiting, nvn_rthist.h)
 #include "nvn_rthist.h"
@@ -275,9 +276,13 @@ static void udc_selftest(void) {
         MLOG("UDC self-check %s %s %lux%lu first value %08x, values differing from it %lu / %lu", g_dev.name.UTF8String, depth ? "Depth32F_S8" : "RGBA8", (unsigned long)w, (unsigned long)h, px[0], (unsigned long)bad, (unsigned long)(w * h));
     }
 }
+static float g_rs = 1.0f;   // internal resolution (nvn_rscale.h), read once at mtl_init
 void mtl_init(void) {
     { const char *f = getenv("DM_PSO_FLEX"), *k = getenv("DM_PSO_RECKICK"); g_mtl_rk_on = f && atoi(f) > 0 && k && atoi(k) > 0; }   // record-time kick (rank 7, below)
     if (g_dev) return;
+    {   const char *e = getenv("DM_INTERNAL_RES"); float s = nvn_rs_parse(e);
+        if (!s) { MLOG("[RED] DM_INTERNAL_RES=%s: must be 1, 1.5 or 2; drawing at 1x", e); s = 1.0f; }
+        g_rs = s; MLOG("internal resolution: %gx (%s)", g_rs, e && *e ? "DM_INTERNAL_RES" : "default"); }
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
     const char *link = getenv("DM_PRESENT_LINK");
     g_dm_present_link = link ? atoi(link) : 1; if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;   // Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)
@@ -7983,6 +7988,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     PD("X ser=%llu", t->serial);
     id<MTLTexture> src = tex_mtl(t);
     if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
+    if (g_present_n == 1) MLOG("internal resolution: guest window %ux%u, scale %gx (render targets stay at 1x for now)", t->d.width, t->d.height, g_rs);
     // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
     // A separate command buffer is queued after this frame's rendering (the same queue executes in submit order); does not wait for the GPU and does not disturb frame pacing
     static int rl = -1; static float rr[4]; static FILE *rlf; static pthread_mutex_t rlmu = PTHREAD_MUTEX_INITIALIZER;
