@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in AnySwitch is broken (build script, host, graphics, app).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach or paste game files, keys, firmware or anything derived from them, and redact paths and key values from logs.
+        Use the compatibility report form instead when you only want to say how a game runs.
+  - type: input
+    id: title_id
+    attributes:
+      label: Title ID
+      description: The 16 hex digits of the base game, for example 010015100B514000. Write "none" if the bug is not tied to a game.
+    validations:
+      required: true
+  - type: input
+    id: game_version
+    attributes:
+      label: Game build
+      description: Base game or update, with its version, for example "update 1.2.1".
+  - type: input
+    id: anyswitch_version
+    attributes:
+      label: AnySwitch commit
+      description: Output of `git rev-parse --short HEAD` in your clone.
+    validations:
+      required: true
+  - type: dropdown
+    id: device_class
+    attributes:
+      label: Device class
+      options:
+        - iPhone (A17 Pro or newer)
+        - iPhone (older than A17 Pro)
+        - iPad (M-series)
+        - iPad (A-series)
+        - Mac (running the host directly)
+        - Not applicable (build or tools only)
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      description: iOS, iPadOS or macOS version, and Xcode version if the bug is in the build.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran or what you did in the game, and how often it happens.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The relevant lines of `log.txt` (or of the build output), a few dozen at most. Lines that start with `[RED]` are the useful ones.
+      render: text
+  - type: checkboxes
+    id: legal
+    attributes:
+      label: Checklist
+      options:
+        - label: I did not include game files, keys, firmware or derived data, and I redacted private paths from the log.
+          required: true
+        - label: I searched the existing issues.
+          required: true

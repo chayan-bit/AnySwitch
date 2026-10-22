@@ -2,7 +2,7 @@
 // With DM_PSO_HARVEST it is a harvest run: the pipeline script it writes holds exactly the descriptors the runtime builds for those records, ready for dmsh_psoarch.py.
 // With DM_PSO_ARCHIVE it checks an archive: every record must hit (a miss means the archive's key differs from what the runtime looks up).
 // Environment: DM_PSO_MANIFEST=<tsv> (required), DM_NVN_SHMAP=<shader_map.tsv>, DM_MSL_DIR=<library folder holding b-<V>/>, DM_PSO_HARVEST=<out.metallib>, DM_PSO_ARCHIVE=<archive>|off
-// Built by make -C dm/gfx/tests GAME=<id> pso_replay; driven by dmsh_psoexpand.py --build (docs/stageB-pipeline-expansion.md)
+// Built by make -C dm/gfx/tests GAME=<id> pso_replay; driven by dmsh_psoexpand.py --build (dm/gfx/README.md#precompiled-pipeline-archives)
 #include "../nvn/nvn_mtl.m"
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]) { (void)p; (void)stage; memset(key, 0, 8); return 0; }   // hle_nvn.c symbols nvn_mtl.m links against; no program is ever drawn here
 void *front_metal_layer(void) { return NULL; }

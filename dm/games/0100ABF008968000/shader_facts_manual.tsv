@@ -2,7 +2,7 @@
 # This game has no PC version, so the translator has no fragment output types and declares every output float; Metal refuses a pipeline whose float output meets an integer attachment.
 # Its deferred model shaders (characters, Pokémon, field objects, effects) write colour 1 into an RGBA16Uint G-buffer target: every component of that output is a float -> uint conversion
 # (F2I) bit-cast into the output register. The 260 rows below are every translated pixel shader whose colour output is written only that way (dm/gfx/tools/fout_scan.py over the
-# Mac shader cache; it covers all 32 the host's red line named on the route to Postwick).
+# Mac shader cache; it covers all 32 the host's red line named in a test run).
 052dcf4bdb7341c5	{"fout":{"1":"uint"}}
 0851142775b76aad	{"fout":{"1":"uint"}}
 087631f51d2daa1c	{"fout":{"1":"uint"}}

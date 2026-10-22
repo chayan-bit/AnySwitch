@@ -19,7 +19,7 @@ For the build steps of the whole project see `README.md` and `setup.sh` in the r
 - **Replay layer `nvn/nvn_mtl.m`**: at submit time it replays the record stream as Metal commands.
   - Memory pools are created as zero-copy `MTLBuffer`s, with the GPU address equal to the CPU address, so only unified-memory devices are supported.
   - The visible effects of "GPU completion" (sync objects becoming ready, events writing their value, counters) happen only after the Metal command buffer has actually completed.
-  - Pipelines found in the shipped binary archive (`pso_archive.metallib`, `nvn/nvn_psoarch.m`) are created without a driver compile; see `docs/stageB-pipeline-archives.md`.
+  - Pipelines found in the shipped binary archive (`pso_archive.metallib`, `nvn/nvn_psoarch.m`) are created without a driver compile; see [Precompiled pipeline archives](#precompiled-pipeline-archives).
   - Pipeline states and depth-stencil states are cached by state hash; at startup, shaders and pipelines are pre-built in the background according to the warm-up manifests (the bundled seed `pso_manifest.tsv`, then this device's `pso_user.tsv`; see below). A pipeline that fails to build is cached as failed and reported once with its shader keys.
   - The game's packaged textures are in Tegra block-linear layout and are deswizzled before upload (see `tex/README.md`).
   - Presentation: the game's swapchain texture is drawn to a `CAMetalLayer`, and presentation timing is scheduled by the pacer in `nvn/nvn_pace.h`.
@@ -89,7 +89,7 @@ The scripts in `tools/`; usage is written in each file's header:
 | Script | Purpose |
 |---|---|
 | `dmsh_xlate/` | The shader translation tool (C#), which references the translation library in `dm/third_party/ryujinx` |
-| `dmsh_psoarch.py` | Compiles a pipeline harvest (`DM_PSO_HARVEST`) with `metal-tt` into the precompiled pipeline archive the app ships (`build_ipa.sh` runs it; see `docs/stageB-pipeline-archives.md`) |
+| `dmsh_psoarch.py` | Compiles a pipeline harvest (`DM_PSO_HARVEST`) with `metal-tt` into the precompiled pipeline archive the app ships (`build_ipa.sh` runs it; see [Precompiled pipeline archives](#precompiled-pipeline-archives)) |
 | `dmsh_build.py` | Drives the whole translation chain to produce the shader libraries; when the environment variable `IOSOUT=directory` is set, it also produces the iOS version |
 | `dmsh_chain.py`, `dmsh_chain.lock` | Translation chain version and tool fingerprints |
 | `dmsh_facts.py` | Reads the answer table `shader_facts.tsv` (which `shader_split.py` writes) |
@@ -166,7 +166,7 @@ Logging and capture:
 | `DM_NVN_SHOT_OUT=WxH` | Makes the screenshot above capture the picture after upscaling to this resolution instead |
 | `DM_NVN_TEXDUMP=frame:path` | Saves each color render target used in that frame as an image |
 | `DM_NVN_PASSDUMP=frame` or `start-end` | Writes each render pass's attachments, samples and presentation for these frames to standard error entry by entry, for analysis by `tools/tbdr_*.py`; additionally setting `DM_NVN_PASSDUMP_ALL` logs every draw |
-| `DM_NVN_PASSGPU=0` / `1` / `file` | Per-pass GPU time from Metal 4 timestamp counter heaps, on by default (`DM_PERF=0` or `DM_NVN_PASSGPU=0` turns it off, `file` also writes every pass there); see [perf-profiling-qos.md](../../docs/perf-profiling-qos.md) |
+| `DM_NVN_PASSGPU=0` / `1` / `file` | Per-pass GPU time from Metal 4 timestamp counter heaps, on by default (`DM_PERF=0` or `DM_NVN_PASSGPU=0` turns it off, `file` also writes every pass there) |
 | `DM_NVN_PROF=1` | Wraps the implemented NVN functions in a timing wrapper and collects the time each function takes during recording |
 
 Comparison and testing:
@@ -183,6 +183,20 @@ Comparison and testing:
 | `DM_CONTROLS_SCALE=0.75..2.5` | iOS only, controls in the bars: size of the A / B / X / Y keys, the left stick and the D-pad (default 1; Info.plist key `DMControlsScale`); they grow upward from the bar over the picture |
 | `DM_PRESENT_HZ=N` | The frequency of presentation pacing (default 60); 0 means no frame limit and is for performance profiling only |
 
+## Precompiled pipeline archives
+
+The shaders are translated offline into Metal libraries, but every new pipeline state still costs a driver compile from that IR to GPU code the first time it is created (20 to 100 ms on the submit thread, the main source of first-use stutter).
+An app can ship those GPU binaries in an `MTLBinaryArchive`, so a known pipeline is created without a compile.
+Nothing in it is per game: Metal keys an entry by the functions' hashes plus the whole pipeline descriptor the replay builds (`pso_desc`).
+
+1. **Harvest.** Run the game (Mac `dmhost` or the iOS app) with `DM_PSO_HARVEST=<path>` (`1` writes `pso_harvest.metallib` beside `pso_user.tsv`). The descriptor of every pipeline created is kept and the archive is written when warm-up ends, every 600 presents and on exit. A harvest file is replaced by each run, not extended, so keep each session's harvest under its own name.
+2. **Build.** `tools/dmsh_psoarch.py` extracts the pipeline script from one or more harvests and compiles it with `metal-tt` for the iOS GPUs against the chain's iOS libraries. `build_ipa.sh` runs it over every `$W/build/pso_harvest*.metallib` (`PSO_HARVEST` lists others, `PSO_ARCHIVE=<file>` ships a finished archive, `PSO_ARCHS` limits the GPU slices) and packs `dm/pso_archive.metallib`. Without a harvest the build continues without an archive.
+3. **Run time.** `nvn/nvn_psoarch.m` wraps every pipeline creation. It loads `DM_PSO_ARCHIVE` (default `pso_archive.metallib` beside the shader map, `off` disables it), looks pipelines up with `MTLPipelineOptionFailOnBinaryArchiveMiss` and logs each miss with its shader keys (`[pso-archive] miss`). A missing, stale or unreadable archive only costs the lookup: the pipeline compiles as usual.
+4. **Expansion (optional).** `tools/dmsh_psoexpand.py` learns the fixed-function state of a short harvest and writes manifest records for statically known shader pairs the run never drew; `pso_replay` (`make -C dm/gfx/tests GAME=<id> pso_replay`) replays them through the host's own warm-up into a harvest that step 2 compiles. `build_ipa.sh` takes it from `PSO_EXPAND`.
+
+The archive holds compiled game shaders: it lives only in gitignored build output (`pso_archive*.metallib*`, `pso_harvest*.metallib*`, `*.mtlp-json`).
+`t_psoarch` and `test_psoarch.py` cover harvest, hit and miss lookups and the `metal-tt` build without game files.
+
 ## Letterbox
 
 When the game picture does not fill the drawable, the present stage (`nvn/nvn_ambient.h`, included by `nvn_mtl.m`) fills the bars with the live frame instead of black.
@@ -192,7 +206,7 @@ The bars read the result through a cubic B-spline (four bilinear fetches), darke
 `DM_LETTERBOX=black` skips all of it; on iOS the Info.plist key `DMLetterbox` sets the same switch (`Documents/env.txt` wins).
 The whole-window screenshot and `DM_NVN_SHOT_OUT` use the same shaders through the old command buffer path, so they show what the screen shows.
 GPU cost comes from the same counter-heap timestamps as `DM_NVN_PASSGPU` (on by default): a log line `[ambient]` every 300 presents gives both blur passes and the drawable's pass.
-On an M4 (10 cores) at 2752x2064 the ambient fill costs 0.11 to 0.23 ms per frame, the best of eight batches on a shared machine; `t_present_ambient` fails above 0.3 ms.
+On an Apple M-series Mac at 2752x2064 the ambient fill costs 0.11 to 0.23 ms per frame, the best of eight batches on a shared machine; `t_present_ambient` fails above 0.3 ms.
 The iOS front end (`dm/ios/Sources/front_ios.m`) makes the Metal view the whole screen in ambient mode, so the drawable is the full panel; a later change that presents at the game's resolution has to scale the whole drawable, bars included.
 Before and after pictures of a generated scene are in `docs/images/letterbox/`.
 
@@ -207,7 +221,7 @@ The stick, the D-pad and the diamond never overlap each other at any scale.
 Every hit target stays at least 44 pt across (the floor is a 22 pt radius).
 `DM_CONTROLS_SCALE` (0.75 to 2.5, default 1) scales the bottom controls; below 0.75 the keys' touch circles would drop under 44 pt, so it is the lower limit.
 The keys are semi-transparent with a lighter fill, a bright rim and a soft top-lit gloss, which reads as frosted glass over the blurred bars without a live backdrop blur (that would cost compositor time every frame).
-On an 13-inch iPad (4:3) the bars are 129 pt tall in landscape and the controls fit; on an 11-inch iPad (about 16:10) the bottom bar is 78 pt, so the layout falls back to the overlay.
+On a 13-inch iPad (4:3) the bars are 129 pt tall in landscape and the controls fit; on an 11-inch iPad (about 16:10) the bottom bar is 78 pt, so the layout falls back to the overlay.
 Touches on the bars that no control takes are not sent to the game's touch screen.
 
 ## Known limitations

@@ -94,4 +94,4 @@ The settings are kept, so the next start applies them.
 
 `make -C dm/ios/tests run` builds and runs `t_settings.m` on the Mac.
 It checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset, the restart-pending state and the per-game sections.
-The screen itself was checked with a throwaway Mac Catalyst harness (not part of the repository) that renders every pane in light and dark, on a 13-inch iPad and on an iPhone, with the focus on each kind of row, and drives the screen with simulated controller presses.
+Check the screen itself on both an iPad and an iPhone, in light and dark appearance, with the focus on each kind of row, and drive it with a controller as well as by touch.

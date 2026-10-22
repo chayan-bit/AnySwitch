@@ -61,7 +61,7 @@ Frame-step stubs (`FRAME_STEP`) assert their original instructions, so a patch t
 
 A 60 FPS patch usually changes the frame limiter or vsync interval and leaves the game's time step alone.
 Games that step logic per frame then run at double speed.
-The audit reports exactly this for the community 60 FPS patch for Pokemon Sword and Shield 1.3.2 ([perf-audit.md](perf-audit.md), section 2.2).
+Community 60 FPS patches for some titles do exactly this.
 Treat every patch as unverified on a new title: check game speed, audio, animations and cutscenes on the device before relying on it.
 Correct 60 FPS for such a title needs a per-build frame-step stub, as done for Breath of the Wild and Tears of the Kingdom.
 Resolution and quality patches can raise GPU cost or break effects, so validate those the same way.

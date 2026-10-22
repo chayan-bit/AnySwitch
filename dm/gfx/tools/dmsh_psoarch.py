@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Precompiled pipeline archive (docs/stageB-pipeline-archives.md): compiles the pipelines a harvest run recorded (DM_PSO_HARVEST, nvn/nvn_psoarch.m) into GPU binaries for the target devices,
+# Precompiled pipeline archive (dm/gfx/README.md#precompiled-pipeline-archives): compiles the pipelines a harvest run recorded (DM_PSO_HARVEST, nvn/nvn_psoarch.m) into GPU binaries for the target devices,
 # so the app creates them without a driver compile. Apple's documented flow: metal-source extracts the pipeline script (.mtlp-json) a harvested archive carries, metal-tt compiles it.
 # The script names each shader library by the sha256 of its bytes (the host loads libraries from memory, lib_from_file); this tool finds the library with that hash in --libs (the library folders of
 # the harvesting machine: the Mac b-<V>/ for a Mac harvest, the iOS one for a device harvest) and compiles against the library of the same name in --target-libs (the libraries the app ships).

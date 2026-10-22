@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Pipeline expansion for the Stage B archive (docs/stageB-pipeline-expansion.md): learns the fixed-function state vocabulary of a short harvest (the R records of pso_user.tsv)
+# Pipeline expansion for the precompiled pipeline archive (dm/gfx/README.md#precompiled-pipeline-archives): learns the fixed-function state vocabulary of a short harvest (the R records of pso_user.tsv)
 # and writes R records for statically known shader pairs it did not see, so the archive covers pipelines the harvest run never drew. Game-agnostic: the inputs are any title's
 # harvest, its shader map (column 5 = where each key first appeared: container#member#...#var) and pair table (shader_split.py), and the chain's reflection folder (b-<V>/).
 # Output = a pso_user.tsv-format manifest; replaying it through the host's own warm-up (pso_replay, DM_PSO_HARVEST) gives a harvest that dmsh_psoarch.py compiles as usual,
@@ -17,7 +17,7 @@ SKEY, KOFF = 432, 88                    # sizeof(pso_skey), offsetof(pso_skey, k
 RT = [(50, KOFF), (KOFF + 16, KOFF + 136), (KOFF + 328, KOFF + 336)]   # merged, fz, fz_desc + pad | cfmt .. blend[8] | lmap
 VX = (KOFF + 136, KOFF + 328)           # attr[16] (u32: fmt 8, offset 19, stream 5), stream[16] {stride, divisor}
 PTRS = [(KOFF, KOFF + 16), (KOFF + 336, KOFF + 344)]   # vs, fs, fsfn: zeroed by pso_skey_from
-BYTES_PER_PIPELINE = 8_000              # per manifest record, applegpu_g16g slice: Sword measured 7.8 KB (11.1 KB per distinct compiled pipeline; docs/stageB-pipeline-expansion.md)
+BYTES_PER_PIPELINE = 8_000              # per manifest record, applegpu_g16g slice: measured 7.8 KB on one title (11.1 KB per distinct compiled pipeline)
 
 
 def text(path):

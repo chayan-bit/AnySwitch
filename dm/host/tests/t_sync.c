@@ -3,7 +3,7 @@
 // Guest threads are real: CreateThread / StartThread, with the test stub's dm_thread_enter calling a C entry that ends in ExitThread.
 // Expected values follow mesosphère (KConditionVariable, KAddressArbiter, KSynchronization): waiters woken in priority order, earlier first at equal priority; wake-one and wake-all;
 // timeouts, also while a signalled condition waiter waits for its lock; cancellation; the arithmetic of SignalToAddress.
-// T_SYNC_SECS=<s> sets the length of the lost-wakeup stress run (default 3); the timing section prints operations per second for the before / after record in docs/perf-sync-cntpct.md.
+// T_SYNC_SECS=<s> sets the length of the lost-wakeup stress run (default 3); the timing section prints operations per second.
 #include "../dm.h"
 #include <stdatomic.h>
 #include <pthread.h>

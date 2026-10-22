@@ -1,6 +1,6 @@
 # Dev control: checkpoint saves and the dev input channel
 
-Two game-agnostic test tools, so agents stop navigating games by screenshot and tap.
+Two game-agnostic test tools, so a game can be driven without navigating it by screenshot and tap.
 Checkpoint saves start a run at a known place in the game.
 The dev input channel drives the game frame by frame from the Mac, on the Mac host and in the iOS app.
 Checkpoints are the game's own save data: they live only under `data/checkpoints/`, which is gitignored, and are never committed or uploaded.
@@ -9,36 +9,35 @@ Checkpoints are the game's own save data: they live only under `data/checkpoints
 
 The Mac host and the iOS app keep a save the same way, in `dm/host/hle_fs.c`.
 `DM_SAVE` is the committed save directory; a mount clones it to `<dir>.work`, and every Commit swaps the whole work tree back in atomically.
-On the iPad the app sets `DM_SAVE` to `Documents/save` (`dm/ios/Sources/main.m`).
+On iOS the app sets `DM_SAVE` to `Documents/save` (`dm/ios/Sources/main.m`).
 So a checkpoint is that committed directory, byte for byte, plus a manifest with the size and SHA-256 of every file.
 A checkpoint lives at `data/checkpoints/<title id>/<name>/` with `save/` and `checkpoint.json`; anything else there (proof screenshots) is ignored by the tool.
 
 ```sh
 # Mac: export the committed save of a run (not <dir>.work), install one before a launch
-python3 scripts/checkpoint.py export 0100ABF008968000 bedroom --mac data/run/save --note "saved in the bedroom"
-python3 scripts/checkpoint.py import 0100ABF008968000 bedroom --mac data/run/save
+python3 scripts/checkpoint.py export <id> start-of-act-2 --mac data/run/save --note "saved at the start of act 2"
+python3 scripts/checkpoint.py import <id> start-of-act-2 --mac data/run/save
 DM_SAVE=data/run/save ... dm/host/dmhost <patched dir>
 
-# iPad: copy Documents/save out of the app, or install a checkpoint (stops the app first) and launch it
-python3 scripts/checkpoint.py export 0100ABF008968000 ipad-bridge --device <udid> --bundle com.example.app
-python3 scripts/checkpoint.py import 0100ABF008968000 bedroom --device <udid> --bundle com.example.app --launch
+# iOS: copy Documents/save out of the app, or install a checkpoint (stops the app first) and launch it
+python3 scripts/checkpoint.py export <id> from-device --device <udid> --bundle <bundle id>
+python3 scripts/checkpoint.py import <id> start-of-act-2 --device <udid> --bundle <bundle id> --launch
 
 python3 scripts/checkpoint.py list
-python3 scripts/checkpoint.py verify 0100ABF008968000 bedroom
+python3 scripts/checkpoint.py verify <id> start-of-act-2
 ```
 
 Import on the Mac deletes the target directory and its `.work` and `.new` leftovers, then copies the checkpoint in.
-Import on the iPad first lists `Documents/save` and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
+Import on a device first lists `Documents/save` and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
 It then finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies each checkpoint file to `Documents/save/<file>`.
 It lists `Documents/save` again and fails, without launching, unless every file is on the device with the checkpoint's size.
-Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to `Documents/save` with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches) on 2026-10-22.
+Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to `Documents/save` with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches).
 A running app is stopped first because it would commit its own save over the checkpoint.
 Export refuses `.work` directories, empty saves and an existing name without `--force`, and checks the copy against the source manifest.
 Import refuses a checkpoint whose files no longer match its manifest.
 One difference between the platforms is handled explicitly.
 A guest file name that collides on the case-insensitive host file system is kept in the extended attribute `org.d2rmobile.guest-name`, and `devicectl` does not carry extended attributes.
 Export records such files in `guest_name_xattrs`, and import to a device refuses that checkpoint instead of installing it wrong.
-Sword's save is one file, `main` (1,603,146 bytes), with no extended attributes.
 
 ## Dev input channel
 
@@ -53,11 +52,11 @@ The iOS project takes the flag from the same compile command: run `dm/ios/tools/
 ### Security
 
 The socket binds one local address, port 47800: `127.0.0.1` on the Mac, and on iOS the device side of the CoreDevice tunnel, the link `devicectl` and Xcode use.
-A connection that comes through that tunnel arrives on the tunnel address, not on the iPad's loopback address, and a usbmux port forward (`ios forward`) reaches neither when the device is on the local network.
+A connection that comes through that tunnel arrives on the tunnel address, not on the device's loopback address, and a usbmux port forward (`ios forward`) reaches neither when the device is on the local network.
 The app finds the tunnel as the one `utun` interface with a unique local IPv6 address (`fd00::/8`), a /64 prefix and MTU 16000; VPN interfaces such as Tailscale's (`fd7a:115c:a1e0::/48`, MTU 1280) do not match, and two matches (a device paired to two Macs) turn the channel off.
 `DM_DEVCTL_ADDR` names another numeric local address or `tunnel`, and `DM_DEVCTL_PORT` another port; the wildcard addresses `0.0.0.0` and `::` are refused.
 At start the host draws a random 128-bit token and prints it in the log: `devctl: dev input channel listening on 127.0.0.1 port 47800, token <32 hex digits>`.
-On the iPad that log is `Documents/log.txt`.
+On iOS that log is `Documents/log.txt`.
 The first line of every connection must be `auth <token>` within 10 seconds; anything else gets `err auth`, a one-second delay and a closed connection.
 One client at a time.
 The only commands are `frame`, `run` and `quit`: no file access, no memory access, nothing else.
@@ -127,60 +126,17 @@ It prints the host's reply and exits 0 for `ok`, `frame` and `done`, 1 for `err`
 ## Mac recipe
 
 ```sh
-make -C dm/host GAME=0100ABF008968000 DEVCTL=1 dmhost
-python3 scripts/checkpoint.py import 0100ABF008968000 bedroom --mac data/devctl/run/save
-W=data/nsp/0100ABF008968000_build
-DM_ROMFS=$W/extract/v458752/RomFS DM_MSL_DIR=$W/shader/cache DM_AOC_DIR=$W/aoc \
-DM_NVN_SHMAP=dm/games/0100ABF008968000/shader_map.tsv DM_FONT_DIR=data/stageA/run/font \
-DM_SAVE=data/devctl/run/save DM_TEMP=data/devctl/run/temp DM_KBD=Player \
-DM_FIXED_TIME=1790000000 DM_NVN_SHOT="$(seq -s, 30 30 9000):data/devctl/run/shots/f_%d.png" \
-dm/host/dmhost $W/patched_v458752 > data/devctl/run/host.log 2>&1 &
-scripts/dmctl --log data/devctl/run/host.log run -f walkout.txt
+make -C dm/host GAME=<id> DEVCTL=1 dmhost
+python3 scripts/checkpoint.py import <id> <name> --mac data/devctl/run/save
+W=data/nsp/<id>_build
+DM_ROMFS=$W/extract/<version>/RomFS DM_MSL_DIR=$W/shader/cache DM_AOC_DIR=$W/aoc \
+DM_NVN_SHMAP=dm/games/<id>/shader_map.tsv \
+DM_SAVE=data/devctl/run/save DM_TEMP=data/devctl/run/temp \
+DM_NVN_SHOT="$(seq -s, 30 30 9000):data/devctl/run/shots/f_%d.png" \
+dm/host/dmhost $W/patched_<version> > data/devctl/run/host.log 2>&1 &
+scripts/dmctl --log data/devctl/run/host.log run -f route.txt
 ```
 
 The screenshots are the renderer's own frame dumps (`DM_NVN_SHOT`), named by frame number, so the frame numbers `dmctl` prints map straight to files.
 Send a sequence with absolute `fN:` stamps right after the token line appears, before frame N passes.
-
-## Sword checkpoints made on the Mac
-
-All three were made with the channel only, from a fresh save, then each was installed into a fresh run and loaded with `f1200:A wait(400)` (A on the title screen).
-
-| Name | Place | Load proof (frame dump) |
-|---|---|---|
-| `setup-done` | the living room right after language, photo, naming and the opening | `setup-done/proof/loaded_f1500.png` |
-| `bedroom` | the player's bedroom, bag not yet picked up | `bedroom/proof/loaded_f1650.png` |
-| `postwick-outside` | the front garden in Postwick, bag and cap on, before Hop | `postwick-outside/proof/loaded_f1500.png` |
-
-Route 1 was not made: past the front garden the story runs through Hop, his house, Leon and the starter choice before the route opens, which is not cheap to script blind.
-
-## Determinism check on the Mac
-
-The `bedroom` checkpoint was driven twice with this sequence and nothing else: title, pick up the bag, the cap cutscene, out through the kitchen and the hall to the front garden.
-
-```
-f1200:A wait(240)
-L(0,1)~3 A wait(60) A*13/45 wait(60)
-L(0,-1)~20 L(-1,0)~100 wait(30)
-L(1,0.3)~40 wait(30)
-L(-0.25,-1)~90 wait(150)
-```
-
-Both runs replied `done start 1 end 2618 frame 2618` and ended in the front garden at the same spot.
-Frame dumps every 30 frames: 79 of 89 are identical pixel for pixel, including every frame from 30 to 2400, through the bag, the cutscene and the walk through the house.
-Frame 1980 differs in 0.01 % of its pixels; from frame 2430 on, outdoors, frames differ in 4 to 38 % of pixels because ambient animation (foliage, sky) follows the wall clock.
-Those runs used the wall clock, because `DM_DETCLOCK` hangs Sword (next section).
-
-## iPad check (2026-10-22, iPad, iPadOS 26, local network)
-
-1. `checkpoint.py import ... postwick-outside --launch` stopped the app, copied `main`, found it on the device with the checkpoint's size, and launched.
-2. `dmctl --device <udid> --bundle <bundle id> frame` answered through the tunnel with the default bind; a wrong token got `err auth`.
-3. `A wait(400)` on the title loaded the save into the Postwick front garden, stick vectors walked the player down the path into Hop's greeting, and `A*30/50` played the dialogue out (WDA screenshots `data/stageA/shots/ipad_devctl_*.jpg`).
-4. An export straight after the import is byte-identical to the Mac checkpoint (`main`, SHA-256 `b48cdd41...`, 1,603,146 bytes).
-5. The game then saved on the iPad through the X menu (R, then A); that export (`ipad-postwick-after-hop`) loads on the Mac host on the same path below the house, so a save written by the iOS build and one written by the Mac build share one format.
-6. The device JSON fields the import uses (`result.apps[].url`, `result.runningProcesses[].executable` and `processIdentifier`, `result.files[].relativePath`, `metadata.size`, `resources.isDirectory`) match what `devicectl` printed on the device.
-
-## Open items
-
-1. `DM_DETCLOCK` hangs Sword about 130 frames after a save loads into the field, with or without the channel (reproduced with `DM_KEYS=f1200:A` alone).
-   The watchdog dump shows the main thread spinning in `SleepThread` (svc 0xb, 703,280 calls) under `main+0x1860344`, waiting on guest time, which advances only per present while it presents nothing.
-   A fix belongs in the deterministic clock (advance it when the presenting thread sleeps instead of presenting), not in the channel.
+Run the same sequence twice from the same checkpoint to check determinism: frames that do not depend on the wall clock (menus, cutscenes) come out pixel for pixel identical, while ambient animation follows the clock.

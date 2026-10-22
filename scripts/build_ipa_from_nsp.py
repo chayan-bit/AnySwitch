@@ -24,7 +24,7 @@ PROD_KEYS = '/Users/seedds/My Drive/Python_Scripts/nsp_check/prod.keys'         
 PACKAGE = ''                            # version packed into the IPA (empty = the profile's package; Mario 'v327680' i.e. 1.2.1, or 'v0')
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder)
 APP_NAME = ''                           # app name on the home screen (empty = the game name in the base NSP)
-BUNDLE_ID = ''                          # the app's bundle ID (empty = org.nxnative.<base game title ID in lowercase>)
+BUNDLE_ID = ''                          # the app's bundle ID (empty = org.anyswitch.<base game title ID in lowercase>)
 KEEP_EXTRACTED = True                   # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files); False deletes them
 DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
 SHOW_FPS = False                        # True shows the game's frame rate on the iPhone (frames on screen per second, top left); DM_SHOW_FPS=0 / 1 in the app's Documents/env.txt changes it without a rebuild
@@ -1142,7 +1142,7 @@ def parse_args(argv):
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the profile\'s package)')
     ap.add_argument('-o', '--out', help='output IPA (default: <the profile\'s ipa> in the NSP folder)')
     ap.add_argument('--app-name', help='app name on the home screen (default: the game name in the base NSP)')
-    ap.add_argument('--bundle-id', help='the app\'s bundle ID (default: org.nxnative.<base game title ID in lowercase>)')
+    ap.add_argument('--bundle-id', help='the app\'s bundle ID (default: org.anyswitch.<base game title ID in lowercase>)')
     ap.add_argument('--keep-extracted', action=argparse.BooleanOptionalAction, help='keep the extracted game files after the IPA is built, for the next build (default: the KEEP_EXTRACTED setting, on)')
     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, off)')
@@ -1247,7 +1247,7 @@ def main(args=None):
     # the app name and bundle ID both come from the base NSP: the game name in its control data, and a bundle ID from its title ID; a setting / the command line overrides them
     app_name = args.app_name or APP_NAME or nacp.name(base / 'control.nacp')
     if not app_name: raise BuildError(f'no game name in the base extraction ({base / "control.nacp"}; an older extraction did not save it: delete extract/ and run again, or give --app-name)')
-    bundle_id = args.bundle_id or BUNDLE_ID or f'org.nxnative.{app:016x}'
+    bundle_id = args.bundle_id or BUNDLE_ID or f'org.anyswitch.{app:016x}'
     # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
     app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp')
     say(f'app name: {app_name}; version: {app_version or "1.0"}; bundle ID: {bundle_id}')
