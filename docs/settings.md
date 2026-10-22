@@ -71,7 +71,7 @@ The capability comes from what the build actually has, not from a title.
 | `fstep` | The game's modules carry the rewriter's frame-step stubs (`dm_fps_state` is set by the loader). |
 | `fpscap` | Either the frame-step stubs, or an engine frame limit that the host keeps in game memory (`hle_fpslock.c`). |
 | `haptics` | The device has a haptic engine, or a controller with haptics is connected. |
-| `internalres` | The graphics layer can draw render targets above the Switch's resolution. No build has it yet, so the Internal resolution row stays hidden; `DM_INTERNAL_RES` is parsed and logged only. |
+| `internalres` | The game draws with NVN (a module references `nvnBootstrapLoader`), whose Metal layer can draw render targets above the Switch's resolution. A Vulkan game does not have it. |
 
 A value that is stored for a hidden row is kept and still applies; the row only is not offered.
 
@@ -105,6 +105,15 @@ The threshold is the **Shake sensitivity** slider on the Controls page, 0.5 to 4
 A lower value makes the shake easier to trigger and suits the heavier iPad; a higher one needs a sharper flick.
 A line `DM_SHAKE_G=1.0` in `Documents/env.txt` overrides the slider (the row is then dimmed and locked), as for any setting.
 The log says which threshold is in use at start (`front end: shaking the device (iPhone or iPad) shakes the controller (threshold ... G)`) and the peak of each detected shake.
+
+### Internal resolution (`DM_INTERNAL_RES`)
+
+The game draws its render targets at 1x, 1.5x or 2x the Switch's resolution, and the frame is presented from the larger picture.
+The row appears only for a game that draws with NVN (the `internalres` capability), 1x is the default on every device, and a change applies on the next start.
+A scaled target takes S² times the memory of the 1x one: 2.25 times at 1.5x and 4 times at 2x.
+When the memory left to the app drops below 768 MB (`RS_MEM_GUARD_MB` in `nvn_mtl.m`), new targets stay at 1x, so the game keeps running with part of the picture at 1x instead of being closed by the system.
+On a device with 8 GB of memory or less, the row's description adds a note to that effect; 2x stays selectable there.
+The log names the scale at start (`internal resolution: 2x (DM_INTERNAL_RES)`), each target demoted to 1x and the reason, and with the perf report the live scaled targets and their memory (`internal resolution memory: ...`).
 
 ### Per-game files
 

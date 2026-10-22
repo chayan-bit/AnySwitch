@@ -139,6 +139,10 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     NSString *_path; NSMutableDictionary<NSString *, NSString *> *_user, *_envLock, *_launch, *_gameDef;
     void (^_setEnv)(NSString *, NSString *); id (^_plist)(NSString *);
 }
++ (NSString *)internalResDetailForMemory:(unsigned long long)bytes {
+    NSString *d = @"Draws the game at a multiple of the Switch's resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.";
+    return bytes > 8ull << 30 ? d : [d stringByAppendingString:@" This device has 8 GB of memory or less: at 2x, some of the picture may stay at 1x when memory runs short, and the game can close."];
+}
 + (NSArray<NSDictionary *> *)builtinSections {
     NSDictionary *(^slider)(NSString *, NSString *, NSString *, NSString *, double, double, double, NSString *) = ^(NSString *key, NSString *plist, NSString *label, NSString *detail, double min, double max, double step, NSString *def) {
         return @{@"key": key, @"plistKey": plist, @"label": label, @"detail": detail, @"type": @"slider", @"min": @(min), @"max": @(max), @"step": @(step), @"scale": @100, @"suffix": @"%", @"default": def}; };
@@ -164,7 +168,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
             @{@"key": @"DM_RENDER_SCALE", @"label": @"Render scale", @"type": @"slider", @"min": @0.5, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"apply": @"restart", @"requires": @"fstep",
               @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."},
             @{@"key": @"DM_INTERNAL_RES", @"plistKey": @"DMInternalRes", @"label": @"Internal resolution", @"type": @"choice", @"default": @"1", @"apply": @"restart", @"requires": @"internalres",
-              @"detail": @"Draws the game at a multiple of the Switch's resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.",
+              @"detail": [self internalResDetailForMemory:NSProcessInfo.processInfo.physicalMemory],
               @"options": @[@{@"value": @"1", @"label": @"1x (Switch)", @"aliases": @[@"1.0"]}, @{@"value": @"1.5", @"label": @"1.5x"}, @{@"value": @"2", @"label": @"2x", @"aliases": @[@"2.0"]}]}]},
         @{@"id": @"controls", @"title": @"Controls", @"icon": @"gamecontroller", @"settings": @[
             @{@"key": @"DM_CONTROLS_LAYOUT", @"plistKey": @"DMControlsLayout", @"label": @"Touch controls", @"type": @"choice", @"default": @"auto",

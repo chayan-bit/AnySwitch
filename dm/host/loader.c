@@ -146,6 +146,10 @@ static void *force_lookup(const char *name) {
         }
     return NULL;
 }
+static int force_referenced(const char *name) {   // a module of the loaded game references this forced take-over (valid once the modules are loaded)
+    for (unsigned i = 0; i < g_nforce; i++) if (!strcmp(g_force[i].name, name)) return g_force_hits[i] != 0;
+    return 0;
+}
 // Generic host: the list serves several games, so entries a game does not reference are only noted; with DM_FORCE_STRICT=1 it still fails loudly (for checking a mistyped list)
 static void force_check(void) {
     unsigned unused = 0; int strict = getenv("DM_FORCE_STRICT") != NULL;
@@ -196,6 +200,7 @@ int dm_capability(const char *name) {
     if (!name) return 0;
     if (!strcmp(name, "fstep")) return dm_fps_state != NULL;
     if (!strcmp(name, "fpscap")) return dm_fps_state != NULL || dm_fps_lock_present();
+    if (!strcmp(name, "internalres")) return force_referenced("nvnBootstrapLoader");   // the NVN layer (nvn_mtl.m) scales render targets; the Vulkan layer does not
     return 0;
 }
 static void install_fps_state(module_t *m) {

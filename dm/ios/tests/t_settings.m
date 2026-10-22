@@ -129,6 +129,8 @@ int main(void) { @autoreleasepool {
       DmSetting *ir = find(s, @"DM_INTERNAL_RES"); CHECK(ir.restart && ir.type == DmSettingChoice, "internal resolution is a restart choice"); EQ(ir.requires, @"internalres"); EQ(ir.plistKey, @"DMInternalRes");
       EQ([s valueForKey:@"DM_INTERNAL_RES"], @"1"); EQ([ir normalized:@"1.0"], @"1"); EQ([ir normalized:@"1.5"], @"1.5"); EQ([ir normalized:@"2.0"], @"2"); EQ([ir normalized:@"3"], nil); EQ([ir normalized:@"1.25"], nil);
       EQ([ir displayValue:@"1"], @"1x (Switch)"); EQ([ir displayValue:@"2"], @"2x");
+      NSString *d12 = [DmSettings internalResDetailForMemory:12ull << 30], *d8 = [DmSettings internalResDetailForMemory:7900ull << 20];
+      CHECK(![d12 containsString:@"8 GB"] && [d8 hasPrefix:d12] && [d8 containsString:@"8 GB of memory or less"], "2x memory note only on devices with 8 GB or less");
       DmSettings *hid = makeEx(builtin, nil, ^BOOL(NSString *c) { return ![c isEqualToString:@"internalres"]; }, tmpFile(), [NSMutableDictionary dictionary], @{});
       CHECK(![hid isAvailable:find(hid, @"DM_INTERNAL_RES")], "hidden until the build can scale targets (capability internalres)"); }
 

@@ -24,7 +24,7 @@
 #include "nvn_autostat.h"   // run-time modes of the keys moving to detection, [shot] statistics
 #include "nvn_refl.h"
 #include "nvn_cover.h"
-#include "nvn_rscale.h"   // DM_INTERNAL_RES: internal resolution (parsed and logged; targets stay at 1x for now)
+#include "nvn_rscale.h"   // DM_INTERNAL_RES: internal resolution (render targets drawn at 1x, 1.5x or 2x)
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
 #include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready (or waiting, nvn_rthist.h)
 #include "nvn_rthist.h"

@@ -68,6 +68,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 - (BOOL)restartPending;                                    // a restart-only setting differs from what this launch started with
 - (void)applyToEnvironment;                                // exports user, plist and game-default values for the keys the environment does not set (code that reads DM_* itself sees the effective value)
 + (NSArray<NSDictionary *> *)builtinSections;
++ (NSString *)internalResDetailForMemory:(unsigned long long)bytes;      // the Internal resolution row's detail: with a memory note on devices with 8 GB or less (NSProcessInfo.physicalMemory)
 + (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // dm/settings.json of the game profile: {"sections": [...]} in the same form; empty when absent or invalid (logged)
 + (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {"DM_KEY": "value"}}; empty when absent or invalid (logged)
 @end
