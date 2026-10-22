@@ -335,7 +335,7 @@ void mtl_init(void) {
     g_present_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
     if (!g_present_args) MDIE("failed to create the present argument table: %s", ate.localizedDescription.UTF8String);
     for (int i = 0; i < 3; i++) {
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
         if (!g_present_uv[i]) MDIE("failed to create present UV buffer[%d]", i);
         res_add(g_present_uv[i]);
     }
@@ -7845,7 +7845,7 @@ void mtl_exec(const uint8_t *p) {
 }
 
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
-static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
+static id<MTLRenderPipelineState> g_blit_pso, g_blit_fp; static MTLPixelFormat g_blit_fmt;   // g_blit_fp: footprint downscale (present_fp)
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
@@ -8128,7 +8128,12 @@ static void present_pipeline(MTLPixelFormat format) {
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
             "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n"
+            // footprint downscale (present_fp): four bilinear taps at +-tap tile one drawable pixel's footprint, a box filter up to 4:1 (the ambient pass 1 filter)
+            "struct CropF { float4 rect; float4 edge; float4 tap; };\n"
+            "fragment float4 fsf(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant CropF& c [[buffer(0)]]) {\n"
+            "  float2 uv = in.uv * c.rect.zw + c.rect.xy, d = c.tap.xy, lo = c.edge.xy, hi = c.edge.zw;\n"
+            "  return 0.25 * (t.sample(s, clamp(uv - d, lo, hi)) + t.sample(s, clamp(uv + float2(d.x, -d.y), lo, hi)) + t.sample(s, clamp(uv + float2(-d.x, d.y), lo, hi)) + t.sample(s, clamp(uv + d, lo, hi))); }\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
@@ -8137,6 +8142,8 @@ static void present_pipeline(MTLPixelFormat format) {
         pd.colorAttachments[0].pixelFormat = format;
         g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!g_blit_pso) MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);
+        pd.fragmentFunction = [lib newFunctionWithName:@"fsf"]; g_blit_fp = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!g_blit_fp) MDIE("present footprint pipeline failed %s", e.localizedDescription.UTF8String);
         g_blit_fmt = format;
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
@@ -8173,6 +8180,14 @@ static int present_crop(id<MTLTexture> src, const int crop[4], NSUInteger *cx, N
     *cx = crop[0]; *cy = crop[1]; *cw = crop[2]; *ch = crop[3];
     return 1;
 }
+// A scaled window image shrunk more than 2:1 into the viewport (2x on a small Mac window): one bilinear tap per drawable pixel would skip texels and alias, so the footprint filter
+// (fsf) takes four. tap = a quarter of one drawable pixel's footprint, in source uv. 1x presents keep the single bilinear tap
+static int present_fp(id<MTLTexture> src, NSUInteger cw, NSUInteger ch, MTLViewport vp, float tap[2]) {
+    if (rs_of(src) == 1.0f || (cw <= 2 * vp.width && ch <= 2 * vp.height)) return 0;
+    tap[0] = (float)(cw / vp.width / 4 / src.width); tap[1] = (float)(ch / vp.height / 4 / src.height);
+    static int once; if (!once++) MLOG("internal resolution: present downscales %lux%lu into %.0fx%.0f with the footprint filter", (unsigned long)cw, (unsigned long)ch, vp.width, vp.height);
+    return 1;
+}
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (!present_crop(src, crop, &cx, &cy, &cw, &ch)) return 0;
@@ -8201,11 +8216,12 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     if (amb) amb_bars_legacy(en, amb_b, &amb_uu, dst.width, dst.height);
     [en setViewport:vp];
     if (up_t) { [en setRenderPipelineState:g_up_rcas]; [en setFragmentTexture:up_t atIndex:0]; [en setFragmentBytes:up_uu.rcas length:sizeof up_uu.rcas atIndex:0]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; return 1; }
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+    float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    int fp = present_fp(src, cw, ch, vp, uv + 8);
+    [en setRenderPipelineState:fp ? g_blit_fp : g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
-    [en setFragmentBytes:uv length:sizeof uv atIndex:0];
+    [en setFragmentBytes:uv length:(fp ? 12 : 8) * sizeof(float) atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [en endEncoding];
     return 1;
@@ -8237,9 +8253,10 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     float *uv = g_present_uv[uv_i].contents;
     uv[0] = (float)cx / src.width; uv[1] = (float)cy / src.height; uv[2] = (float)cw / src.width; uv[3] = (float)ch / src.height;
     uv[4] = (cx + 0.5f) / src.width; uv[5] = (cy + 0.5f) / src.height; uv[6] = (cx + cw - 0.5f) / src.width; uv[7] = (cy + ch - 0.5f) / src.height;
+    int fp = present_fp(src, cw, ch, vp, uv + 8);
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [g_present_args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:fp ? g_blit_fp : g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     amb_ts(en, uv_i, 2, 1);
     m4_end(en);

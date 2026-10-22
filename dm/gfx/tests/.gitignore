@@ -64,3 +64,5 @@ t_present_scale
 t_present_scale.dSYM/
 t_autostat
 t_rscale
+t_rscale_gpu
+t_rscale_gpu.dSYM/
