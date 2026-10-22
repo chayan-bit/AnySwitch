@@ -7763,6 +7763,7 @@ static _Atomic uint64_t g_present_stall_ns;   // For unit tests: an extra pause 
 static CAMetalLayer *g_present_layer_resident;
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
 #include "nvn_ambient.h"   // ambient letterbox fill: the bars show the blurred live frame (DM_LETTERBOX=black for black bars)
+#include "nvn_upscale.h"   // DM_UPSCALE=sharp: FSR 1 (EASU + RCAS) instead of the bilinear stretch of the picture
 static void present_pipeline(MTLPixelFormat format) {
     if (!g_blit_pso || g_blit_fmt != format) {
         static const char *src_msl =
@@ -7827,12 +7828,14 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
         MLOG("present viewport %.0f,%.0f %.0fx%.0f / canvas %.0fx%.0f (game image %lux%lu)", vp.originX, vp.originY, vp.width, vp.height, dw, dh, (unsigned long)src.width, (unsigned long)src.height); }
     id<MTLTexture> amb_b = nil; amb_u amb_uu; int amb = !full && amb_on() && amb_prepare_legacy(cb, present_raw_src(src), cx, cy, cw, ch, dst, vp, &amb_uu, &amb_b);
+    up_u up_uu; id<MTLTexture> up_t = up_prepare_legacy(cb, present_raw_src(src), cx, cy, cw, ch, vp, dst.pixelFormat, &up_uu);
     rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = full || amb ? MTLLoadActionDontCare : MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     if (amb) amb_bars_legacy(en, amb_b, &amb_uu, dst.width, dst.height);
     [en setViewport:vp];
+    if (up_t) { [en setRenderPipelineState:g_up_rcas]; [en setFragmentTexture:up_t atIndex:0]; [en setFragmentBytes:up_uu.rcas length:sizeof up_uu.rcas atIndex:0]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; return 1; }
     [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
@@ -7858,6 +7861,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     amb_u amb_uu; int amb = !full && amb_on() && amb_prepare_m4(cb, present_raw_src(src), cx, cy, cw, ch, dst, vp, uv_i, &amb_uu);
+    int up = up_prepare_m4(cb, present_raw_src(src), cx, cy, cw, ch, vp, dst.pixelFormat, uv_i);
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;
     rp.colorAttachments[0].loadAction = full || amb ? MTLLoadActionDontCare : MTLLoadActionClear;
@@ -7868,6 +7872,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
     amb_ts(en, uv_i, 2, 0); if (amb) amb_bars_m4(en, uv_i, &amb_uu, dst.width, dst.height);
+    if (up) { up_bind_m4(uv_i); [en setViewport:vp]; [en setRenderPipelineState:g_up_rcas]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; amb_ts(en, uv_i, 2, 1); m4_end(en); return 1; }
     [g_present_args setTexture:present_raw_src(src).gpuResourceID atIndex:0];
     [g_present_args setSamplerState:g_blit_samp.gpuResourceID atIndex:0];
     float *uv = g_present_uv[uv_i].contents;

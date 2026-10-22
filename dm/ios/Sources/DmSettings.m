@@ -155,6 +155,12 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"detail": @"Ambient fills the bars with a soft blurred copy of the picture. Black leaves them plain black.",
               @"options": @[@{@"value": @"ambient", @"label": @"Ambient"}, @{@"value": @"black", @"label": @"Black", @"aliases": @[@"0"]}]},
             ambient,
+            @{@"key": @"DM_UPSCALE", @"label": @"Upscaling", @"type": @"choice", @"default": @"bilinear",
+              @"detail": @"How the game's picture is enlarged to the screen. Sharp (AMD FidelityFX Super Resolution 1) keeps edges and text crisp. Bilinear is the plain, softer stretch and costs the least.",
+              @"options": @[@{@"value": @"bilinear", @"label": @"Bilinear"}, @{@"value": @"sharp", @"label": @"Sharp"}]},
+            @{@"key": @"DM_UPSCALE_SHARPNESS", @"label": @"Sharpening", @"type": @"slider", @"min": @0, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"0.8",
+              @"enabledWhen": @{@"key": @"DM_UPSCALE", @"equals": @"sharp"},   // bilinear has no sharpening pass
+              @"detail": @"How strongly Sharp sharpens the enlarged picture. 0% keeps only the edge-aware enlargement."},
             @{@"key": @"DM_RENDER_SCALE", @"label": @"Render scale", @"type": @"slider", @"min": @0.5, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"apply": @"restart", @"requires": @"fstep",
               @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."}]},
         @{@"id": @"controls", @"title": @"Controls", @"icon": @"gamecontroller", @"settings": @[
