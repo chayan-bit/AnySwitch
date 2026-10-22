@@ -3081,7 +3081,7 @@ static int pack_open(void) {
     if (e && !strcmp(e, "off")) { MLOG("shader packs off (DM_SHADER_PACKS=off): one library per shader"); return 0; }
     NSString *dir = [g_msl_dir stringByAppendingPathComponent:@"pack"];
     NSString *txt = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:@"index.tsv"] encoding:NSUTF8StringEncoding error:nil];
-    if (!txt) { MLOG("no shader packs in %s: one library per shader (dm/gfx/tools/dmsh_pack.py builds them)", dir.UTF8String); return 0; }
+    if (!txt) { MLOG("[RED] no shader packs in %s: one library per shader, every boot program opens its own file (about 12 ms each: a game with hundreds of boot programs presents seconds later); dm/gfx/tools/dmsh_pack.py builds them, DM_SHADER_PACKS=off silences this", dir.UTF8String); return 0; }
     NSData *refl = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"refl.bin"] options:NSDataReadingMappedAlways error:nil];
     NSArray<NSString *> *lines = [txt componentsSeparatedByString:@"\n"];
     NSMutableDictionary *idx = [NSMutableDictionary dictionaryWithCapacity:lines.count];
