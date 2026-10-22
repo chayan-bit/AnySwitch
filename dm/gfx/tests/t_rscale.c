@@ -28,6 +28,9 @@ static void sizes(void) {
     check(a2 == b && b2 == 17, "edges: adjacent guest rectangles stay gap-free at 1.5x");
     nvn_rs_edges(-4, 10, 2.0f, &a, &b); check(a == -8 && b == 12, "edges: negative origins scale too (caller clamps)");
     nvn_rs_edges(5, 7, 1.0f, &a, &b); check(a == 5 && b == 12, "edges: 1x is identity");
+    check(nvn_rs_whole(3, 5, 2.0f), "whole texels: any span at 2x");
+    check(nvn_rs_whole(2, 4, 1.5f), "whole texels: even start and width at 1.5x");
+    check(!nvn_rs_whole(3, 4, 1.5f) && !nvn_rs_whole(2, 3, 1.5f), "whole texels: an odd edge at 1.5x is not (the copy resamples)");
 }
 
 static void eligibility(void) {
@@ -41,7 +44,7 @@ static void eligibility(void) {
     t = rt(1920, 1080); t.compressed = 1; check(nvn_rs_eligible(&t) == NVN_RS_FORMAT, "compressed: not scaled (format)");
     t = rt(1920, 1080); t.flags = 0x10; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "LINEAR: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x40; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "LINEAR_RENDER_TARGET: not scaled (flags)");
-    t = rt(1920, 1080); t.flags = 0x4; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "IMAGE: not scaled (flags)");
+    t = rt(1920, 1080); t.flags = 0x4 | 0x8; check(nvn_rs_eligible(&t) == NVN_RS_OK, "IMAGE: scaled (demoted when bound as an image)");
     t = rt(1920, 1080); t.flags = 0x2; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "VIDEO_DECODE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x20; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "SPARSE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x1 | 0x8; check(nvn_rs_eligible(&t) == NVN_RS_OK, "DISPLAY and COMPRESSIBLE: scaled");

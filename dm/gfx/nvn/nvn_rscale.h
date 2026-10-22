@@ -25,6 +25,8 @@ static inline uint32_t nvn_rs_host(uint32_t g, float s) { return (uint32_t)ceil(
 
 // A guest span [x, x + w) in host units: start floored, end ceiled, so rectangles that touch in guest units touch in host units at 1.5x too (no gap, no overlap)
 static inline void nvn_rs_edges(long x, long w, float s, long *x0, long *x1) { *x0 = (long)floor((double)x * s); *x1 = (long)ceil((double)(x + w) * s); }
+// Whether both edges of [x, x + w) land on whole host texels (always at 2x; at 1.5x only even ones): a same-scale copy of such a span is a plain blit, any other resamples
+static inline int nvn_rs_whole(long x, long w, float s) { double a = (double)x * s, b = (double)(x + w) * s; return a == floor(a) && b == floor(b); }
 
 // What decides whether a new texture is created scaled (filled in by nvn_mtl.m from tex_t, its format and its pool)
 typedef struct {
@@ -36,9 +38,9 @@ typedef struct {
 // Why a texture is not scaled (or demoted later); the names are what the log prints
 enum { NVN_RS_OK, NVN_RS_TARGET, NVN_RS_FORMAT, NVN_RS_FLAGS, NVN_RS_CPU, NVN_RS_LEVELS, NVN_RS_SMALL, NVN_RS_SQUARE, NVN_RS_BLUR, NVN_RS_LUT, NVN_RS_MEMORY,
        // demotions after creation
-       NVN_RS_MIXED, NVN_RS_UNSUPPORTED, NVN_RS_CPU_WRITE, NVN_RS_COPY, NVN_RS_NWHY };
+       NVN_RS_MIXED, NVN_RS_UNSUPPORTED, NVN_RS_IMAGE, NVN_RS_CPU_WRITE, NVN_RS_COPY, NVN_RS_NWHY };
 static const char *const nvn_rs_why_name[NVN_RS_NWHY] = { "ok", "target", "format", "flags", "cpu", "levels", "small", "square", "blur", "lut", "memory",
-                                                           "mixed pass", "unsupported binding", "cpu write", "copy" };
+                                                           "mixed pass", "unsupported binding", "image binding", "cpu write", "copy" };
 
 // Whether a texture is created at the session scale (NVN_RS_OK) or why not.
 // Rules: 2D / 2D array / 2D multisample (array) targets only (Ryujinx IsUpscaleCompatible), GPU-only storage, no flag that lets the CPU or a non-render path see the texels,
@@ -46,7 +48,8 @@ static const char *const nvn_rs_why_name[NVN_RS_NWHY] = { "ok", "target", "forma
 static inline int nvn_rs_eligible(const nvn_rs_tex *t) {
     if (t->target != 1 && t->target != 4 && t->target != 5 && t->target != 6) return NVN_RS_TARGET;
     if (t->compressed) return NVN_RS_FORMAT;
-    if (t->flags & (0x2 | 0x4 | 0x10 | 0x20 | 0x40)) return NVN_RS_FLAGS;   // VIDEO_DECODE, IMAGE, LINEAR, SPARSE, LINEAR_RENDER_TARGET
+    // VIDEO_DECODE, LINEAR, SPARSE, LINEAR_RENDER_TARGET. IMAGE is allowed: games set it on ordinary render targets, so an image binding demotes instead (nvn_mtl.m rs_bind_check)
+    if (t->flags & (0x2 | 0x10 | 0x20 | 0x40)) return NVN_RS_FLAGS;
     if (t->packaged || !t->gpu_only || t->init_data) return NVN_RS_CPU;
     if (t->levels > 3) return NVN_RS_LEVELS;
     if (t->w < 8 || t->h < 8) return NVN_RS_SMALL;
