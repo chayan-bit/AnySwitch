@@ -130,6 +130,9 @@ int main(void) { @autoreleasepool {
       NSString *emoji = [@"" stringByPaddingToLength:80 withString:@"\U0001F600" startingAtIndex:0];   // 4 bytes, 2 UTF-16 units each
       NSString *cut = [n normalized:emoji]; CHECK(cut.length > 0 && strlen(cut.UTF8String) <= 32, "capped to 32 bytes, got %zu", strlen(cut.UTF8String));
       CHECK([cut isEqualToString:[@"" stringByPaddingToLength:cut.length withString:@"\U0001F600" startingAtIndex:0]], "no broken character");
+      CHECK([n textFits:@""] && [n textFits:@"Ash "] && [n textFits:[long40 substringToIndex:32]] && ![n textFits:[long40 substringToIndex:33]], "the editor accepts up to the limit and refuses past it");
+      CHECK([n textFits:[@"" stringByPaddingToLength:16 withString:@"\U0001F600" startingAtIndex:0]], "8 emoji are 32 bytes");   // 16 UTF-16 units
+      CHECK(![n textFits:[@"" stringByPaddingToLength:18 withString:@"\U0001F600" startingAtIndex:0]], "9 emoji are 36 bytes");
       EQ([n normalized:@"Zoë"], @"Zoë"); EQ([n displayValue:@"Ash"], @"Ash");
       NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile(); DmSettings *s2 = make(builtin, path, env, @{});
       CHECK([s2 setValue:@"Misty" forKey:@"DM_NICK"], "set"); EQ(env[@"DM_NICK"], @"Misty"); CHECK(![s2 setValue:@"" forKey:@"DM_NICK"], "empty refused"); EQ([s2 valueForKey:@"DM_NICK"], @"Misty");

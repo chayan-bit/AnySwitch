@@ -26,6 +26,7 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 @property (nonatomic, readonly) BOOL restart;                       // applies on the next launch (the screen offers a restart), else live
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err;
 - (NSString *)normalized:(id)raw;      // a raw value (env, plist, file) as this setting stores it: toggles "0" / "1", choices one of the options, sliders clamped to the range and the step, text trimmed and cut to its limits; nil when it does not parse
+- (BOOL)textFits:(NSString *)text;      // text: within the length and byte limits (the editor refuses typing past them)
 - (NSString *)displayValue:(NSString *)value;  // what the row shows: "Ambient", "On", "75%", "1.5 G"
 @end
 

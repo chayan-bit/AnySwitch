@@ -35,7 +35,7 @@
 @property (nonatomic) BOOL chosen, paneFocused;
 @end
 
-typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemRestart };
+typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemResetAll, DmItemRestart };
 @interface DmRowView : UIView
 - (instancetype)initWithSetting:(DmSetting *)s kind:(DmItemKind)kind compact:(BOOL)compact;   // setting is nil for the reset and restart rows
 @property (nonatomic, readonly) DmSetting *setting;
@@ -44,6 +44,7 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemResta
 - (void)showValue:(NSString *)value source:(DmSettingSource)src;   // refresh from the store (env: the row is locked)
 @property (nonatomic, readonly) BOOL locked;
 - (void)shake;   // a refused change
+@property (nonatomic) BOOL confirming;   // the restore-all row asks for a second tap
 - (CGFloat)heightForWidth:(CGFloat)w;
 @end
 

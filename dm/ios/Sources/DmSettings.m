@@ -80,6 +80,11 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     NSString *cut = [[t substringToIndex:end] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     return cut.length ? cut : nil;
 }
+- (BOOL)textFits:(NSString *)text {
+    __block NSUInteger chars = 0;
+    [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *s, NSRange r, NSRange e, BOOL *stop) { (void)s; (void)r; (void)e; (void)stop; chars++; }];
+    return chars <= _maxLength && (!_maxBytes || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= _maxBytes);
+}
 - (NSString *)displayValue:(NSString *)v {
     switch (_type) {
         case DmSettingToggle: return [v isEqualToString:@"1"] ? @"On" : @"Off";
