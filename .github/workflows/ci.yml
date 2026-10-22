@@ -69,5 +69,6 @@ jobs:
       # The host unit tests need no game and no game files; the parity test reads every profile in dm/games.
       - run: make -C dm/host/tests run
       - run: make -C dm/host/tests profile-parity
+      - run: make -C dm/host/tests pack-check
       # The in-app settings registry and the haptics mapping: Foundation and plain C, no device
       - run: make -C dm/ios/tests run

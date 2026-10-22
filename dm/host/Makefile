@@ -1,7 +1,7 @@
 # One host for every game: the game profile is read at boot from game.json (profile.m; dm/games/game.py json writes it), so nothing here depends on a game
 CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m romstore.c profile.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m romstore.c profile.m boot.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
 # Dev input channel (docs/dev-control.md): only with make DEVCTL=1 (also read from the environment, so build_ipa.sh / gen_build.py carry it into the iOS app); product builds have none of it
 ifneq ($(strip $(DEVCTL)),)
 CFLAGS += -DDM_DEVCTL
@@ -42,5 +42,5 @@ dmhost: FORCE
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h devctl.h profile.h dm_abi.h $(GFX_H) $(STAMP) $(VPX_LIB) $(ZSTD_LIB) romstore.h
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h devctl.h profile.h dm_abi.h boot.h $(GFX_H) $(STAMP) $(VPX_LIB) $(ZSTD_LIB) romstore.h
 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(VPX) -I$(ZSTD) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(ZSTD_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers

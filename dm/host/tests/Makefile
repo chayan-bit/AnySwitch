@@ -79,7 +79,14 @@ profile-parity: t_profile.m ../profile.m ../profile.h ../dm_abi.h ../../games/ga
 	@set -e; for id in $(PROFILES); do d=$(B)/profile/$$id; python3 ../../games/game.py header $$id $$d/game_profile.h; python3 ../../games/game.py json $$id $$d; \
 	  clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -include $$d/game_profile.h -include ../../games/$$id/dmsh_chain.h -o $$d/t_profile t_profile.m ../profile.m -framework Foundation; \
 	  $$d/t_profile $$d | tail -1; done; echo "profile parity: $(words $(PROFILES)) profiles, all equal"
-.PHONY: run tsan profile-parity
+# The pack version contract (boot.m dm_pack_check): scratch packs built from one profile's game.json
+PACK_ID = $(firstword $(PROFILES))
+pack-check: $(B)/t_pack ../../games/game.py
+	@python3 ../../games/game.py json $(PACK_ID) $(B)/pack_profile
+	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID)
+$(B)/t_pack: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
+	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
+.PHONY: run tsan profile-parity pack-check
 tsan: $(B)/t_audio_spsc_tsan $(B)/t_sync_tsan
 	$(B)/t_audio_spsc_tsan
 	T_SYNC_SECS=10 $(B)/t_sync_tsan
