@@ -12,7 +12,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
 
 @implementation DmSetting {
     NSString *_key, *_plistKey, *_label, *_detail, *_suffix, *_def;
-    NSArray<NSDictionary *> *_options;
+    NSArray<NSDictionary *> *_options; NSDictionary<NSString *, NSString *> *_defaultAtFps; BOOL _exportDefault;
     DmSettingType _type; double _min, _max, _step, _scale; BOOL _restart; NSInteger _decimals; NSUInteger _maxLength, _maxBytes; NSString *_requires, *_enabledWhenKey, *_enabledEquals, *_enabledNotEquals;
 }
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err {
@@ -49,6 +49,18 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     if (![def isKindOfClass:NSString.class]) FAIL(@"no default (a string)");
     s->_def = [s normalized:def];
     if (!s->_def) FAIL(@"the default does not parse");
+    s->_exportDefault = [d[@"exportDefault"] boolValue];
+    id atFps = d[@"defaultAtFps"];
+    if (atFps) {   // {"30": "sharp"}: the default at that frame rate target; a live entry only (a restart entry would report a pending restart when the target moves), every value must parse
+        if (![atFps isKindOfClass:NSDictionary.class] || !((NSDictionary *)atFps).count || s->_restart) FAIL(@"defaultAtFps is an object of fps to value, for a live entry");
+        NSMutableDictionary *m = [NSMutableDictionary dictionary];
+        for (id fps in atFps) {
+            NSString *v = [atFps[fps] isKindOfClass:NSString.class] ? [s normalized:atFps[fps]] : nil;
+            if (![fps isKindOfClass:NSString.class] || [fps intValue] <= 0 || !v) FAIL(@"defaultAtFps needs a positive fps and a value that parses");
+            m[fps] = v;
+        }
+        s->_defaultAtFps = m;
+    }
     #undef FAIL
     return s;
 }
@@ -136,7 +148,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
 
 @implementation DmSettings {
     NSArray<DmSection *> *_sections; NSMutableDictionary<NSString *, DmSetting *> *_byKey;
-    NSString *_path; NSMutableDictionary<NSString *, NSString *> *_user, *_envLock, *_launch, *_gameDef;
+    NSString *_path; NSMutableDictionary<NSString *, NSString *> *_user, *_envLock, *_launch, *_gameDef; int _frameTarget;
     void (^_setEnv)(NSString *, NSString *); id (^_plist)(NSString *);
 }
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes {
@@ -159,8 +171,8 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"detail": @"Ambient fills the bars with a soft blurred copy of the picture. Black leaves them plain black.",
               @"options": @[@{@"value": @"ambient", @"label": @"Ambient"}, @{@"value": @"black", @"label": @"Black", @"aliases": @[@"0"]}]},
             ambient,
-            @{@"key": @"DM_UPSCALE", @"label": @"Upscaling", @"type": @"choice", @"default": @"bilinear",
-              @"detail": @"How the game's picture is enlarged to the screen. Sharp (AMD FidelityFX Super Resolution 1) keeps edges and text crisp. Bilinear is the plain, softer stretch and costs the least.",
+            @{@"key": @"DM_UPSCALE", @"label": @"Upscaling", @"type": @"choice", @"default": @"bilinear", @"defaultAtFps": @{@"30": @"sharp"},   // Sharp costs about 4 ms of GPU per frame: an eighth of a 30 fps frame, a quarter of a 60 fps one
+              @"detail": @"How the game's picture is enlarged to the screen. Sharp (AMD FidelityFX Super Resolution 1) keeps edges and text crisp, and is the default for games that run at 30 fps. Bilinear is the plain, softer stretch and costs the least; it is the default at 60 fps.",
               @"options": @[@{@"value": @"bilinear", @"label": @"Bilinear"}, @{@"value": @"sharp", @"label": @"Sharp"}]},
             @{@"key": @"DM_UPSCALE_SHARPNESS", @"label": @"Sharpening", @"type": @"slider", @"min": @0, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"0.8",
               @"enabledWhen": @{@"key": @"DM_UPSCALE", @"equals": @"sharp"},   // bilinear has no sharpening pass
@@ -188,6 +200,8 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
             @{@"key": @"DM_FPS_TARGET", @"label": @"Frame rate cap", @"type": @"choice", @"default": @"0", @"apply": @"restart", @"requires": @"fpscap",
               @"detail": @"Game decides leaves the frame rate to the game. 30 or 60 caps it, which can run cooler.",
               @"options": @[@{@"value": @"0", @"label": @"Game decides"}, @{@"value": @"30", @"label": @"30 fps"}, @{@"value": @"60", @"label": @"60 fps"}]},
+            @{@"key": @"DM_PSO_FLEX", @"label": @"Flexible pipelines", @"type": @"toggle", @"default": @"1", @"apply": @"restart", @"requires": @"nvn", @"exportDefault": @YES,   // the host's own default is off (the Mac host and its tests)
+              @"detail": @"Prepares the game's graphics pipelines in the background and skips a draw for a moment instead of stalling. It can make the first launch slightly slower but avoids hitches while playing."},
             @{@"key": @"DM_SHOW_FPS", @"plistKey": @"DMShowFPS", @"label": @"Frame rate counter", @"type": @"toggle", @"default": @"0",
               @"detail": @"Shows the frames per second at the top of the screen."}]},
         @{@"id": @"system", @"title": @"System", @"icon": @"gearshape", @"settings": @[
@@ -308,7 +322,18 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (NSString *)defaultValueForKey:(NSString *)key {
     DmSetting *s = _byKey[key]; if (!s) return nil;
     NSString *p = s.plistKey.length ? [s normalized:_plist(s.plistKey)] : nil;
-    return p ?: _gameDef[key] ?: s.def;
+    return p ?: _gameDef[key] ?: (_frameTarget > 0 ? s.defaultAtFps[[NSString stringWithFormat:@"%d", _frameTarget]] : nil) ?: s.def;
+}
+- (int)frameTarget { return _frameTarget; }
+- (void)setFrameTarget:(int)target {
+    if (target == _frameTarget) return;
+    NSMutableDictionary<NSString *, NSString *> *before = [NSMutableDictionary dictionary];
+    for (DmSetting *s in _byKey.allValues) if (s.defaultAtFps) before[s.key] = [self valueForKey:s.key];
+    _frameTarget = target;
+    for (NSString *k in [before.allKeys sortedArrayUsingSelector:@selector(compare:)]) {   // a user's or the environment's value does not move with the target, so only a default is announced
+        NSString *v = [self valueForKey:k]; if ([v isEqualToString:before[k]]) continue;
+        [NSNotificationCenter.defaultCenter postNotificationName:DmSettingDidChangeNotification object:k userInfo:@{@"value": v}];   // not exported to the environment: it is a default, not a choice
+    }
 }
 - (BOOL)boolForKey:(NSString *)key { return [[self valueForKey:key] isEqualToString:@"1"]; }
 - (double)doubleForKey:(NSString *)key { return [self valueForKey:key].doubleValue; }
@@ -320,7 +345,7 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (BOOL)setValue:(NSString *)value forKey:(NSString *)key {
     DmSetting *s = _byKey[key]; NSString *n = s ? [s normalized:value] : nil;
     if (!n || _envLock[key]) return NO;
-    if ([n isEqualToString:[self defaultValueForKey:key]]) {   // the default again: no explicit copy of it, so a later change of the default still applies
+    if (!s.defaultAtFps && [n isEqualToString:[self defaultValueForKey:key]]) {   // the default again: no explicit copy of it, so a later change of the default still applies (not for a default that moves with the frame rate target: the choice is kept)
         if (_user[key]) { [_user removeObjectForKey:key]; [self persist]; [self announce:key]; }
         return YES;
     }
@@ -344,7 +369,7 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (void)applyToEnvironment {
     for (DmSetting *s in _byKey.allValues) {
         DmSettingSource src = [self sourceForKey:s.key];
-        if (src == DmSourceUser || src == DmSourcePlist || (src == DmSourceDefault && _gameDef[s.key])) _setEnv(s.key, [self valueForKey:s.key]);   // a registry default is the code's own default: not exported
+        if (src == DmSourceUser || src == DmSourcePlist || (src == DmSourceDefault && (_gameDef[s.key] || s.exportDefault))) _setEnv(s.key, [self valueForKey:s.key]);   // a registry default is the code's own default and is not exported, unless the entry says its code defaults to something else (exportDefault)
     }
 }
 @end

@@ -45,6 +45,8 @@ An entry has a key, a label, a detail line, a type, its range or options, a defa
 | `plistKey` | The Info.plist key that sets the default for a build, or none. |
 | `type` | `toggle`, `choice`, `slider` or `text`; see below. |
 | `default` | The value as a string. |
+| `defaultAtFps` | Optional, live entries only: `{"30": "sharp"}` replaces `default` while the game's frame rate target is that many fps (see "Frame rate dependent defaults"). A value that does not parse, or a restart entry, is skipped and logged. |
+| `exportDefault` | Optional: the default is exported to the environment like a player's value. For a key whose code has another default of its own (the flexible pipelines are off in the host and on in the app); without it a registry default is not exported. |
 | `apply` | `restart` when a change needs a new launch (the row says "Applies after a restart"); absent means it applies at once. |
 | `requires` | A capability the build must have for the row to be shown; see below. Absent means always shown. |
 
@@ -72,6 +74,7 @@ The capability comes from what the build actually has, not from a title.
 | `fpscap` | Either the frame-step stubs, or an engine frame limit that the host keeps in game memory (`hle_fpslock.c`). |
 | `haptics` | The device has a haptic engine, or a controller with haptics is connected. |
 | `internalres` | The game draws with NVN (a module references `nvnBootstrapLoader`), whose Metal layer can draw render targets above the Switch's resolution. A Vulkan game does not have it. |
+| `nvn` | The same test, for what only the NVN layer does that is not about resolution: the flexible pipelines. |
 
 A value that is stored for a hidden row is kept and still applies; the row only is not offered.
 
@@ -81,6 +84,8 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | --- | --- | --- | --- | --- | --- |
 | Display | Bars around the picture | `DM_LETTERBOX` | ambient, black | ambient | at once |
 | Display | Ambient brightness | `DM_AMBIENT_LEVEL` | 20 to 100 percent | 50 percent | at once |
+| Display | Upscaling | `DM_UPSCALE` | bilinear, sharp | sharp at 30 fps, bilinear at 60 fps (see below) | at once |
+| Display | Sharpening (only under Sharp) | `DM_UPSCALE_SHARPNESS` | 0 to 100 percent | 80 percent | at once |
 | Display | Render scale (`fstep`) | `DM_RENDER_SCALE` | 50 to 100 percent | 100 percent | restart |
 | Display | Internal resolution (`internalres`) | `DM_INTERNAL_RES` | 1x (Switch), 1.5x, 2x | 1x | restart |
 | Controls | Touch controls | `DM_CONTROLS_LAYOUT` | auto, overlay | auto | at once |
@@ -91,6 +96,7 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | Controls | Vibration strength (`haptics`) | `DM_VIBRATION_STRENGTH` | 0 to 100 percent | 100 percent | at once |
 | Audio | Volume | `DM_VOLUME` | 0 to 100 percent | 100 percent | at once |
 | Performance | Frame rate cap (`fpscap`) | `DM_FPS_TARGET` | game decides, 30, 60 | game decides | restart |
+| Performance | Flexible pipelines (`nvn`) | `DM_PSO_FLEX` | on, off | on | restart |
 | Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once |
 | System | Game language | `DM_LANG` | the Switch languages | en-US | restart |
 | System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart |
@@ -115,6 +121,36 @@ When the memory left to the app drops below 768 MB (`RS_MEM_GUARD_MB` in `nvn_mt
 On a device with 8 GB of memory or less, the row's description adds a note to that effect; 2x stays selectable there.
 The log names the scale at start (`internal resolution: 2x (DM_INTERNAL_RES)`), each target demoted to 1x and the reason, and with the perf report the live scaled targets and their memory (`internal resolution memory: ...`).
 
+### Upscaling (`DM_UPSCALE`)
+
+The picture is enlarged from the game's resolution to the screen either by the plain bilinear stretch or by AMD FidelityFX Super Resolution 1 (Sharp), with `DM_UPSCALE_SHARPNESS` as the strength of its sharpening pass.
+Sharp costs a few milliseconds of GPU time per frame (about 4 ms at a tablet's screen size): an eighth of a 30 fps frame, a quarter of a 60 fps one.
+So the default depends on the frame rate: **Sharp for a game that runs at 30 fps, Bilinear for one that runs at 60** (see below).
+Either way the row stays on the Display page and the player can pick the other one at any time.
+It has no effect at 1.5x and 2x internal resolution, where the picture is not enlarged.
+
+### Frame rate dependent defaults
+
+An entry with `defaultAtFps` has a default that follows the game's frame rate target, `DmSettings.frameTarget` (30 or 60; 0 while unknown).
+The app takes it from the host (`mtl_fps_target()`: the frame cap of the profile or the player when there is one, else the present interval the game itself asks for, where an interval of 2 held for a second means 30), reads it at start and again every second, so it is also right for a game that starts at 60 and settles at 30 after its first second.
+The effective default is then, after the earlier sources of "Where values come from": the entry's `defaultAtFps` value for the current target, else its `default`.
+When the target moves, the entries whose effective default changes with it are announced like a change made in the screen, so the picture switches at once and the row shows the new value.
+The Mac host does not read the target: with no `DM_UPSCALE` set it keeps the bilinear stretch.
+
+A choice the player made is stored even when it equals the default of that moment (other entries drop a value that equals the default), because the default moves: Bilinear picked in a 60 fps game must not turn into Sharp when a later start finds 30 fps.
+"Restore defaults" drops the choice, so the default of the moment applies again.
+A `settings.json` of the player from an older build loads unchanged: a stored Sharp stays Sharp.
+One thing an older build cannot tell: a player who had explicitly picked Bilinear while it was the default has nothing stored, and so gets the new Sharp default at 30 fps; picking Bilinear again keeps it.
+A game can still pin it with `"defaults": {"DM_UPSCALE": "bilinear"}` in its `settings.json`, which beats the frame rate default.
+
+### Flexible pipelines (`DM_PSO_FLEX`)
+
+The flexible pipelines (`dm/gfx/nvn/nvn_flexpso.m`, `dm/gfx/README.md`) make the game's graphics pipelines on background threads from a pipeline archive shipped in the app, and skip a draw for a moment instead of stalling the frame.
+The row is on the Performance page for a game that draws with NVN (the `nvn` capability), is **on by default**, and a change applies on the next start.
+The row's detail says what it costs: it can make the first launch slightly slower, and it avoids hitches while playing.
+The host itself defaults to off (the Mac host, its tests and tools), so the entry has `exportDefault`: the app hands its default over to the environment.
+`build_ipa.sh` builds the pipeline archive by default (`PSO_FLEX=0` leaves it out).
+
 ### Per-game files
 
 A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `dm/settings.json` in the app.
@@ -138,12 +174,13 @@ From highest to lowest priority:
 2. The player's choice in `Documents/settings.json` (not the save folder, so a save restore never touches it).
 3. The Info.plist default (`plistKey`, written by `project.yml` and `build_ipa.sh`).
 4. The game's own default (`"defaults"` in `dm/settings.json`).
-5. The registry default.
+5. The default for the game's frame rate target (`defaultAtFps`, only the entries that have one).
+6. The registry default.
 
 The file holds only what the player changed: `{"version": 1, "values": {"DM_CONTROLS_SCALE": "1.4"}}`.
 The format has not changed; files written by earlier versions load as they are.
 An unknown key or a value that does not parse is ignored and logged.
-`dm_settings_boot()` (called from `main.m`, after `env.txt` is loaded) exports the player's, the Info.plist's and the game's default values as environment variables for the code that reads them itself; a registry default is the code's own default and is not exported.
+`dm_settings_boot()` (called from `main.m`, after `env.txt` is loaded) exports the player's, the Info.plist's and the game's default values as environment variables for the code that reads them itself; a registry default is the code's own default and is not exported (unless the entry has `exportDefault`), and neither is a frame rate dependent default (the front end hands that one to the graphics layer itself).
 "Restore defaults" on a page removes the player's values for that page.
 "Restore all defaults" removes them for every page; it asks for a second press so one stray tap does not do it.
 Keys that the environment sets are left alone by both.
@@ -185,7 +222,7 @@ The game's HD rumble reaches the screen's two settings through three small piece
 ## Tests and checks
 
 `make -C dm/ios/tests run` builds and runs `t_settings.m` and `t_haptics.c` on the Mac.
-`t_settings.m` checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset and reset-all, the restart-pending state, per-game sections and defaults, capabilities, text limits and the slider display.
+`t_settings.m` checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset and reset-all, the restart-pending state, per-game sections and defaults, capabilities, text limits, the slider display, the frame rate dependent defaults (Upscaling at 30 and 60 fps, a stored choice winning over them) and the flexible pipelines row.
 `t_haptics.c` checks the amplitude and frequency mapping.
 `make -C dm/host/tests GAME=<title id> run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
 `python3 -I dm/games/tests/test_settings_defaults.py` checks the per-game files.

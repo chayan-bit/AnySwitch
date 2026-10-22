@@ -27,6 +27,7 @@ void dm_gamepad_set_chord(void (^handler)(void));
 void mtl_letterbox_set(int ambient);
 void mtl_ambient_level_set(float v);
 void mtl_upscale_set(int sharp, float amount);
+int mtl_fps_target(void);   // nvn_mtl.m: the frame rate the game runs at, 30 or 60 (its own present interval, or the profile's / the player's frame cap)
 CGRect dm_gamepad_hud_frame(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
@@ -42,6 +43,7 @@ static void front_ios_settings(void) {
     g_controls_auto = [[s valueForKey:@"DM_CONTROLS_LAYOUT"] isEqualToString:@"auto"];
     g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
+    s.frameTarget = mtl_fps_target();   // Upscaling defaults to Sharp at 30 fps, Bilinear at 60 (DmSettings.m); the target is polled below while the game runs
     mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
     dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
@@ -105,6 +107,9 @@ static UILabel *front_ios_fps_label(void);
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
     __weak DmRootVC *w = self; dm_gamepad_set_chord(^{ [w toggleSettings]; });   // + and - held together on a controller
+    // The frame rate target is not known at start: a game that runs at 30 asks for present interval 2, and the host reports 30 once it has held it for a second (hle_nvn.c). The store moves the
+    // frame-rate-dependent defaults (Upscaling) and announces the ones that change, which settingChanged: applies like a choice made in the screen
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { (void)t; DmSettings.shared.frameTarget = mtl_fps_target(); }];
 }
 - (UIButton *)makeGear {   // right of the frame-rate counter: a 44 pt target with a 32 pt translucent disc
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];

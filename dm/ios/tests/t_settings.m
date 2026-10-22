@@ -41,7 +41,7 @@ int main(void) { @autoreleasepool {
       CHECK(n == want, "%lu of %lu entries parsed", (unsigned long)n, (unsigned long)want);
       for (NSString *k in @[@"DM_LETTERBOX", @"DM_AMBIENT_LEVEL", @"DM_CONTROLS_LAYOUT", @"DM_CONTROLS_SCALE", @"DM_CONTROLS_OPACITY", @"DM_SHOW_FPS", @"DM_UPSCALE", @"DM_UPSCALE_SHARPNESS"]) CHECK([seen containsObject:k], "missing %s", k.UTF8String);
       EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient"); EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1"); EQ([s valueForKey:@"DM_SHOW_FPS"], @"0"); EQ([s valueForKey:@"DM_AMBIENT_LEVEL"], @"0.5");
-      EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear"); EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"0.8"); }   // bilinear stays the default until the sharp path is measured on a device
+      EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear"); EQ([s valueForKey:@"DM_UPSCALE_SHARPNESS"], @"0.8"); }   // with no frame target known the registry default is bilinear; section 16 covers the 30 fps default
 
     // 2. precedence: environment > user > plist > default
     { NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile();
@@ -201,7 +201,7 @@ int main(void) { @autoreleasepool {
       DmSettings *h = makeEx(builtin, nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), env, @{}); CHECK([h setValue:@"30" forKey:@"DM_FPS_TARGET"], "stored anyway"); EQ([h valueForKey:@"DM_FPS_TARGET"], @"30"); }
 
     // 14. the registry's own consistency: every `requires` names a known capability, every entry has a label and a detail, every slider default is inside its range
-    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", @"internalres", nil];
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", @"internalres", @"nvn", nil];
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) {
           if (st.requires) CHECK([known containsObject:st.requires], "%s requires unknown %s", st.key.UTF8String, st.requires.UTF8String);
           CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);
@@ -307,6 +307,59 @@ int main(void) { @autoreleasepool {
           DmSetting *dep = find(s, st.enabledWhenKey); CHECK(dep != nil && dep != st, "%s depends on a registered other setting", st.key.UTF8String);
           CHECK([dep normalized:st.enabledEquals ?: st.enabledNotEquals] != nil, "%s: the condition value parses for %s", st.key.UTF8String, dep.key.UTF8String);
           CHECK(dep.enabledWhenKey == nil, "%s: no chain of conditions", st.key.UTF8String); } }
+
+    // 16. defaults that follow the game's frame rate target (Upscaling: Sharp at 30 fps, Bilinear at 60) and a default that applies from the start (Flexible pipelines: on)
+    { NSMutableDictionary *env = [NSMutableDictionary dictionary]; DmSettings *s = make(builtin, tmpFile(), env, @{}); DmSetting *up = find(s, @"DM_UPSCALE");
+      CHECK(up.defaultAtFps.count == 1 && [up.defaultAtFps[@"30"] isEqualToString:@"sharp"], "the registry names Sharp for 30 fps"); EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear");
+      s.frameTarget = 60; EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear"); s.frameTarget = 30; EQ([s valueForKey:@"DM_UPSCALE"], @"sharp"); CHECK([s sourceForKey:@"DM_UPSCALE"] == DmSourceDefault, "a default, not the user's choice");
+      EQ([s defaultValueForKey:@"DM_UPSCALE"], @"sharp"); CHECK([s isEnabled:find(s, @"DM_UPSCALE_SHARPNESS")], "its sharpening follows the effective value");
+      EQ(env[@"DM_UPSCALE"], nil);   // a default of the code's, not exported
+      s.frameTarget = 0; EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear"); s.frameTarget = 24; EQ([s valueForKey:@"DM_UPSCALE"], @"bilinear");   // unknown or unlisted: the plain default
+      // a change of the target is announced for the keys it moves, once, and only when the effective value changes
+      NSMutableArray *got = [NSMutableArray array]; id tok = [NSNotificationCenter.defaultCenter addObserverForName:DmSettingDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [got addObject:[NSString stringWithFormat:@"%@=%@", n.object, n.userInfo[@"value"]]]; }];
+      s.frameTarget = 60; CHECK(got.count == 0, "24 to 60 moves nothing"); s.frameTarget = 30; s.frameTarget = 30; CHECK(got.count == 1 && [got[0] isEqualToString:@"DM_UPSCALE=sharp"], "30 announces Sharp once: %s", got.description.UTF8String);
+      s.frameTarget = 60; CHECK(got.count == 2 && [got[1] isEqualToString:@"DM_UPSCALE=bilinear"], "and back"); [NSNotificationCenter.defaultCenter removeObserver:tok];
+      // precedence: environment > user > Info.plist > game default > frame target default > registry default
+      DmSettings *ge = makeEx(builtin, @{@"DM_UPSCALE": @"bilinear"}, nil, tmpFile(), [NSMutableDictionary dictionary], @{}); ge.frameTarget = 30; EQ([ge valueForKey:@"DM_UPSCALE"], @"bilinear");   // a game's own default beats the frame target's
+      DmSettings *ev = make(builtin, tmpFile(), [@{@"DM_UPSCALE": @"bilinear"} mutableCopy], @{}); ev.frameTarget = 30; EQ([ev valueForKey:@"DM_UPSCALE"], @"bilinear"); CHECK([ev sourceForKey:@"DM_UPSCALE"] == DmSourceEnv, "env.txt wins");
+      // the user's choice, stored: wins over the new default in both directions, and survives a change of the target and a new launch, even when it equals the default of the moment
+      NSString *path = tmpFile(); DmSettings *u = make(builtin, path, [NSMutableDictionary dictionary], @{}); u.frameTarget = 60;
+      CHECK([u setValue:@"bilinear" forKey:@"DM_UPSCALE"], "chosen at 60 fps, where it is the default"); CHECK([u sourceForKey:@"DM_UPSCALE"] == DmSourceUser, "stored all the same");
+      u.frameTarget = 30; EQ([u valueForKey:@"DM_UPSCALE"], @"bilinear");
+      DmSettings *u2 = make(builtin, path, [NSMutableDictionary dictionary], @{}); u2.frameTarget = 30; EQ([u2 valueForKey:@"DM_UPSCALE"], @"bilinear"); CHECK([u2 sourceForKey:@"DM_UPSCALE"] == DmSourceUser, "a new launch keeps it");
+      u2.frameTarget = 60; CHECK([u2 setValue:@"sharp" forKey:@"DM_UPSCALE"], "sharp chosen at 60 fps"); u2.frameTarget = 30; EQ([u2 valueForKey:@"DM_UPSCALE"], @"sharp");
+      [u2 resetAll]; EQ([u2 valueForKey:@"DM_UPSCALE"], @"sharp"); CHECK([u2 sourceForKey:@"DM_UPSCALE"] == DmSourceDefault, "restore defaults drops the choice: the default of 30 fps is Sharp again");
+      u2.frameTarget = 60; EQ([u2 valueForKey:@"DM_UPSCALE"], @"bilinear");
+      // a file written before these defaults existed still loads as the user's choice
+      NSString *old = tmpFile(); [@"{\"version\": 1, \"values\": {\"DM_UPSCALE\": \"sharp\", \"DM_PSO_FLEX\": \"0\"}}" writeToFile:old atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      DmSettings *o = make(builtin, old, [NSMutableDictionary dictionary], @{}); o.frameTarget = 60; EQ([o valueForKey:@"DM_UPSCALE"], @"sharp"); EQ([o valueForKey:@"DM_PSO_FLEX"], @"0"); CHECK([o sourceForKey:@"DM_PSO_FLEX"] == DmSourceUser, "an earlier explicit choice beats the new default");
+      // other settings keep the old rule: a value equal to the default is not stored
+      CHECK([u setValue:@"ambient" forKey:@"DM_LETTERBOX"] && [u sourceForKey:@"DM_LETTERBOX"] == DmSourceDefault, "no copy of a plain default");
+      // entries that name a frame target default wrongly are skipped, not fatal
+      NSDictionary *bad = @{@"id": @"b", @"title": @"B", @"settings": @[
+          @{@"key": @"DM_B_OK", @"label": @"Ok", @"type": @"toggle", @"default": @"0", @"defaultAtFps": @{@"30": @"1"}},
+          @{@"key": @"DM_B_VAL", @"label": @"Val", @"type": @"toggle", @"default": @"0", @"defaultAtFps": @{@"30": @"maybe"}},
+          @{@"key": @"DM_B_KEY", @"label": @"Key", @"type": @"toggle", @"default": @"0", @"defaultAtFps": @{@"fast": @"1"}},
+          @{@"key": @"DM_B_RESTART", @"label": @"Restart", @"type": @"toggle", @"default": @"0", @"apply": @"restart", @"defaultAtFps": @{@"30": @"1"}},
+          @{@"key": @"DM_B_TYPE", @"label": @"Type", @"type": @"toggle", @"default": @"0", @"defaultAtFps": @"30"}]};
+      DmSettings *b = make(@[bad], tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK(find(b, @"DM_B_OK") != nil, "a valid one is kept");
+      for (NSString *k in @[@"DM_B_VAL", @"DM_B_KEY", @"DM_B_RESTART", @"DM_B_TYPE"]) CHECK(find(b, k) == nil, "%s skipped", k.UTF8String);
+      b.frameTarget = 30; EQ([b valueForKey:@"DM_B_OK"], @"1");
+      // the registry's own frame target defaults parse for their setting and belong to live settings
+      for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) for (NSString *fps in st.defaultAtFps) CHECK([st normalized:st.defaultAtFps[fps]] != nil && fps.intValue > 0 && !st.restart, "%s: default at %s fps", st.key.UTF8String, fps.UTF8String);
+
+      // Flexible pipelines: a toggle on the Performance page, on by default, applies on restart, only for games drawn with NVN, exported even as a default
+      DmSetting *fx = find(s, @"DM_PSO_FLEX"); CHECK(fx != nil && fx.type == DmSettingToggle && fx.restart, "flexible pipelines is a restart toggle");
+      EQ([s valueForKey:@"DM_PSO_FLEX"], @"1"); CHECK([s boolForKey:@"DM_PSO_FLEX"] && [s sourceForKey:@"DM_PSO_FLEX"] == DmSourceDefault, "on by default"); EQ(fx.label, @"Flexible pipelines"); EQ(fx.requires, @"nvn");
+      CHECK([fx.detail containsString:@"first launch"] && [fx.detail containsString:@"hitches"], "the detail names the trade: %s", fx.detail.UTF8String);
+      DmSection *perf = nil; for (DmSection *sec in s.sections) if ([sec.ident isEqualToString:@"performance"]) perf = sec; CHECK(perf && [perf.settings containsObject:fx], "on the Performance page");
+      DmSettings *vk = makeEx(builtin, nil, ^BOOL(NSString *c) { return ![c isEqualToString:@"nvn"]; }, tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK(![vk isAvailable:find(vk, @"DM_PSO_FLEX")], "hidden for a game that does not draw with NVN");
+      NSMutableDictionary *xe = [NSMutableDictionary dictionary]; DmSettings *x = make(builtin, tmpFile(), xe, @{}); [x applyToEnvironment]; EQ(xe[@"DM_PSO_FLEX"], @"1");   // the host's own default is off, so the app's default is handed over
+      EQ(xe[@"DM_UPSCALE"], nil); EQ(xe[@"DM_LETTERBOX"], nil);   // the other registry defaults stay unexported
+      CHECK([x setValue:@"0" forKey:@"DM_PSO_FLEX"], "turned off"); EQ(xe[@"DM_PSO_FLEX"], @"0"); CHECK([x restartPending], "applies after a restart");
+      NSMutableDictionary *xe2 = [@{@"DM_PSO_FLEX": @"0"} mutableCopy]; DmSettings *x2 = make(builtin, tmpFile(), xe2, @{}); [x2 applyToEnvironment]; EQ(xe2[@"DM_PSO_FLEX"], @"0"); CHECK(![x2 setValue:@"1" forKey:@"DM_PSO_FLEX"], "env.txt locks it");
+      DmSettings *xg = makeEx(builtin, @{@"DM_PSO_FLEX": @"0"}, nil, tmpFile(), [NSMutableDictionary dictionary], @{}); EQ([xg valueForKey:@"DM_PSO_FLEX"], @"0");   // a game that cannot use it ships its own default
+    }
 
     // 15. the toggle / slider track is at least 3:1 against the row and the pane in both styles (WCAG non-text contrast), computed from the colour values the screen uses
     { CHECK(fabs(dm_contrast(0xFFFFFF, 0x000000) - 21) < 1e-9 && fabs(dm_contrast(0x777777, 0xFFFFFF) - 4.48) < 0.01, "the formula matches the WCAG reference values");

@@ -186,7 +186,8 @@ A connected game controller hides the touch controls and keeps every button.
 
 **Settings.**
 The gear button at the top (or + and - held together on a controller, or Cmd and comma on a keyboard) opens the settings screen.
-It changes the bars around the picture, the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
+It changes the bars around the picture, how the picture is enlarged (Upscaling: Sharp by default for games that run at 30 fps, Bilinear for 60 fps ones), the flexible pipelines (on by default), the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
+A choice you make is kept over these defaults.
 
 **Shaking.**
 Shake the device (iPhone or iPad) to shake the controller, in games that read its motion.

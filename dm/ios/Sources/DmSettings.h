@@ -2,7 +2,7 @@
 // Foundation only, so the registry and the precedence order run in a plain Mac test (dm/ios/tests/t_settings.m).
 // Precedence, highest first: the environment (Documents/env.txt, which main.m turns into environment variables, or a real one: the developer's override, shown locked in the screen),
 // then the user's choice (Documents/settings.json, not the save folder), then the Info.plist default (the key named by the entry's plistKey),
-// then the game's own default (the "defaults" of dm/settings.json), then the entry's own default.
+// then the game's own default (the "defaults" of dm/settings.json), then the default the game's frame rate target gives it (`defaultAtFps`), then the entry's own default.
 // An entry with `requires` is shown only when the build has that capability (DmSettings.capabilities, set by the app from what the loaded game provides).
 #import <Foundation/Foundation.h>
 
@@ -24,6 +24,8 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 @property (nonatomic, readonly) NSString *requires;                 // capability the build must have for the row to be shown ("fstep": the frame-step stubs), or nil
 @property (nonatomic, readonly) NSString *enabledWhenKey, *enabledEquals, *enabledNotEquals;   // `enabledWhen`: {"key": "DM_X", "equals": "v"} or {"key": "DM_X", "notEquals": "v"}: the entry has an effect only then, else the screen shows it disabled (nil when it always has one)
 @property (nonatomic, readonly) NSString *def;                      // registry default as a string
+@property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *defaultAtFps;   // `defaultAtFps`: {"30": "sharp"}: the default while the game's frame rate target (DmSettings.frameTarget) is that many fps; any other target uses `def`. Live entries only. Nil when the default does not depend on it
+@property (nonatomic, readonly) BOOL exportDefault;                 // `exportDefault`: the default is exported to the environment like a player's value, because the code that reads the key has another default of its own (off)
 @property (nonatomic, readonly) BOOL restart;                       // applies on the next launch (the screen offers a restart), else live
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err;
 - (NSString *)normalized:(id)raw;      // a raw value (env, plist, file) as this setting stores it: toggles "0" / "1", choices one of the options, sliders clamped to the range and the step, text trimmed and cut to its limits; nil when it does not parse
@@ -49,6 +51,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
 // gameDefaults: {key: value} replacing the registry default for this game; caps: whether the build has a capability (nil: every row is shown)
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *capability))caps storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
+@property (nonatomic) int frameTarget;   // the game's frame rate target (30 or 60; 0 = not known), set by the app as the host reports it (it can change while the game runs). Moves the default of every `defaultAtFps` entry, and announces (DmSettingDidChangeNotification) each one whose effective value changes with it
 @property (nonatomic, copy) BOOL (^capabilities)(NSString *capability);   // the app sets it once it can tell what the game provides; read each time the screen is built
 @property (nonatomic, readonly) NSArray<DmSection *> *sections;           // every page of the registry; sections with the same id are merged (a game's entries join the built-in page)
 @property (nonatomic, readonly) NSArray<DmSection *> *visibleSections;    // the pages with at least one available entry
@@ -58,11 +61,11 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 - (BOOL)isAvailable:(DmSetting *)s;                                       // the build has what the entry requires
 - (NSArray<DmSetting *> *)visibleSettingsInSection:(DmSection *)s;
 - (NSString *)valueForKey:(NSString *)key;                // the effective value, normalized
-- (NSString *)defaultValueForKey:(NSString *)key;         // the value when the user has chosen none and the environment sets none: Info.plist, else the game's default, else the registry's
+- (NSString *)defaultValueForKey:(NSString *)key;         // the value when the user has chosen none and the environment sets none: Info.plist, else the game's default, else the one for the frame rate target, else the registry's
 - (BOOL)boolForKey:(NSString *)key;
 - (double)doubleForKey:(NSString *)key;
 - (DmSettingSource)sourceForKey:(NSString *)key;
-- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse. A value equal to the default is not stored (the user's choice is dropped), so a later change of the default still applies
+- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse. A value equal to the default is not stored (the user's choice is dropped), so a later change of the default still applies (a `defaultAtFps` entry keeps every choice: its default moves with the frame rate target)
 - (void)resetSection:(DmSection *)s;                       // drops the user's choices of the section
 - (void)resetAll;                                          // drops every choice of every section; each changed key is announced once, keys the environment sets are left alone
 - (BOOL)restartPending;                                    // a restart-only setting differs from what this launch started with
