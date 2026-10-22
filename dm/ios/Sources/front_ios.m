@@ -1,8 +1,8 @@
 // iOS front end (the iOS implementation of front.h): the Metal view + a full-screen virtual gamepad layer (DmGamepad.m).
 // The picture is the game's 16:9 frame fitted into the screen. With letterbox=ambient (default) the Metal view is the whole screen and the present stage fills the bars with the blurred live frame (dm/gfx/nvn/nvn_ambient.h);
 // with letterbox=black the view is just the 16:9 rectangle on a black screen, as before. Controls sit in the bars when they are tall enough (controls layout auto), else over the picture (DmGamepad.m).
-// Settings (DmSettings.m, the in-app settings screen DmSettingsVC.m; gear button at the top, the + and - buttons held together, or Cmd-,): DM_LETTERBOX = ambient | black, DM_CONTROLS_LAYOUT = auto | overlay, DM_CONTROLS_SCALE, DM_CONTROLS_OPACITY, DM_AMBIENT_LEVEL, DM_SHOW_FPS.
-// Precedence: Documents/env.txt, then the player's choice in Documents/settings.json, then the Info.plist keys (project.yml), then the defaults. Changes in the screen apply at once (settingChanged:).
+// Settings (DmSettings.m, the in-app settings screen DmSettingsVC.m; gear button at the top, the + and - buttons held together, or Cmd-,); the registry in DmSettings.m lists every setting and whether it applies live or on the next start.
+// Precedence: Documents/env.txt, then the player's choice in Documents/settings.json, then the Info.plist keys (project.yml), then the game profile's defaults (dm/settings.json), then the registry defaults. Changes in the screen apply at once (settingChanged:).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -10,6 +10,7 @@
 #import <AVFAudio/AVFAudio.h>
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
+#import "DmHaptics.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -20,6 +21,7 @@ void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
 void dm_gamepad_scale(float s);
 void dm_gamepad_opacity(float o);
+void dm_gamepad_shake_g(double g);
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 void dm_gamepad_set_chord(void (^handler)(void));
 void mtl_letterbox_set(int ambient);
@@ -39,6 +41,9 @@ static void front_ios_settings(void) {
     g_controls_auto = [[s valueForKey:@"DM_CONTROLS_LAYOUT"] isEqualToString:@"auto"];
     g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
+    dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
+    dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
+    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
     LOG("front end: letterbox %s, controls layout %s, controls scale %.2f, opacity %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale, g_controls_opacity);
 }
 static void front_ios_power_watch(void);
@@ -140,6 +145,10 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
     else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
+    else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);
+    else if ([k isEqualToString:@"DM_VOLUME"]) dm_audio_volume(v.doubleValue);
+    else if ([k isEqualToString:@"DM_VIBRATION"]) dm_haptics_enable([v isEqualToString:@"1"]);
+    else if ([k isEqualToString:@"DM_VIBRATION_STRENGTH"]) dm_haptics_strength(v.floatValue);
     else if ([k isEqualToString:@"DM_SHOW_FPS"]) {
         BOOL want = [v isEqualToString:@"1"];
         if (want && !self.fps) { self.fps = front_ios_fps_label(); [self.view insertSubview:self.fps belowSubview:self.gear]; [self.view setNeedsLayout]; }
@@ -235,21 +244,33 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     return 1;
 }
 
-// Save write failed (most likely the phone's storage is full): show a notice on the main thread without blocking the game. hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
+// A notice the player has to see (front.h): an alert on the main thread, without blocking the caller.
+// Called at boot (shader libraries missing, nvn_mtl.m) the key window may not exist yet, so it retries for a few seconds instead of dropping the alert
+static void notice_show(NSString *t, NSString *m, int tries) {
+    UIViewController *vc = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    if (!vc) {
+        if (tries > 0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{ notice_show(t, m, tries - 1); }); return; }
+        LOG("[RED] front end: no window for the alert \"%s\"", t.UTF8String); return;
+    }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [vc presentViewController:a animated:YES completion:nil];
+}
+void front_notice(const char *title, const char *msg) {
+    LOG("front end: telling the player: %s: %s", title, msg);
+    NSString *t = @(title), *m = @(msg);
+    dispatch_async(dispatch_get_main_queue(), ^{ notice_show(t, m, 20); });
+}
+
+// Save write failed (most likely the phone's storage is full). hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
 // the iOS front end used not to implement it, so there was only a log line and the player never learned that progress was not being saved
 void front_save_failed(int err) {
-    LOG("front end: save data write failed errno=%d, telling the player", err);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *vc = nil;
-        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
-        while (vc.presentedViewController) vc = vc.presentedViewController;
-        if (!vc) { LOG("[RED] front end: no window for the save-failure alert errno=%d", err); return; }
-        NSString *m = err == ENOSPC ? @"Storage is full, so progress was not saved. Free up space and save again."
-                                    : [NSString stringWithFormat:@"Saving failed (errno %d); progress was not saved.", err];
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Save failed" message:m preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:a animated:YES completion:nil];
-    });
+    char m[128];
+    if (err == ENOSPC) snprintf(m, sizeof m, "Storage is full, so progress was not saved. Free up space and save again.");
+    else snprintf(m, sizeof m, "Saving failed (errno %d); progress was not saved.", err);
+    front_notice("Save failed", m);
 }
 
 // Audio session: the frames RemoteIO asks for in each callback follow the I/O buffer duration, about 21 ms by default on iOS (1024 frames at 48 kHz). The game keeps only 4 blocks × 5 ms = 20 ms in flight,

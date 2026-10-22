@@ -4,8 +4,9 @@ B = build
 # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 GAME_H = ../gen/$(GAME)/game_profile.h
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl $(B)/t_vib
 	$(B)/t_touch
+	$(B)/t_vib
 	$(B)/t_oe 2>/dev/null
 	$(B)/t_fs 2>/dev/null
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_commit_list
@@ -26,6 +27,8 @@ $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_touch.c ../hle_touch.c
+$(B)/t_vib: t_vib.c ../hle_vibration.c ../hle.h ../dm_input.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_vib.c
 $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_thread_leak.c
 $(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)

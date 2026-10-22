@@ -24,6 +24,12 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
 
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return a >= 0x1000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
 
+int dm_fps_lock_present(void) {
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
+        for (int k = 0; k < NLOCKS; k++) if (!strcmp(g_mod[i].build_id, k_locks[k].build)) return 1;
+    return 0;
+}
+
 void dm_fps_lock_tick(void) {
     static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], target; static uint8_t *base; static const char *src;
     if (state == -1) return;

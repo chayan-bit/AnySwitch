@@ -73,12 +73,16 @@ def build(script, msl, target_libs, out, platform, archs):
     d = json.load(open(script))
     shas = {}
     with cf.ThreadPoolExecutor(8) as ex:
-        fs = glob.glob(os.path.join(msl, '*.metallib'))
-        for p, h in zip(fs, ex.map(A.sha, fs)): shas[h] = os.path.basename(p)
+        fs = glob.glob(os.path.join(msl, '*.metallib')) + glob.glob(os.path.join(msl, 'pack', '*.metallib'))   # pack/<n>.metallib: dmsh_pack.py
+        for p, h in zip(fs, ex.map(A.sha, fs)): shas[h] = os.path.relpath(p, msl)
+    covered = A.pack_index(target_libs)   # the app does not ship the loose library of a packed key (build_ipa.sh): its pipelines would never be looked up
     names = {l['label']: shas[l['label'].upper()] for l in d['libraries'] if l['label'].upper() in shas}
+    names = {l: n for l, n in names.items() if n.startswith('pack/') or n[:-len('.metallib')] not in covered}
+    if any(n.startswith('pack/') for n in names.values()) and A.pack_index(msl) != covered:
+        sys.exit(f'[RED] the shader packs of {msl} and {target_libs} differ: rebuild both with the same dmsh_pack.py --per-pack and --hot')
     with tempfile.TemporaryDirectory() as w:
         with cf.ThreadPoolExecutor(os.cpu_count()) as ex:
-            paths = dict(zip(names, ex.map(lambda n: A.relink(n, target_libs, msl, w), names.values())))
+            paths = dict(zip(names, ex.map(lambda n: os.path.join(target_libs, n) if n.startswith('pack/') else A.relink(n, target_libs, msl, w), names.values())))   # packs are driver-linked already
         moved = {l for l, p in paths.items() if A.fn_hashes(p) != A.fn_hashes(os.path.join(target_libs, names[l]))} | {l['label'] for l in d['libraries'] if l['label'] not in names}
         gone = {'fnd:' + f['label'] for f in d['function_descriptors']['library_function_descriptors'] if f['library'] in moved}
         rp = d['pipeline_descriptors']['render_pipeline_descriptors']
