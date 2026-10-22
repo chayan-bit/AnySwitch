@@ -7819,7 +7819,8 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     // Keep the game picture's aspect ratio and center it, leaving black bars in the rest (no stretching when the screen ratio differs from the game's, e.g. iPhone about 19.5:9 versus the game's 16:9);
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
+    double pw = round(cw * s), ph = round(ch * s);   // the size first: cw * s can land a hair over the drawable (1920 * 2752 / 1920 = 2752.0000000000005), and floor of half the negative rest put the picture at x = -1, its last column off screen
+    MTLViewport vp = {floor((dw - pw) / 2), floor((dh - ph) / 2), pw, ph, 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
@@ -7852,7 +7853,8 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     }
     present_pipeline(dst.pixelFormat);
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
+    double pw = round(cw * s), ph = round(ch * s);   // the size first: cw * s can land a hair over the drawable (1920 * 2752 / 1920 = 2752.0000000000005), and floor of half the negative rest put the picture at x = -1, its last column off screen
+    MTLViewport vp = {floor((dw - pw) / 2), floor((dh - ph) / 2), pw, ph, 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     amb_u amb_uu; int amb = !full && amb_on() && amb_prepare_m4(cb, present_raw_src(src), cx, cy, cw, ch, dst, vp, uv_i, &amb_uu);
