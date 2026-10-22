@@ -20,6 +20,7 @@
 #import <CoreMotion/CoreMotion.h>
 #import <CoreText/CoreText.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include "dm.h"
 #include "dm_input.h"
 #include "front.h"
@@ -45,16 +46,17 @@ static void publish(void) {
 }
 
 // ---- Shaking the phone ----
-// The accelerometer at 60 Hz (no gyroscope, no permission prompt): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it exceeds DM_SHAKE_G
-// (1.5 G by default; Documents/env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole cycle)
+// The accelerometer at 60 Hz (no gyroscope, no permission prompt): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it exceeds the threshold
+// (DM_SHAKE_G, 1.5 G by default: the "Shake sensitivity" setting, dm_gamepad_shake_g; every sample reads the current value, so a change applies at once) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole cycle)
 // and shaking on keeps it going. Holding the phone and pressing the screen stays far below the threshold. Each detected shake is logged with its peak
 static CMMotionManager *g_motion;
+static _Atomic double g_shake_g = 1.5;   // read by the accelerometer queue on every sample, written on the main thread
+void dm_gamepad_shake_g(double g) { atomic_store_explicit(&g_shake_g, g >= 0.1 && g <= 10 ? g : 1.5, memory_order_relaxed); }   // main thread: the threshold in G (a lower number reacts to a gentler shake); out of range falls back to 1.5
 static void motion_start(void) {
     if (g_motion) return;
     g_motion = [CMMotionManager new];
     if (!g_motion.accelerometerAvailable) { LOG("front end: no accelerometer, shaking the phone does nothing"); return; }
-    const char *e = getenv("DM_SHAKE_G"); double thr = e && atof(e) > 0 ? atof(e) : 1.5;
-    LOG("front end: shaking the phone shakes the controller (threshold %.2f G)", thr);
+    LOG("front end: shaking the phone shakes the controller (threshold %.2f G)", atomic_load_explicit(&g_shake_g, memory_order_relaxed));
     g_motion.accelerometerUpdateInterval = 1.0 / 60;
     NSOperationQueue *q = [NSOperationQueue new]; q.maxConcurrentOperationCount = 1;
     __block double gx = 0, gy = 0, gz = 0, last = -1, peak = 0; __block BOOL init = NO;
@@ -64,7 +66,7 @@ static void motion_start(void) {
         if (!init) { gx = a.x; gy = a.y; gz = a.z; init = YES; }
         double dx = a.x - gx, dy = a.y - gy, dz = a.z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
         gx += (a.x - gx) * 0.02; gy += (a.y - gy) * 0.02; gz += (a.z - gz) * 0.02;
-        if (g > thr) { if (last < 0) peak = 0; last = d.timestamp; peak = fmax(peak, g); }
+        if (g > atomic_load_explicit(&g_shake_g, memory_order_relaxed)) { if (last < 0) peak = 0; last = d.timestamp; peak = fmax(peak, g); }
         BOOL on = last >= 0 && d.timestamp - last < 0.12;
         if (!on && last >= 0) { LOG("front end: phone shaken (peak %.1f G)", peak); last = -1; }
         uint64_t want = on ? DM_BTN_SHAKE : 0;
