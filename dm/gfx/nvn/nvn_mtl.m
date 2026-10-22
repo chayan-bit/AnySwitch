@@ -2782,20 +2782,34 @@ static FILE *pso_user_file(void) {
     if (path) g_pso_user = fopen(path.fileSystemRepresentation, "a");
     return g_pso_user;
 }
+// Passive learning: the log is on whenever there is a save directory (always on the device), and its lines go to a serial utility queue: the dedup against the shipped and earlier
+// lists (read once, on that queue) and the append never run on the submit thread. build_ipa.sh pulls it from a reachable device and folds its R records into the archive's first tier
+static uint64_t g_pu_lines, g_pu_bytes, g_pu_ns, g_pu_init_ns;   // written on the queue only; init: the one-time read of the shipped and earlier lists
+static void pso_user_write(const char *line);
 static void pso_user_record(const char *fmt, ...) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.pso-user", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    char *copy = strdup(line);
+    dispatch_async(q, ^{ @autoreleasepool { uint64_t t0 = bp_now(); pso_user_write(copy); free(copy); g_pu_ns += bp_now() - t0; } });
+}
+static void pso_user_write(const char *line) {
     FILE *f = pso_user_file();
     if (!f) return;
-    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
     if (!g_pso_user_seen) {
-        g_pso_user_seen = [NSMutableSet set];
+        uint64_t t0 = bp_now(); g_pso_user_seen = [NSMutableSet set];
         NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
         NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
         for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:old]; }
+        g_pu_init_ns = bp_now() - t0;
     }
     size_t ll = strlen(line); NSString *s = [[NSString alloc] initWithBytes:line length:ll && line[ll - 1] == '\n' ? ll - 1 : ll encoding:NSUTF8StringEncoding];   // Compared with the manifest file line by line (without the newline)
     if (!s || [g_pso_user_seen containsObject:s]) return;
     [g_pso_user_seen addObject:s]; fputs(line, f); fflush(f);
+    g_pu_lines++; g_pu_bytes += ll;
+    if (g_pu_lines % 100 == 0) MLOG("[pso-user] %llu new lines, %.1f KB appended to the pipeline log (%.1f us per line, plus %.1f ms once to read the lists; off the render thread)",
+                                    (unsigned long long)g_pu_lines, g_pu_bytes / 1024.0, (g_pu_ns - g_pu_init_ns) / 1e3 / g_pu_lines, g_pu_init_ns / 1e6);
 }
 // Build the library from a .metallib file without permanently occupying a file descriptor: newLibraryWithURL keeps that file open for as long as the library object lives (one per game shader - of the 258 descriptors the iOS app permanently holds in a run, 213 are these,
 // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
