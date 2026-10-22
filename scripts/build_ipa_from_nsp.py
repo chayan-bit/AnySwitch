@@ -699,11 +699,14 @@ def build_mac_host(repo, out, env, logs, g, devctl=False):
     """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's.
     devctl: a dev build with the dev input channel (DEVCTL=1, docs/dev-control.md), reused while the compile line and every source and header it reads are unchanged"""
     host, dev = repo / 'dm/host', ['DEVCTL=1'] if devctl else []
-    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
+    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h'], logs / 'mac_host_make.log', env=env, cwd=host)
     dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', *dev, 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
-    cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
+    cmd = shlex.split(line)
+    libs = [a for a in cmd if a.endswith('.a') and not os.path.isabs(a)]   # the dry run only prints the link line: build every library it names (read from the line, so a library added to the Makefile needs no change here)
+    if libs: run(['make', '-s', f'GAME={g.id}', *libs], logs / 'mac_host_make.log', env=env, cwd=host)
+    cmd[cmd.index('-o') + 1] = out
     kf, key = out.with_name(out.name + '.key'), None
     if devctl:
         key = fingerprint(cmd, ('files', host_inputs(repo) + [host / f'gen/{g.id}/game_profile.h'] + profile_files(g)), ('cmd', ['clang', '--version']), env=env)
