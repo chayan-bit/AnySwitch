@@ -64,6 +64,13 @@ with tempfile.TemporaryDirectory() as w:
     for want in ('00000000000000a1_b z0 fn=main0 arg_len=8 layer=1', '00000000000000a1_b z1 fn=main0_z arg_len=8 layer=1', '00000000000000b2_b z0 fn=main0 arg_len=24 layer=0',
                  '00000000000000c3_b z0 fn=main0 arg_len=0 layer=0'):
         assert want in on_n, f'{want} not in\n{on_n}'
+    # a folder without packs falls back to one library per shader, and says so at [RED] level (every boot program then opens its own file); packs deliberately off stay quiet
+    os.rename(os.path.join(d, 'pack'), os.path.join(d, 'pack_moved'))
+    miss = subprocess.run([os.path.join(HERE, 't_pack'), *args], capture_output=True, text=True, env=env)
+    quiet = subprocess.run([os.path.join(HERE, 't_pack'), *args], capture_output=True, text=True, env=dict(env, DM_SHADER_PACKS='off'))
+    os.rename(os.path.join(d, 'pack_moved'), os.path.join(d, 'pack'))
+    assert miss.returncode == 0 and re.search(r'\[RED\] no shader packs in \S+/pack: one library per shader', miss.stderr), miss.stderr
+    assert quiet.returncode == 0 and '[RED] no shader packs' not in quiet.stderr, quiet.stderr
     # --hot: the shaders of a harvest list (S lines, and the keys inside R records, first-use order; unknown keys ignored) fill the first pack, apart from the rest
     rec = (b'00000000000000b2_b' + bytes(6) + b'00000000000000c3_b' + bytes(70)).hex()
     hot = os.path.join(w, 'pso_user.tsv'); open(hot, 'w').write(f'S\t00000000000000c3_b\t0\nR\t{rec}\nS\tffffffffffffffff_b\t1\nS\t00000000000000a1_b\t2\n')
