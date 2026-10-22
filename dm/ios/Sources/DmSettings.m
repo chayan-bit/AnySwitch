@@ -136,7 +136,11 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
             slider(@"DM_CONTROLS_SCALE", @"DMControlsScale", @"Controls size", @"Size of the stick, the A, B, X, Y keys and the D-pad. Bigger controls reach up over the picture.", 0.75, 2.5, 0.05, @"1"),
             slider(@"DM_CONTROLS_OPACITY", @"DMControlsOpacity", @"Controls opacity", @"How see-through the touch controls are.", 0.3, 1.0, 0.05, @"1"),
             @{@"key": @"DM_SHAKE_G", @"label": @"Shake sensitivity", @"type": @"slider", @"min": @0.5, @"max": @4.0, @"step": @0.1, @"scale": @1, @"suffix": @" G", @"default": @"1.5",
-              @"detail": @"How hard the device has to be shaken to shake the controller. A lower number reacts to a gentler shake."}]},
+              @"detail": @"How hard the device has to be shaken to shake the controller. A lower number reacts to a gentler shake."},
+            @{@"key": @"DM_VIBRATION", @"label": @"Vibration", @"type": @"toggle", @"default": @"1", @"requires": @"haptics",
+              @"detail": @"Plays the game's rumble on the controller, or on the device when no controller is connected."},
+            @{@"key": @"DM_VIBRATION_STRENGTH", @"label": @"Vibration strength", @"type": @"slider", @"min": @0, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"requires": @"haptics",
+              @"detail": @"How strong the rumble feels. 100% is the game's own level."}]},
         @{@"id": @"audio", @"title": @"Audio", @"icon": @"speaker.wave.2", @"settings": @[
             slider(@"DM_VOLUME", @"DMVolume", @"Volume", @"The game's sound level. The device's own volume still applies on top.", 0, 1.0, 0.05, @"1")]},
         @{@"id": @"performance", @"title": @"Performance", @"icon": @"speedometer", @"settings": @[

@@ -10,6 +10,7 @@
 #import <AVFAudio/AVFAudio.h>
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
+#import "DmHaptics.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -41,7 +42,8 @@ static void front_ios_settings(void) {
     g_controls_scale = (float)[s doubleForKey:@"DM_CONTROLS_SCALE"]; g_controls_opacity = (float)[s doubleForKey:@"DM_CONTROLS_OPACITY"];   // clamped again in DmGamepad.m
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
-    s.capabilities = ^BOOL(NSString *c) { return dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale)
+    dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
+    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
     LOG("front end: letterbox %s, controls layout %s, controls scale %.2f, opacity %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale, g_controls_opacity);
 }
 static void front_ios_power_watch(void);
@@ -145,6 +147,8 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
     else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);
     else if ([k isEqualToString:@"DM_VOLUME"]) dm_audio_volume(v.doubleValue);
+    else if ([k isEqualToString:@"DM_VIBRATION"]) dm_haptics_enable([v isEqualToString:@"1"]);
+    else if ([k isEqualToString:@"DM_VIBRATION_STRENGTH"]) dm_haptics_strength(v.floatValue);
     else if ([k isEqualToString:@"DM_SHOW_FPS"]) {
         BOOL want = [v isEqualToString:@"1"];
         if (want && !self.fps) { self.fps = front_ios_fps_label(); [self.view insertSubview:self.fps belowSubview:self.gear]; [self.view setNeedsLayout]; }
