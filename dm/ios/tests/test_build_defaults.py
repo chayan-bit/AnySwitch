@@ -29,5 +29,7 @@ dmo = re.findall(r'^  DMO=(\S+); PSO_O=', SH, re.M)   # the PACK branch's, then 
 yml = (Path(__file__).resolve().parents[1] / 'project.yml').read_text(encoding='utf-8')
 assert dmo[-1:] == ['Gen/pack/profile'] and '"$GD/settings.json" "$DMO"/settings.json' in SH and '- path: Gen/pack ' in yml, 'the IPA bundles the game settings at pack/profile/settings.json'
 assert '@"pack/profile/settings.json"' in (SRC / 'DmSettings.m').read_text(encoding='utf-8'), 'DmSettings.m reads the game settings where the IPA puts them'
-print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile')
+assert '${CODE_DYLIB:-0}' in SH and '${CODE_DYLIB:-1}' not in SH and '"$P/Frameworks=$O/fw"' in SH, 'the code stays in the executable unless CODE_DYLIB=1, which ships Frameworks/code.dylib'
+assert 'privateFrameworksPath stringByAppendingPathComponent:@"code.dylib"' in (SRC / 'main.m').read_text(encoding='utf-8'), 'main.m points DM_CODE at Frameworks/code.dylib when the app ships it'
+print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile, code in the executable unless CODE_DYLIB=1')
 sys.exit(0)

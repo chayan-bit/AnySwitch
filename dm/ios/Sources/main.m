@@ -74,6 +74,8 @@ static int boot_env(void) {
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
     chdir(doc.fileSystemRepresentation);
+    NSString *fwcode = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"code.dylib"];   // the code linked as a dylib (build_ipa.sh CODE_DYLIB=1), not into this executable
+    if ([fm fileExistsAtPath:fwcode]) setenv("DM_CODE", fwcode.fileSystemRepresentation, 0);
     dm_pack_require(pack.fileSystemRepresentation);   // a pack this engine cannot boot: the reason in log.txt, exit 78 (as dmhost)
     if (dm_boot_game(pack.fileSystemRepresentation)) return 0;   // the rest of the environment from the pack, the profile, then module tables / relocation / takeover in the background, in parallel with UIKit startup
     g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(pack.fileSystemRepresentation); g_argc = 2;   // the same two arguments dm_boot_game gave the early start

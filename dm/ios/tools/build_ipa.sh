@@ -17,6 +17,8 @@
 #   PACK=<new folder> writes a game pack there instead of an IPA (docs/development.md "Game packs"): the same tables, pipeline archives and fonts, the code dylibs for iOS and the Mac
 #   (gen_embed.py --dylib), the iOS shader libraries and the Mac ones (MSL_MAC), the add-on content, the RomFS chunk store, icon and control data, then manifest.json
 #   (dm/tools/pack_manifest.py); big files enter as APFS clones (cp -c: no extra disk on the same volume), and nothing is built with Xcode
+#   CODE_DYLIB=1 links the rewritten modules into DmIOS.app/Frameworks/code.dylib (gen_embed.py --dylib --target ios) instead of the executable; main.m points DM_CODE at it,
+#   so the app maps its code the way a pack's code/ios.dylib is mapped (the install tool signs the dylib with the app)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 DM=$(cd .. && pwd)
@@ -63,7 +65,11 @@ else
   t "generate Gen/ (host sources, embedded modules, tables)"
   rm -rf Gen && mkdir -p Gen/pack/profile Gen/pack/pso/ios Gen/pack/meta || die "mkdir Gen"
   python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
-  F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"
+  F=; rm -rf "$O/fw"
+  if [ "${CODE_DYLIB:-0}" = 1 ]; then
+    mkdir -p "$O/fw" && python3 tools/gen_embed.py "$PATCHED" "$O/fw/embed.S" $MODS --title "$GAME" --dylib "$O/fw/code.dylib" --target ios > /dev/null || die "code dylib"
+    rm -f "$O/fw/embed.S"; echo '// CODE_DYLIB=1: the rewritten modules are in Frameworks/code.dylib' > Gen/embed.S; t "code: Frameworks/code.dylib (CODE_DYLIB=1)"
+  else F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"; fi
   echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
   DMO=Gen/pack/profile; PSO_O=Gen/pack/pso/ios; FONT_O=Gen/pack/font
 fi
@@ -220,6 +226,7 @@ if [ $PACKS = 1 ]; then   # the packer's AIR cache and every loose library a pac
   t "shader packs: $(ls "$MSL_IOS/$MSLDIR/pack/"*.metallib | wc -l | tr -d ' ') packs for $(grep -vc '^#' "$MSL_IOS/$MSLDIR/pack/index.tsv") shaders replace their loose libraries"
   [ -f "$MSL_MAC/$MSLDIR/pack/index.tsv" ] || t "[RED] no Mac shader packs ($MSL_MAC/$MSLDIR/pack): pipelines harvested on this Mac miss on the device"
 else t "no shader packs ($MSL_IOS/$MSLDIR/pack, SHADER_PACKS): one library per shader"; fi
+if [ "${CODE_DYLIB:-0}" = 1 ]; then MAPS+=("$P/Frameworks=$O/fw"); fi
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/pack/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
 if [ "$ROMFS_MODE" = store ]; then
   romstore_ready
