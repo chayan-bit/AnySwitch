@@ -12,3 +12,8 @@
 #define HEARTH_TILE_SIZE        220.0
 #define HEARTH_TILE_RADIUS      22.0
 #define HEARTH_TILE_SPACING     32.0
+#define HEARTH_TILE_FOCUS_SCALE 1.06    // the focused tile grows a little
+#define HEARTH_FOCUS_SECONDS    0.12    // focus moves and the tile's growth
+#define HEARTH_LAUNCH_SECONDS   0.3     // the launch zoom (Reduce Motion: a plain fade)
+#define HEARTH_BUTTON_SIZE      64.0    // the round system buttons under the tiles
+#define HEARTH_MARGIN           40.0    // the screen's side margins

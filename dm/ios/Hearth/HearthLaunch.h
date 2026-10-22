@@ -5,8 +5,9 @@
 
 HearthLibrary *hearth_library(void);
 HearthGame *hearth_running_game(void);   // nil while no game was launched in this process
-// Launch g in this process (Home's tile action). A refused pack shows its reason; with another game running the app restarts straight into g
-void hearth_launch(HearthGame *g, UIWindow *window);
+// Launch g in this process (Home's tile action). A refused pack shows its reason; with another game running the app restarts straight into g.
+// The game boots at once (the host loads in the background); zoom, when given, plays Home's launch animation meanwhile and calls done when the game's screen may replace Home
+void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void)));
 // End the running game: next.json says Home, the app asks iOS to open it again, then exits (spike H2: back in about 0.2 s)
 void hearth_close(void);
 // The confirmation the game's Home button shows until the Home overlay exists (step 6)

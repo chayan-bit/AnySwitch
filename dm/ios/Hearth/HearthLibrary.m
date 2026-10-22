@@ -2,6 +2,9 @@
 #import "HearthLibrary.h"
 #include <stdlib.h>
 #include "boot.h"
+#include <TargetConditionals.h>
+
+#define HEARTH_PLATFORM (TARGET_OS_IPHONE ? "ios" : "macos")   // the code a pack carries for this platform, as boot.m names it
 
 @implementation HearthGame
 @end
@@ -41,8 +44,8 @@ static void nacp_read(NSString *path, HearthGame *g) {
     nacp_read([root stringByAppendingPathComponent:@"meta/control.nacp"], g);
     NSString *icon = [root stringByAppendingPathComponent:@"meta/icon.jpg"];
     if ([NSFileManager.defaultManager fileExistsAtPath:icon]) g.iconPath = icon;
-    NSString *code = [_bundleRoot stringByAppendingFormat:@"/Frameworks/%@.dylib", g.titleId];
-    if ([NSFileManager.defaultManager fileExistsAtPath:code]) g.codePath = code;
+    NSString *inApp = [_bundleRoot stringByAppendingFormat:@"/Frameworks/%@.dylib", g.titleId];
+    if ([NSFileManager.defaultManager fileExistsAtPath:inApp]) g.codePath = inApp;   // the bundled game's code; an imported game's fallback (check: decides)
     if (bundled) {   // the single-game app's game files stay where they were installed
         for (NSString *rel in @[@"romfs.dmstore", @"romfs"]) {
             NSString *p = [_documentsDir stringByAppendingPathComponent:rel];
@@ -63,18 +66,37 @@ static NSString *stamp(NSString *p) {
     NSDictionary *a = [NSFileManager.defaultManager attributesOfItemAtPath:p error:nil];
     return a ? [NSString stringWithFormat:@"%@:%.6f", a[NSFileSize], [a[NSFileModificationDate] timeIntervalSince1970]] : @"-";
 }
+// An imported game's own code is used when it is signed for this app; otherwise the in-app copy, when the build has one; otherwise the game needs signing
 - (void)check:(HearthGame *)g {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *own = g.bundled ? nil : [g.root stringByAppendingFormat:@"/code/%s.dylib", HEARTH_PLATFORM];
+    if (own && ![fm fileExistsAtPath:own]) own = nil;
     NSString *key = [@[stamp([g.root stringByAppendingPathComponent:@"manifest.json"]), stamp([g.root stringByAppendingPathComponent:@"profile/game.json"]),
-                       g.codePath ? stamp(g.codePath) : @"embedded", g.romfsPath ?: @"-"] componentsJoinedByString:@" "];
+                       g.codePath ? stamp(g.codePath) : @"embedded", own ? stamp(own) : @"-", g.romfsPath ?: @"-"] componentsJoinedByString:@" "];
     NSArray *c = _checked[g.root];
     if (![c[0] isEqual:key]) {
+        NSString *bad = own && _bundleId ? hearth_code_mismatch(_appSigner, _bundleId, [HearthSigner signerOf:own]) : nil;
+        BOOL useOwn = own && (!bad || !g.codePath);
+        NSString *code = useOwn ? nil : g.codePath;   // nil: dm_pack_check looks at the pack's own code (or this executable's)
         char why[1024] = "", *oc, *orf;
-        env_swap("DM_CODE", g.codePath, &oc); env_swap("DM_ROMFS", g.romfsPath, &orf);
+        env_swap("DM_CODE", code, &oc); env_swap("DM_ROMFS", g.romfsPath, &orf);
         int r = dm_pack_check(g.root.fileSystemRepresentation, why, sizeof why);
         env_back("DM_CODE", oc); env_back("DM_ROMFS", orf);
-        c = @[key, @(r), @(why)]; _checked[g.root] = c;
+        NSString *text = @(why);
+        if (!r && useOwn && bad) { r = HEARTH_NEEDS_SIGNING; text = [NSString stringWithFormat:@"%@: %@", g.titleId, bad]; }
+        c = @[key, @(r), text, code ?: @""]; _checked[g.root] = c;
     }
-    g.reason = [c[1] intValue]; g.why = g.reason ? c[2] : nil;
+    g.reason = [c[1] intValue]; g.why = g.reason ? c[2] : nil; g.codePath = [c[3] length] ? c[3] : nil;
+}
+
+- (NSString *)statePath:(HearthGame *)g { return [_supportDir stringByAppendingFormat:@"/State/%@.json", g.titleId]; }
+- (void)markPlayed:(HearthGame *)g {
+    NSString *p = [self statePath:g];
+    NSDictionary *old = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:p] ?: NSData.data options:0 error:nil];
+    NSMutableDictionary *st = [old isKindOfClass:NSDictionary.class] ? old.mutableCopy : [NSMutableDictionary dictionary];
+    st[@"lastPlayed"] = @(NSDate.date.timeIntervalSince1970); g.lastPlayed = [st[@"lastPlayed"] doubleValue];
+    [NSFileManager.defaultManager createDirectoryAtPath:p.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    [[NSJSONSerialization dataWithJSONObject:st options:0 error:nil] writeToFile:p atomically:YES];
 }
 
 - (NSArray<HearthGame *> *)scan {
@@ -87,6 +109,12 @@ static NSString *stamp(NSString *p) {
         NSString *r = [gd stringByAppendingPathComponent:d];
         if ([fm fileExistsAtPath:[r stringByAppendingPathComponent:@"manifest.json"]]) [out addObject:[self gameAt:r bundled:NO]];
     }
+    for (HearthGame *g in out) {
+        NSDictionary *st = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[self statePath:g]] ?: NSData.data options:0 error:nil];
+        g.lastPlayed = [st isKindOfClass:NSDictionary.class] && [st[@"lastPlayed"] isKindOfClass:NSNumber.class] ? [st[@"lastPlayed"] doubleValue] : 0;
+    }
+    [out sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(HearthGame *a, HearthGame *b) {   // last played first; the never played keep the scan order
+        return a.lastPlayed == b.lastPlayed ? NSOrderedSame : a.lastPlayed > b.lastPlayed ? NSOrderedAscending : NSOrderedDescending; }];
     return out;
 }
 - (HearthGame *)gameWithId:(NSString *)titleId {

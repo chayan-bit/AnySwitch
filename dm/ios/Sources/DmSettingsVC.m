@@ -4,6 +4,7 @@
 #import "DmSettingsViews.h"
 #import "DmSettingsEditor.h"
 #import "DmPadBits.h"
+#import "DmRepeat.h"
 
 static void on_trait(UIView *v, void (^apply)(void));
 typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight };
@@ -15,10 +16,10 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     NSMutableArray<DmCategoryView *> *_cats; NSMutableArray<DmRowView *> *_rows; BOOL _hasRestartRow;
     UILabel *_head, *_paneTitle; UIButton *_close; UIView *_catBox, *_panel, *_clip; UIScrollView *_scroll; DmHintBar *_hints;
     DmFocusView *_catRing, *_rowRing;
-    uint64_t _prev; BOOL _baselined; Dir _held; NSTimer *_repeat; NSArray *_shownHints;
+    uint64_t _prev; BOOL _baselined; DmRepeat *_repeat; NSArray *_shownHints;
 }
 - (instancetype)initWithSettings:(DmSettings *)s size:(CGSize)size {
-    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _secs = s.visibleSections; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; }
+    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _secs = s.visibleSections; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; _repeat = [DmRepeat new]; }
     return self;
 }
 - (NSInteger)section { return _section; }
@@ -61,7 +62,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     apply();
     [v registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withHandler:^(__kindof id<UITraitEnvironment> e, UITraitCollection *p) { (void)e; (void)p; apply(); }];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat invalidate]; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self becomeFirstResponder]; }
 
 - (DmSection *)currentSection { return _secs[(NSUInteger)_section]; }
@@ -277,18 +278,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     if (m & 1ull << DMB_RIGHT || lx > 20000) return DirRight;
     return DirNone;
 }
-- (void)stopRepeat { [_repeat invalidate]; _repeat = nil; _held = DirNone; }
-- (void)startRepeat:(Dir)d {
-    [self stopRepeat]; _held = d;
-    __weak DmSettingsVC *w = self; __block void (^tick)(NSTimeInterval);
-    tick = ^(NSTimeInterval after) {
-        DmSettingsVC *s = w; if (!s) return;
-        s->_repeat = [NSTimer scheduledTimerWithTimeInterval:after repeats:NO block:^(NSTimer *t) {
-            DmSettingsVC *s2 = w; if (!s2 || s2->_held != d) { tick = nil; return; }
-            [s2 step:d]; tick(s2->_inPane && (d == DirLeft || d == DirRight) ? 0.07 : 0.15);
-        }];
-    };
-    tick(0.4);
+- (void)startRepeat:(Dir)d {   // sliders and choices change faster than the focus moves
+    __weak DmSettingsVC *w = self;
+    [_repeat hold:d step:^NSTimeInterval { DmSettingsVC *s = w; [s step:d]; return s && s->_inPane && (d == DirLeft || d == DirRight) ? 0.07 : DM_REPEAT_NEXT; }];
 }
 - (void)padState:(uint64_t)m lx:(int32_t)lx ly:(int32_t)ly {
     if (_editing) {   // the text editor is up: the controller does nothing but B, which cancels it once released
@@ -296,9 +288,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     }
     Dir d = dir_of(m, lx, ly);
     uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_L | 1ull << DMB_R | 1ull << DMB_ZL | 1ull << DMB_ZR);
-    if (!_baselined) { _baselined = YES; _prev = want; _held = d; return; }   // what is held when the screen opens (the chord's buttons, a direction) does nothing until it is released
+    if (!_baselined) { _baselined = YES; _prev = want; if (d != DirNone) [_repeat hold:d step:nil]; return; }   // what is held when the screen opens (the chord's buttons, a direction) does nothing until it is released
     uint64_t up = want & ~_prev; _prev = want;
-    if (d != _held) { [self stopRepeat]; if (d != DirNone) { [self step:d]; [self startRepeat:d]; } }
+    if (d != (Dir)_repeat.held) { [_repeat stop]; if (d != DirNone) { [self step:d]; [self startRepeat:d]; } }
     if (up & 1ull << DMB_A) [self accept];
     if (up & 1ull << DMB_B) [self back];
     if (up & (1ull << DMB_L | 1ull << DMB_ZL)) [self page:-1];

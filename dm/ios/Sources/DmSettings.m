@@ -470,6 +470,9 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
     NSMutableArray *h = [NSMutableArray array];
     if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
     if (kind == DmFocusEditor) return @[];   // the editor panel has its own Cancel and Save buttons; a footer would sit behind the soft keyboard
+    if (kind == DmFocusHomeGame) return @[@[@"A", @"Start"]];   // Home has no Back: B does nothing there
+    if (kind == DmFocusHomeBlocked) return @[@[@"A", @"Details"]];
+    if (kind == DmFocusHomeButton) return @[@[@"A", @"Open"]];
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;
@@ -478,7 +481,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
         case DmFocusRestore: [h addObject:@[@"A", @"Restore"]]; break;
         case DmFocusRestoreAll: [h addObject:@[@"A", armed ? @"Confirm" : @"Restore"]]; break;
         case DmFocusRestart: [h addObject:@[@"A", @"Restart"]]; break;
-        case DmFocusCategory: case DmFocusEditor: break;
+        default: break;
     }
     [h addObject:@[@"B", @"Back"]]; [h addObject:@[@"L R", @"Category"]];
     return h;

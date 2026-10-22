@@ -513,13 +513,17 @@ static void read_pad(GCExtendedGamepad *g) {
         });
     });
 }
-- (void)padsChanged {
+static BOOL pads_attach(void) {   // every connected controller reports to read_pad; NO when none is connected
     BOOL any = NO;
     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
         any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
         read_pad(c.extendedGamepad);
     }
     if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+    return any;
+}
+- (void)padsChanged {
+    BOOL any = pads_attach();
     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
 }
 @end
@@ -537,6 +541,15 @@ void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_
     [g_view reset];
     publish();
     if (handler) { pthread_mutex_lock(&g_mu); uint64_t m = g_pad_btn; int32_t lx = g_pad_lx, ly = g_pad_ly; pthread_mutex_unlock(&g_mu); handler(m, lx, ly); }
+}
+// Main thread, once: controllers report even while no game view exists (Hearth's Home takes them through dm_gamepad_set_capture)
+void dm_gamepad_watch(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSNotificationName n in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
+            [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; pads_attach(); }];
+        pads_attach();
+    });
 }
 void dm_gamepad_set_chord(void (^handler)(void)) { g_chord = [handler copy]; }   // main thread: called once when + and - have been held together for 0.8 s
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")

@@ -83,6 +83,7 @@ int hearth_boot_game(HearthGame *g) {
     if (dm_boot_game(pack.fileSystemRepresentation)) return 0;   // a refused pack: the reason is in the game's log, and Home stays
     g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(pack.fileSystemRepresentation); g_argc = 2;   // the same two arguments dm_boot_game gave the early start
     g_boot_ok = 1;
+    [lib markPlayed:g];   // Home lists the last played first
     if (NSThread.isMainThread && UIApplication.sharedApplication)   // launched from Home: the window exists already (a launch intent has none yet; the scene applies it)
         for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) if ([sc isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)sc).windows) apply_appearance(w);
     return 1;
@@ -116,6 +117,24 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 }
 @end
 
+// DM_TOUCH_LOG=1 (env.txt diagnostics): every touch that begins or ends, with its place and the view under it, in the game's log. env.txt is applied when a game boots,
+// so the variable is read per event, not once (the first touch lands on Home, before it is set).
+// It is there to explain input nobody remembers giving (a Close that came from nowhere): the log then shows whether a touch reached the app at that moment
+@interface HearthWindow : UIWindow
+@end
+@implementation HearthWindow
+- (void)sendEvent:(UIEvent *)e {
+    const char *on = e.type == UIEventTypeTouches ? getenv("DM_TOUCH_LOG") : NULL;
+    if (on && atoi(on)) for (UITouch *t in e.allTouches) {
+        if (t.phase != UITouchPhaseBegan && t.phase != UITouchPhaseEnded && t.phase != UITouchPhaseCancelled) continue;
+        CGPoint p = [t locationInView:self];
+        fprintf(stderr, "touch: %s at %.0f,%.0f on %s, t=%.3f s\n", t.phase == UITouchPhaseBegan ? "down" : t.phase == UITouchPhaseEnded ? "up" : "cancelled", p.x, p.y,
+                NSStringFromClass(t.view.class).UTF8String, now_s() - g_t0);
+    }
+    [super sendEvent:e];
+}
+@end
+
 // Scene lifecycle: create the window + hand focus events to front_ios.m
 @interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -123,7 +142,7 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     fprintf(stderr, "hearth: scene connects at t=%.3f s, %s\n", now_s() - g_t0, hearth_running_game() ? "game" : "Home");
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window = [[HearthWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     apply_appearance(self.window);
     self.window.rootViewController = hearth_running_game() ? front_ios_root() : [HearthHomeVC new];   // a launch intent booted its game before UIApplicationMain
     [self.window makeKeyAndVisible];

@@ -9,7 +9,11 @@ void dm_host_shutdown(const char *why);    // hle_lifecycle.c: audio and graphic
 static HearthGame *g_running;
 HearthLibrary *hearth_library(void) {
     static HearthLibrary *lib; static dispatch_once_t once;
-    dispatch_once(&once, ^{ lib = [[HearthLibrary alloc] initWithHome:NSHomeDirectory() bundle:NSBundle.mainBundle.bundlePath]; });
+    dispatch_once(&once, ^{
+        lib = [[HearthLibrary alloc] initWithHome:NSHomeDirectory() bundle:NSBundle.mainBundle.bundlePath];
+        lib.bundleId = NSBundle.mainBundle.bundleIdentifier; lib.appSigner = [HearthSigner signerOf:NSBundle.mainBundle.executablePath];   // what imported code must be signed with
+        if (!lib.appSigner) fprintf(stderr, "hearth: [RED] this app's own signature could not be read: imported games will say Needs signing\n");
+    });
     return lib;
 }
 HearthGame *hearth_running_game(void) { return g_running; }
@@ -43,7 +47,7 @@ static void alert(UIViewController *over, NSString *title, NSString *msg) {
     [over presentViewController:a animated:YES completion:nil];
 }
 
-void hearth_launch(HearthGame *g, UIWindow *window) {
+void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void))) {
     if (g.reason) { alert(window.rootViewController, g.reason == 2 ? @"Rebuild needed" : @"This game cannot start", g.why); return; }
     if (g_running) {   // one game per process: restart straight into the new one (the close dialog arrives with the Home overlay in step 6)
         if ([g_running.titleId isEqual:g.titleId]) return;
@@ -52,15 +56,17 @@ void hearth_launch(HearthGame *g, UIWindow *window) {
     }
     if (!hearth_boot_game(g)) { alert(window.rootViewController, @"This game cannot start", @"Its log has the reason (Documents/Logs)."); return; }
     g_running = g;
-    window.rootViewController = front_ios_root();
+    void (^show)(void) = ^{ window.rootViewController = front_ios_root(); };
+    if (zoom) zoom(show); else show();
 }
 
 void hearth_confirm_close(UIViewController *over) {
     NSString *name = g_running.name ?: @"the game";
     UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Close %@?", name] message:@"Progress that was not saved will be lost."
                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; hearth_close(); }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    fprintf(stderr, "hearth: close dialog shown\n");   // with DM_TOUCH_LOG=1 the touches around it are logged too (main.m)
+    [a addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; fprintf(stderr, "hearth: close dialog: Close\n"); hearth_close(); }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; fprintf(stderr, "hearth: close dialog: Cancel\n"); }]];
     [over presentViewController:a animated:YES completion:nil];
 }
 

@@ -26,7 +26,7 @@ static void nacp(NSString *root, int lang, NSString *name, NSString *pub) {
     [d writeToFile:[root stringByAppendingPathComponent:@"meta/control.nacp"] atomically:YES];
 }
 
-int main(void) { @autoreleasepool {
+int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a valid game.json and its title id (section 9)
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *t = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_library.%d", getpid()]];
     NSString *home = [t stringByAppendingPathComponent:@"home"], *bundle = [t stringByAppendingPathComponent:@"Hearth.app"];
@@ -89,6 +89,51 @@ int main(void) { @autoreleasepool {
     NSString *s1 = [lib saveDirFor:[lib gameWithId:@"0100000000010000"]];
     CHECK(![fm fileExistsAtPath:s1], "an imported game does not get the legacy save");
     CHECK([[lib logDirFor:b] hasSuffix:@"Documents/Logs/0100000000030000"] && [fm fileExistsAtPath:[lib logDirFor:b]], "log dir");
+
+    // 7. last played first: markPlayed writes State/<id>.json; the never played keep the scan order
+    [lib markPlayed:[lib gameWithId:@"0100000000020000"]];
+    NSArray<HearthGame *> *lp = [lib scan];
+    CHECK([lp[0].titleId isEqual:@"0100000000020000"] && lp[0].lastPlayed > 0 && [lp[1].titleId isEqual:@"0100000000030000"], "last played first: %s %s", lp[0].titleId.UTF8String, lp[1].titleId.UTF8String);
+    CHECK([fm fileExistsAtPath:[lib.supportDir stringByAppendingPathComponent:@"State/0100000000020000.json"]], "state file");
+
+    // 8. code signatures (HearthSign.m): Apple's own tools carry an identifier and a certificate set, the same set for both; the comparison rules
+    { HearthSigner *ls = [HearthSigner signerOf:@"/bin/ls"], *cat = [HearthSigner signerOf:@"/bin/cat"];
+      CHECK([ls.identifier isEqual:@"com.apple.ls"] && ls.team == nil && ls.certs.length == 64, "ls: %s %s %s", ls.identifier.UTF8String, ls.team.UTF8String, ls.certs.UTF8String);
+      CHECK([cat.certs isEqual:ls.certs] && ![cat.identifier isEqual:ls.identifier], "same signer, other identifier");
+      CHECK([HearthSigner signerOf:@"/etc/hosts"] == nil && [HearthSigner signerOf:@"/no/such/file"] == nil, "not Mach-O: nil");
+      HearthSigner *app = [HearthSigner new]; app.identifier = @"org.example.hearth"; app.team = @"TEAM1"; app.certs = @"c1";
+      HearthSigner *ok = [HearthSigner new]; ok.identifier = @"org.example.hearth"; ok.team = @"TEAM1"; ok.certs = @"c1";
+      CHECK(hearth_code_mismatch(app, @"org.example.hearth", ok) == nil, "identifier, team and certificates match: loads");
+      ok.identifier = @"code"; CHECK([hearth_code_mismatch(app, @"org.example.hearth", ok) containsString:@"signed as code"], "another identifier (E1's control)");
+      ok.identifier = @"org.example.hearth"; ok.team = @"TEAM2"; CHECK([hearth_code_mismatch(app, @"org.example.hearth", ok) containsString:@"team TEAM2"], "another team");
+      ok.team = nil; CHECK(hearth_code_mismatch(app, @"org.example.hearth", ok) != nil, "ad hoc code never matches");
+      ok.team = @"TEAM1"; ok.certs = @"c2"; CHECK([hearth_code_mismatch(app, @"org.example.hearth", ok) containsString:@"another certificate"], "a renewed certificate: re-import needed");
+      CHECK(hearth_code_mismatch(app, @"org.example.hearth", nil) != nil && hearth_code_mismatch(nil, @"org.example.hearth", ok) != nil, "unsigned code, unreadable app: refused"); }
+
+    // 9. an imported game's code (needs a valid profile: make passes one from dm/games): its own when signed for this app, else the in-app copy, else Needs signing
+    if (argc == 3) {
+        NSString *gid = @(argv[2]), *r = [games stringByAppendingPathComponent:gid], *own = [r stringByAppendingPathComponent:@"code/macos.dylib"];
+        [fm removeItemAtPath:[bundle stringByAppendingFormat:@"/Frameworks/%@.dylib", gid] error:nil];   // section 5's stand-in, when the profile has the same id
+        NSString *cmd = [NSString stringWithFormat:@"mkdir -p '%@/profile' '%@/code' '%@/msl/macos' && cp '%s/game.json' '%@/profile/' && : > '%@/romfs.dmstore' && "
+            "printf '.section __DATA,__dminfo\\n.globl _dm_code_info\\n_dm_code_info:\\n.asciz \"code_abi %d\\\\ntitle %@\\\\nmodule main 00\\\\n\"\\n' > '%@/info.S' && "
+            "xcrun clang -dynamiclib -arch arm64 -o '%@' '%@/info.S' && codesign -f -s - -i org.example.other '%@' 2>/dev/null",
+            r, r, r, argv[1], r, r, DM_CODE_ABI, gid, t, own, t, own];
+        CHECK(system(cmd.UTF8String) == 0, "scratch pack");
+        put([r stringByAppendingPathComponent:@"manifest.json"], [NSString stringWithFormat:@"{\"title_id\": \"%@\", \"format\": %d, \"platforms\": [\"macos\"], \"abi\": {\"profile_schema\": %d, \"code\": %d, \"shader\": %d}}",
+            gid, DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI]);
+        HearthGame *g = [lib gameWithId:gid];
+        CHECK(g.reason == 0 && g.codePath == nil, "no signing rule set (the Mac): the pack's own code, bootable (%d %s)", g.reason, g.why.UTF8String);
+        lib.bundleId = @"org.example.hearth"; lib.appSigner = [HearthSigner signerOf:own];
+        system([NSString stringWithFormat:@"touch '%@'", own].UTF8String);   // the check is cached by file stamps: the rule changed, so touch the code
+        g = [lib gameWithId:gid];
+        CHECK(g.reason == HEARTH_NEEDS_SIGNING && [g.why containsString:@"signed as org.example.other"], "own code signed for another identifier: Needs signing (%d %s)", g.reason, g.why.UTF8String);
+        NSString *inApp = [bundle stringByAppendingFormat:@"/Frameworks/%@.dylib", gid];
+        [fm copyItemAtPath:own toPath:inApp error:nil];
+        g = [lib gameWithId:gid];
+        CHECK(g.reason == 0 && [g.codePath isEqual:inApp], "the in-app copy is the fallback (%d %s)", g.reason, g.codePath.UTF8String);
+        [fm removeItemAtPath:inApp error:nil];
+        lib.bundleId = nil; lib.appSigner = nil;
+    } else printf("t_library: section 9 skipped (run through make: it passes a profile)\n");
 
     [fm removeItemAtPath:t error:nil];
     // menu sounds: short, within full scale, no click at the start or the end, the open chime rises and the close chime falls
