@@ -198,6 +198,30 @@ int main(void) { @autoreleasepool {
           CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);
           if (st.type == DmSettingSlider) { double d = st.def.doubleValue; CHECK(d >= st.min && d <= st.max, "%s default in range", st.key.UTF8String); } } }
 
+    // 12. the text editor's counter, limit note and paste clipping (the panel only draws them), and the footer hints that follow the focused row
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); DmSetting *n = find(s, @"DM_NICK");
+      NSString *(^xs)(NSUInteger) = ^NSString *(NSUInteger k) { return [@"" stringByPaddingToLength:k withString:@"x" startingAtIndex:0]; };
+      NSString *(^em)(NSUInteger) = ^NSString *(NSUInteger k) { return [@"" stringByPaddingToLength:k * 2 withString:@"\U0001F600" startingAtIndex:0]; };   // k emoji, 4 bytes each
+      CHECK([n textCount:@""] == 0 && [n textCount:@"Ash"] == 3 && [n textCount:em(3)] == 3 && [n textCount:@"é"] == 1, "the counter counts characters, not UTF-16 units");
+      EQ([n textLimitNote:@""], nil); EQ([n textLimitNote:xs(31)], nil); EQ([n textLimitNote:xs(32)], @"Limit reached");
+      EQ([n textLimitNote:[em(7) stringByAppendingString:@"abc"]], nil); EQ([n textLimitNote:[em(7) stringByAppendingString:@"abcd"]], @"Limit reached (32 bytes)"); EQ([n textLimitNote:em(8)], @"Limit reached (32 bytes)");
+      EQ([n clippedReplacement:@"abcdef" inText:xs(30) range:NSMakeRange(30, 0)], @"ab"); EQ([n clippedReplacement:@"y" inText:xs(32) range:NSMakeRange(32, 0)], @"");
+      EQ([n clippedReplacement:xs(40) inText:xs(32) range:NSMakeRange(0, 32)], xs(32)); EQ([n clippedReplacement:@"" inText:xs(32) range:NSMakeRange(5, 3)], @"");
+      EQ([n clippedReplacement:@"\U0001F600" inText:xs(30) range:NSMakeRange(30, 0)], @""); EQ([n clippedReplacement:em(2) inText:xs(28) range:NSMakeRange(28, 0)], @"\U0001F600");   // never half a character
+      EQ([n clippedReplacement:@"Z" inText:@"Ash" range:NSMakeRange(1, 1)], @"Z");
+      NSString *(^names)(NSArray *) = ^NSString *(NSArray *h) { NSMutableArray *a = [NSMutableArray array]; for (NSArray *p in h) [a addObject:[NSString stringWithFormat:@"%@ %@", p[0], p[1]]]; return [a componentsJoinedByString:@" | "]; };
+      EQ(names(dm_hints_for_focus(DmFocusCategory, NO, NO)), @"A Open | B Close | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusToggle, NO, NO)), @"↔ Change | A Toggle | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusChoice, NO, NO)), @"↔ Change | A Next | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusSlider, NO, NO)), @"↔ Change | B Back | L R Category");   // A does nothing on a slider
+      EQ(names(dm_hints_for_focus(DmFocusText, NO, NO)), @"A Edit | B Back | L R Category");       // left / right does nothing on a text row
+      EQ(names(dm_hints_for_focus(DmFocusRestore, NO, NO)), @"A Restore | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, NO)), @"A Restore | B Back | L R Category"); EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, YES)), @"A Confirm | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusRestart, NO, NO)), @"A Restart | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusEditor, NO, NO)), @"↵ Save | B Cancel");   // no category switch while the editor is up
+      for (int k = DmFocusToggle; k <= DmFocusText; k++) EQ(names(dm_hints_for_focus((DmFocusKind)k, YES, NO)), @"B Back | L R Category");   // a row the environment locks changes nothing
+    }
+
     printf("t_settings: %d checks, %d failed\n", g_n, g_fail);
     return g_fail ? 1 : 0;
 } }
