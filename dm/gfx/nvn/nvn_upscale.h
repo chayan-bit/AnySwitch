@@ -138,9 +138,10 @@ static int up_prepare_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> raw, NSUIntege
     if (!en) return 0;
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
+    amb_ts(en, slot, 3, 0);   // GPU time of this pass: the ambient letterbox's timing line (nvn_ambient.h amb_feedback)
     [g_present_args setTexture:raw.gpuResourceID atIndex:0]; [g_present_args setAddress:g_up_ub[slot].gpuAddress atIndex:0];
     [en setRenderPipelineState:g_up_easu]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    m4_end(en);
+    amb_ts(en, slot, 3, 1); m4_end(en);
     return 1;
 }
 static void up_bind_m4(int slot) { [g_present_args setTexture:g_up_tmp.gpuResourceID atIndex:0]; [g_present_args setAddress:g_up_ub[slot].gpuAddress + 64 atIndex:0]; }   // RCAS: the caller sets the viewport and g_up_rcas

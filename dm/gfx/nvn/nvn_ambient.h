@@ -11,7 +11,7 @@
 #define AMB_DARK 0.50f          // multiplier on the blurred colour (darkened by 50%)
 #define AMB_SAT 0.85f           // 1 = unchanged, 0 = grey
 #define AMB_SHADOW 0.35f        // extra darkening right at the picture edge
-#define AMB_TS 8                // timestamp slots per ring slot: A start/end, B start/end, final start/end
+#define AMB_TS 8                // timestamp slots per ring slot: A start/end, B start/end, final start/end, the sharp upscale's EASU pass start/end (nvn_upscale.h)
 
 static id<MTLTexture> present_raw_src(id<MTLTexture> src);
 static int g_amb_mode = -1;     // 1 ambient (default), 0 black
@@ -133,7 +133,7 @@ static id<MTL4CounterHeap> amb_heap(void) {
     if (!g_amb_heap) MLOG("[RED] ambient letterbox GPU timing off: cannot create the counter heap: %s", er.localizedDescription.UTF8String);
     return g_amb_heap;
 }
-static void amb_ts(id<MTL4RenderCommandEncoder> en, int slot, int idx, int end) {   // idx 0 = A, 1 = B, 2 = final pass
+static void amb_ts(id<MTL4RenderCommandEncoder> en, int slot, int idx, int end) {   // idx 0 = A, 1 = B, 2 = final pass, 3 = EASU
     id<MTL4CounterHeap> h = amb_heap(); if (!h) return;
     [en writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed afterStage:end ? MTLRenderStageFragment : MTLRenderStageVertex intoHeap:h atIndex:(NSUInteger)(slot * AMB_TS + idx * 2 + end)];
 }
@@ -198,21 +198,22 @@ static void amb_bars_legacy(id<MTLRenderCommandEncoder> en, id<MTLTexture> b, co
 
 // ---- GPU time: the present command buffer's pass spans, read when it completes (present_now's feedback handler) ----
 static pthread_mutex_t g_amb_mu = PTHREAD_MUTEX_INITIALIZER;
-static double g_amb_sum[3], g_amb_lsum[3]; static uint64_t g_amb_n[3], g_amb_ln[3];   // per pass index: A, B, final; the l* ones are the log window, g_amb_* what mtl_amb_stats_take hands out
+static double g_amb_sum[4], g_amb_lsum[4]; static uint64_t g_amb_n[4], g_amb_ln[4];   // per pass index: A, B, final, EASU; the l* ones are the log window, g_amb_* what mtl_amb_stats_take hands out
 static void amb_feedback(int slot) {
     if (!g_amb_heap) return;
-    NSRange r = NSMakeRange((NSUInteger)slot * AMB_TS, 6);
+    NSRange r = NSMakeRange((NSUInteger)slot * AMB_TS, 8);
     NSData *d = [g_amb_heap resolveCounterRange:r];
-    const MTL4TimestampHeapEntry *ts = d.length >= 6 * sizeof *ts ? d.bytes : NULL;
+    const MTL4TimestampHeapEntry *ts = d.length >= 8 * sizeof *ts ? d.bytes : NULL;
     if (!ts) return;
-    double ms[3] = {0, 0, 0};
-    for (int i = 0; i < 3; i++) { uint64_t a = ts[2 * i].timestamp, b = ts[2 * i + 1].timestamp; if (a && b && b >= a) ms[i] = (b - a) * g_pg_ns / 1e6; }
+    double ms[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) { uint64_t a = ts[2 * i].timestamp, b = ts[2 * i + 1].timestamp; if (a && b && b >= a) ms[i] = (b - a) * g_pg_ns / 1e6; }
     [g_amb_heap invalidateCounterRange:r];
     pthread_mutex_lock(&g_amb_mu);
-    for (int i = 0; i < 3; i++) if (ms[i] > 0) { g_amb_sum[i] += ms[i]; g_amb_n[i]++; g_amb_lsum[i] += ms[i]; g_amb_ln[i]++; }
+    for (int i = 0; i < 4; i++) if (ms[i] > 0) { g_amb_sum[i] += ms[i]; g_amb_n[i]++; g_amb_lsum[i] += ms[i]; g_amb_ln[i]++; }
     if (g_amb_ln[2] >= 300) {
-        MLOG("[ambient] per present over %llu frames: blur passes %.3f + %.3f ms (%llu frames with them), final pass %.3f ms", (unsigned long long)g_amb_ln[2],
-             g_amb_ln[0] ? g_amb_lsum[0] / g_amb_ln[0] : 0.0, g_amb_ln[1] ? g_amb_lsum[1] / g_amb_ln[1] : 0.0, (unsigned long long)g_amb_ln[0], g_amb_lsum[2] / g_amb_ln[2]);
+        MLOG("[ambient] per present over %llu frames: blur passes %.3f + %.3f ms (%llu frames with them), final pass %.3f ms; sharp upscale EASU pass %.3f ms (%llu frames with it)", (unsigned long long)g_amb_ln[2],
+             g_amb_ln[0] ? g_amb_lsum[0] / g_amb_ln[0] : 0.0, g_amb_ln[1] ? g_amb_lsum[1] / g_amb_ln[1] : 0.0, (unsigned long long)g_amb_ln[0], g_amb_lsum[2] / g_amb_ln[2],
+             g_amb_ln[3] ? g_amb_lsum[3] / g_amb_ln[3] : 0.0, (unsigned long long)g_amb_ln[3]);
         memset(g_amb_lsum, 0, sizeof g_amb_lsum); memset(g_amb_ln, 0, sizeof g_amb_ln);
     }
     pthread_mutex_unlock(&g_amb_mu);
