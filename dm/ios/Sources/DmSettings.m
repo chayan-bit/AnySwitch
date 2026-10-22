@@ -13,7 +13,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
 @implementation DmSetting {
     NSString *_key, *_plistKey, *_label, *_detail, *_suffix, *_def;
     NSArray<NSDictionary *> *_options;
-    DmSettingType _type; double _min, _max, _step, _scale; BOOL _restart; NSInteger _decimals; NSUInteger _maxLength, _maxBytes; NSString *_requires;
+    DmSettingType _type; double _min, _max, _step, _scale; BOOL _restart; NSInteger _decimals; NSUInteger _maxLength, _maxBytes; NSString *_requires, *_enabledWhenKey, *_enabledEquals, *_enabledNotEquals;
 }
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err {
     DmSetting *s = [DmSetting new];
@@ -23,6 +23,14 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     if (![label isKindOfClass:NSString.class] || !label.length) FAIL(@"no label");
     s->_key = key; s->_label = label; s->_plistKey = d[@"plistKey"]; s->_detail = d[@"detail"]; s->_restart = [d[@"apply"] isEqualToString:@"restart"];
     if ([d[@"requires"] isKindOfClass:NSString.class] && [d[@"requires"] length]) s->_requires = d[@"requires"];
+    id when = d[@"enabledWhen"];
+    if (when) {
+        BOOL ok = [when isKindOfClass:NSDictionary.class]; NSString *wk = ok ? when[@"key"] : nil, *eq = ok ? when[@"equals"] : nil, *ne = ok ? when[@"notEquals"] : nil;
+        BOOL hasEq = [eq isKindOfClass:NSString.class], hasNe = [ne isKindOfClass:NSString.class];
+        if (![wk isKindOfClass:NSString.class] || !wk.length || [wk isEqualToString:key]) FAIL(@"enabledWhen needs the key of another setting");
+        if (hasEq == hasNe) FAIL(@"enabledWhen needs exactly one of equals and notEquals (a string)");
+        s->_enabledWhenKey = wk; s->_enabledEquals = hasEq ? eq : nil; s->_enabledNotEquals = hasNe ? ne : nil;
+    }
     if ([type isEqualToString:@"toggle"]) s->_type = DmSettingToggle;
     else if ([type isEqualToString:@"choice"]) {
         s->_type = DmSettingChoice; s->_options = d[@"options"];
@@ -139,12 +147,14 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
                            @[@"zh-Hans", @"Chinese (Simplified)"], @[@"zh-Hant", @"Chinese (Traditional)"]];
     NSMutableArray *langOptions = [NSMutableArray array];
     for (NSArray *l in languages) [langOptions addObject:@{@"value": l[0], @"label": l[1]}];
+    NSMutableDictionary *ambient = [slider(@"DM_AMBIENT_LEVEL", @"DMAmbientLevel", @"Ambient brightness", @"How bright the blurred picture in the bars is.", 0.2, 1.0, 0.05, @"0.5") mutableCopy];
+    ambient[@"enabledWhen"] = @{@"key": @"DM_LETTERBOX", @"notEquals": @"black"};   // black bars have no picture in them to brighten
     return @[
         @{@"id": @"display", @"title": @"Display", @"icon": @"display", @"settings": @[
             @{@"key": @"DM_LETTERBOX", @"plistKey": @"DMLetterbox", @"label": @"Bars around the picture", @"type": @"choice", @"default": @"ambient",
               @"detail": @"Ambient fills the bars with a soft blurred copy of the picture. Black leaves them plain black.",
               @"options": @[@{@"value": @"ambient", @"label": @"Ambient"}, @{@"value": @"black", @"label": @"Black", @"aliases": @[@"0"]}]},
-            slider(@"DM_AMBIENT_LEVEL", @"DMAmbientLevel", @"Ambient brightness", @"How bright the blurred picture in the bars is.", 0.2, 1.0, 0.05, @"0.5"),
+            ambient,
             @{@"key": @"DM_RENDER_SCALE", @"label": @"Render scale", @"type": @"slider", @"min": @0.5, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"apply": @"restart", @"requires": @"fstep",
               @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."}]},
         @{@"id": @"controls", @"title": @"Controls", @"icon": @"gamecontroller", @"settings": @[
@@ -232,6 +242,7 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
         [s keepOnly:keep]; [secs addObject:s];
     }
     _sections = secs;
+    for (DmSetting *st in _byKey.allValues) if (st.enabledWhenKey && !_byKey[st.enabledWhenKey]) say([NSString stringWithFormat:@"%@: enabledWhen names %@, which is not registered: always enabled", st.key, st.enabledWhenKey]);
     for (NSString *k in gameDefaults) {
         DmSetting *st = _byKey[k]; NSString *n = st ? [st normalized:gameDefaults[k]] : nil;
         if (n) _gameDef[k] = n; else say([NSString stringWithFormat:@"ignoring the game default of %@", k]);
@@ -254,6 +265,17 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (NSArray<DmSection *> *)visibleSections {
     NSMutableArray *out = [NSMutableArray array]; for (DmSection *s in _sections) if ([self visibleSettingsInSection:s].count) [out addObject:s]; return out;
 }
+// `enabledWhen` compares the other setting's effective value (the environment counts) with the condition, both as that setting stores them; a condition that does not parse never disables
+- (BOOL)isEnabled:(DmSetting *)s {
+    DmSetting *dep = s.enabledWhenKey ? _byKey[s.enabledWhenKey] : nil; if (!dep) return YES;
+    NSString *want = [dep normalized:s.enabledEquals ?: s.enabledNotEquals]; if (!want) return YES;
+    return [[self valueForKey:dep.key] isEqualToString:want] == (s.enabledEquals != nil);
+}
+- (NSString *)disabledNote:(DmSetting *)s {
+    if ([self isEnabled:s]) return nil;
+    DmSetting *dep = _byKey[s.enabledWhenKey]; NSString *shown = [dep displayValue:[dep normalized:s.enabledEquals ?: s.enabledNotEquals]];
+    return [NSString stringWithFormat:s.enabledEquals ? @"Has no effect unless %@ is %@" : @"Has no effect while %@ is %@", dep.label, shown];
+}
 - (DmSettingSource)sourceForKey:(NSString *)key {
     DmSetting *s = _byKey[key]; if (!s) return DmSourceDefault;
     if (_envLock[key]) return DmSourceEnv;
@@ -267,8 +289,13 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
         case DmSourceEnv: return _envLock[key];
         case DmSourceUser: return _user[key];
         case DmSourcePlist: return [s normalized:_plist(s.plistKey)];
-        default: return _gameDef[key] ?: s.def;
+        default: return [self defaultValueForKey:key];
     }
+}
+- (NSString *)defaultValueForKey:(NSString *)key {
+    DmSetting *s = _byKey[key]; if (!s) return nil;
+    NSString *p = s.plistKey.length ? [s normalized:_plist(s.plistKey)] : nil;
+    return p ?: _gameDef[key] ?: s.def;
 }
 - (BOOL)boolForKey:(NSString *)key { return [[self valueForKey:key] isEqualToString:@"1"]; }
 - (double)doubleForKey:(NSString *)key { return [self valueForKey:key].doubleValue; }
@@ -280,6 +307,10 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (BOOL)setValue:(NSString *)value forKey:(NSString *)key {
     DmSetting *s = _byKey[key]; NSString *n = s ? [s normalized:value] : nil;
     if (!n || _envLock[key]) return NO;
+    if ([n isEqualToString:[self defaultValueForKey:key]]) {   // the default again: no explicit copy of it, so a later change of the default still applies
+        if (_user[key]) { [_user removeObjectForKey:key]; [self persist]; [self announce:key]; }
+        return YES;
+    }
     if ([_user[key] isEqualToString:n]) return YES;
     _user[key] = n; [self persist]; [self announce:key];
     return YES;
@@ -310,7 +341,7 @@ void dm_settings_boot(void) { [[DmSettings shared] applyToEnvironment]; }
 NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed) {
     NSMutableArray *h = [NSMutableArray array];
     if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
-    if (kind == DmFocusEditor) return @[@[@"↵", @"Save"], @[@"B", @"Cancel"]];   // the controller's other buttons are paused while the editor is up
+    if (kind == DmFocusEditor) return @[];   // the editor panel has its own Cancel and Save buttons; a footer would sit behind the soft keyboard
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;

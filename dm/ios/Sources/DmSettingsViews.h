@@ -47,15 +47,16 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemReset
 @property (nonatomic, readonly) DmSetting *setting;
 @property (nonatomic, readonly) DmItemKind kind;
 @property (nonatomic, readonly) DmSliderView *slider;
-- (void)showValue:(NSString *)value source:(DmSettingSource)src;   // refresh from the store (env: the row is locked)
+- (void)showValue:(NSString *)value source:(DmSettingSource)src disabledNote:(NSString *)disabledNote;   // refresh from the store (env: the row is locked; a disabledNote: the setting has no effect now, the row is dimmed and shows the note)
 @property (nonatomic, readonly) BOOL locked;
+@property (nonatomic, readonly) BOOL disabled;
+@property (nonatomic, readonly) BOOL inert;   // locked or disabled: the row does not change
 - (void)shake;   // a refused change
 @property (nonatomic) BOOL confirming;   // the restore-all row asks for a second tap
 - (CGFloat)heightForWidth:(CGFloat)w;
 @end
 
 @interface DmHintBar : UIView
-@property (nonatomic) BOOL onScrim;   // the bar sits over the editor's dimming scrim: light text in both styles
-- (void)setHints:(NSArray<NSArray<NSString *> *> *)hints;   // {glyph, text} pairs, laid out left to right and kept at the right edge
+- (void)setHints:(NSArray<NSArray<NSString *> *> *)hints;   // {glyph, text} pairs, laid out left to right and kept at the right edge; a letter is drawn as text, the arrows ↔ and ↵ as SF Symbols at the same size
 - (CGFloat)heightWithCompact:(BOOL)compact;
 @end

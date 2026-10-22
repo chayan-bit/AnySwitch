@@ -1,5 +1,6 @@
 // Building blocks of the settings screen (see DmSettingsViews.h). Colours are dynamic (light / dark follows the system); layers take theirs through colorsUpdate, which runs again when the style changes.
 #import "DmSettingsViews.h"
+#import "DmPalette.h"
 
 static UIColor *dyn(uint32_t light, uint32_t dark) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *t) {
@@ -11,14 +12,14 @@ CGColorRef dm_cg(UIView *v, UIColor *c) { return [c resolvedColorWithTraitCollec
 
 @implementation DmUI
 + (UIColor *)bg { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xEBEBEB, 0x2B2B2B); }); return c; }
-+ (UIColor *)panel { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xFFFFFF, 0x363636); }); return c; }
-+ (UIColor *)row { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xF0F0F0, 0x424242); }); return c; }
++ (UIColor *)panel { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_PANEL_LIGHT, DM_PANEL_DARK); }); return c; }
++ (UIColor *)row { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_ROW_LIGHT, DM_ROW_DARK); }); return c; }
 + (UIColor *)text { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x2D2D2D, 0xF2F2F2); }); return c; }
 + (UIColor *)sub { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x6A6A6A, 0xA6A6A6); }); return c; }
 + (UIColor *)sep { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD6D6D6, 0x575757); }); return c; }
 + (UIColor *)accent { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00B9E6, 0x20D5FF); }); return c; }
 + (UIColor *)accentText { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00789C, 0x20D5FF); }); return c; }
-+ (UIColor *)track { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x8E8E8E, 0x8C8C8C); }); return c; }
++ (UIColor *)track { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_TRACK_LIGHT, DM_TRACK_DARK); }); return c; }
 + (UIColor *)selected { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD2EEF7, 0x3E5059); }); return c; }
 + (UIColor *)warn { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xC73D18, 0xFF7B54); }); return c; }
 + (UIFont *)font:(CGFloat)size weight:(UIFontWeight)w {
@@ -160,9 +161,11 @@ static const CGFloat kKnob = 26;
     BOOL _compact; DmItemKind _kind; DmSetting *_setting;
     UILabel *_title, *_detail, *_value, *_note; UIImageView *_chev[2];
     DmToggleView *_toggle; DmSliderView *_slider;
-    NSString *_noteText; BOOL _locked, _confirming;
+    NSString *_noteText; BOOL _locked, _confirming, _disabled;
 }
 - (BOOL)confirming { return _confirming; }
+- (BOOL)disabled { return _disabled; }
+- (BOOL)inert { return _locked || _disabled; }
 - (DmSetting *)setting { return _setting; }
 - (DmItemKind)kind { return _kind; }
 - (DmSliderView *)slider { return _slider; }
@@ -212,13 +215,17 @@ static const CGFloat kKnob = 26;
     self.layer.backgroundColor = dm_cg(self, DmUI.row);
     _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accentText);
     _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accentText;
-    _note.textColor = DmUI.warn;
+    _note.textColor = _disabled ? DmUI.sub : DmUI.warn;
     for (int i = 0; i < 2; i++) _chev[i].tintColor = DmUI.sub;
     self.alpha = _locked ? 0.62 : 1;
+    CGFloat part = _disabled ? 0.45 : 1;   // a disabled row dims what it holds but keeps its note, which says why, fully legible
+    for (UIView *v in @[_title, _detail, _value]) v.alpha = part;
+    _chev[0].alpha = part; _chev[1].alpha = part; _toggle.alpha = part; _slider.alpha = part;
+    _slider.enabled = !_disabled;
 }
-- (void)showValue:(NSString *)v source:(DmSettingSource)src {
-    _locked = src == DmSourceEnv;
-    _note.text = _locked ? @"Set in env.txt" : _noteText;
+- (void)showValue:(NSString *)v source:(DmSettingSource)src disabledNote:(NSString *)disabledNote {
+    _locked = src == DmSourceEnv; _disabled = disabledNote != nil;
+    _note.text = _locked ? @"Set in env.txt" : (disabledNote ?: _noteText);
     if (_setting.type == DmSettingToggle) { _toggle.on = [v isEqualToString:@"1"]; _value.text = nil; }
     else if (_setting) _value.text = [_setting displayValue:v];
     if (_slider) _slider.value = (v.doubleValue - _setting.min) / (_setting.max - _setting.min);
@@ -274,21 +281,28 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
 
 #pragma mark - Hint bar
 
-@implementation DmHintBar { NSArray<NSArray<NSString *> *> *_hints; NSMutableArray<UILabel *> *_parts; BOOL _compact; }
+// A button badge: a dark glyph on a light disc. Letters are text; the arrows are SF Symbols drawn at the letters' point size and weight (the Unicode arrows sit low and small in the rounded font), all centred in the same square.
+@implementation DmHintBar { NSArray<NSArray<NSString *> *> *_hints; NSMutableArray<UIView *> *_parts; BOOL _compact; }
+static NSString *glyphSymbol(NSString *glyph) { return @{@"↔": @"arrow.left.and.right", @"↵": @"return"}[glyph]; }
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) { _parts = [NSMutableArray array]; self.userInteractionEnabled = NO; __weak DmHintBar *w = self; dm_on_style(self, ^{ [w paintParts]; }); }
     return self;
 }
-- (void)setOnScrim:(BOOL)s { _onScrim = s; [self paintParts]; }
 - (void)paintParts {   // glyph tag 1, text tag 2
-    UIColor *ink = _onScrim ? [UIColor colorWithWhite:0.95 alpha:1] : DmUI.text, *glyphInk = _onScrim ? [UIColor colorWithWhite:0.17 alpha:1] : DmUI.bg;
-    for (UILabel *l in _parts) { if (l.tag == 1) { l.textColor = glyphInk; l.backgroundColor = ink; } else l.textColor = ink; }
+    UIColor *ink = DmUI.text, *glyphInk = DmUI.bg;
+    for (UIView *v in _parts) {
+        if (v.tag == 2) { ((UILabel *)v).textColor = ink; continue; }
+        v.backgroundColor = ink; if ([v isKindOfClass:UILabel.class]) ((UILabel *)v).textColor = glyphInk; else v.tintColor = glyphInk;
+    }
 }
 - (CGFloat)heightWithCompact:(BOOL)c { _compact = c; return c ? 30 : 40; }
 - (void)setHints:(NSArray<NSArray<NSString *> *> *)h {
     _hints = h; for (UIView *v in _parts) [v removeFromSuperview]; [_parts removeAllObjects];
     for (NSArray<NSString *> *p in h) {
-        UILabel *g = [UILabel new]; g.text = p[0]; g.textAlignment = NSTextAlignmentCenter; g.layer.masksToBounds = YES; g.tag = 1;
+        UIView *g;
+        if (glyphSymbol(p[0])) { UIImageView *i = [UIImageView new]; i.contentMode = UIViewContentModeCenter; g = i; }
+        else { UILabel *l = [UILabel new]; l.text = p[0]; l.textAlignment = NSTextAlignmentCenter; g = l; }
+        g.layer.masksToBounds = YES; g.tag = 1;
         UILabel *t = [UILabel new]; t.text = p[1]; t.tag = 2;
         [self addSubview:g]; [self addSubview:t]; [_parts addObject:g]; [_parts addObject:t];
     }
@@ -297,10 +311,14 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat h = self.bounds.size.height, fs = _compact ? 12 : 15, gs = _compact ? 22 : 28, x = self.bounds.size.width;
+    UIFont *gf = [DmUI font:fs weight:UIFontWeightBold];
     for (NSInteger i = (NSInteger)_parts.count - 2; i >= 0; i -= 2) {   // from the right edge inward
-        UILabel *g = (UILabel *)_parts[i], *t = (UILabel *)_parts[i + 1];
-        g.font = [DmUI font:fs weight:UIFontWeightBold]; t.font = [DmUI font:fs + 1 weight:UIFontWeightSemibold];
-        CGFloat tw = ceil([t.text sizeWithAttributes:@{NSFontAttributeName: t.font}].width), gw = fmax(gs, ceil([g.text sizeWithAttributes:@{NSFontAttributeName: g.font}].width) + 12);
+        UIView *g = _parts[i]; UILabel *t = (UILabel *)_parts[i + 1]; NSString *glyph = _hints[(NSUInteger)i / 2][0];
+        t.font = [DmUI font:fs + 1 weight:UIFontWeightSemibold];
+        CGFloat gw = gs;
+        if ([g isKindOfClass:UIImageView.class]) ((UIImageView *)g).image = [UIImage systemImageNamed:glyphSymbol(glyph) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:fs - 1 weight:UIImageSymbolWeightBold]];
+        else { ((UILabel *)g).font = gf; gw = fmax(gs, ceil([glyph sizeWithAttributes:@{NSFontAttributeName: gf}].width) + 12); }
+        CGFloat tw = ceil([t.text sizeWithAttributes:@{NSFontAttributeName: t.font}].width);
         x -= tw; t.frame = CGRectMake(x, 0, tw, h);
         x -= 8 + gw; g.frame = CGRectMake(x, (h - gs) / 2, gw, gs); g.layer.cornerRadius = gs / 2;
         x -= _compact ? 14 : 22;

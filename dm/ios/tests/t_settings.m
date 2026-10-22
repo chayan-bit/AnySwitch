@@ -2,6 +2,7 @@
 // Foundation only, runs on the Mac: make -C dm/ios/tests run
 #import <Foundation/Foundation.h>
 #import "DmSettings.h"
+#import "DmPalette.h"
 
 static int g_fail, g_n;
 #define CHECK(c, ...) do { g_n++; if (!(c)) { g_fail++; printf("FAIL line %d: %s  ", __LINE__, #c); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -218,9 +219,80 @@ int main(void) { @autoreleasepool {
       EQ(names(dm_hints_for_focus(DmFocusRestore, NO, NO)), @"A Restore | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, NO)), @"A Restore | B Back | L R Category"); EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, YES)), @"A Confirm | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestart, NO, NO)), @"A Restart | B Back | L R Category");
-      EQ(names(dm_hints_for_focus(DmFocusEditor, NO, NO)), @"↵ Save | B Cancel");   // no category switch while the editor is up
+      CHECK(dm_hints_for_focus(DmFocusEditor, NO, NO).count == 0 && dm_hints_for_focus(DmFocusEditor, YES, YES).count == 0, "the editor has its own Cancel and Save buttons: the footer says nothing (the screen hides it, the soft keyboard would cover it)");
+      for (int k = DmFocusCategory; k <= DmFocusRestart; k++) CHECK(dm_hints_for_focus((DmFocusKind)k, NO, NO).count > 0, "a focus outside the editor always has a hint");
+      for (int k = DmFocusCategory; k <= DmFocusRestart; k++) for (NSArray *p in dm_hints_for_focus((DmFocusKind)k, NO, YES)) CHECK(p.count == 2 && [p[0] length] && [p[1] length], "a hint is a glyph and a text");
       for (int k = DmFocusToggle; k <= DmFocusText; k++) EQ(names(dm_hints_for_focus((DmFocusKind)k, YES, NO)), @"B Back | L R Category");   // a row the environment locks changes nothing
     }
+
+    // 13. a value equal to the default is not stored: the user's choice goes back to "default", for every type, so a later change of the default still applies
+    { NSString *path = tmpFile(); NSMutableDictionary *env = [NSMutableDictionary dictionary]; DmSettings *s = make(builtin, path, env, @{});
+      NSDictionary *(^stored)(void) = ^NSDictionary *{ NSData *d = [NSData dataWithContentsOfFile:path]; return d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil][@"values"] : @{}; };
+      NSMutableArray *got = [NSMutableArray array]; id tok = [NSNotificationCenter.defaultCenter addObserverForName:DmSettingDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [got addObject:n.object]; }];
+      // toggle (the reported case), choice, slider, text
+      CHECK([s setValue:@"1" forKey:@"DM_SHOW_FPS"], "on"); EQ(stored()[@"DM_SHOW_FPS"], @"1"); CHECK([s sourceForKey:@"DM_SHOW_FPS"] == DmSourceUser, "chosen");
+      CHECK([s setValue:@"0" forKey:@"DM_SHOW_FPS"], "off again"); CHECK(stored()[@"DM_SHOW_FPS"] == nil, "the default is not written, got %s", [[stored() description] UTF8String]); CHECK([s sourceForKey:@"DM_SHOW_FPS"] == DmSourceDefault, "back to default"); CHECK(![s boolForKey:@"DM_SHOW_FPS"], "value is the default");
+      CHECK([s setValue:@"0" forKey:@"DM_SHOW_FPS"], "setting the default while on the default is fine"); CHECK(stored().count == 0, "still nothing stored"); EQ(env[@"DM_SHOW_FPS"], @"0");
+      [s setValue:@"black" forKey:@"DM_LETTERBOX"]; EQ(stored()[@"DM_LETTERBOX"], @"black"); [s setValue:@"ambient" forKey:@"DM_LETTERBOX"]; CHECK(stored()[@"DM_LETTERBOX"] == nil, "choice default not written"); [s setValue:@"0" forKey:@"DM_LETTERBOX"]; EQ([s valueForKey:@"DM_LETTERBOX"], @"black");   // an alias of a non-default option is stored as the option
+      [s setValue:@"ambient" forKey:@"DM_LETTERBOX"];
+      [s setValue:@"1.4" forKey:@"DM_CONTROLS_SCALE"]; EQ(stored()[@"DM_CONTROLS_SCALE"], @"1.4"); [s setValue:@"1.0" forKey:@"DM_CONTROLS_SCALE"]; CHECK(stored()[@"DM_CONTROLS_SCALE"] == nil, "slider default not written"); EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1");
+      [s setValue:@"2.5" forKey:@"DM_SHAKE_G"]; [s setValue:@"1.52" forKey:@"DM_SHAKE_G"]; CHECK(stored()[@"DM_SHAKE_G"] == nil, "a slider value that snaps to the default is the default (1.52 -> 1.5)");
+      [s setValue:@"Zed" forKey:@"DM_NICK"]; EQ(stored()[@"DM_NICK"], @"Zed"); [s setValue:@"  Player " forKey:@"DM_NICK"]; CHECK(stored()[@"DM_NICK"] == nil, "text default not written (trimmed)"); EQ([s valueForKey:@"DM_NICK"], @"Player");
+      CHECK(stored().count == 0, "nothing of the above is left in the file");
+      CHECK([got containsObject:@"DM_SHOW_FPS"] && [got containsObject:@"DM_NICK"], "dropping the choice is announced"); NSUInteger n0 = got.count; [s setValue:@"Player" forKey:@"DM_NICK"]; CHECK(got.count == n0, "setting the default while on it announces nothing");
+      [NSNotificationCenter.defaultCenter removeObserver:tok];
+      // the default that counts is the one in force: the Info.plist's, then the game's
+      NSString *p2 = tmpFile(); DmSettings *pl = make(builtin, p2, [NSMutableDictionary dictionary], @{@"DMShowFPS": @YES});
+      EQ([pl defaultValueForKey:@"DM_SHOW_FPS"], @"1"); CHECK([pl setValue:@"1" forKey:@"DM_SHOW_FPS"], "ok"); CHECK([pl sourceForKey:@"DM_SHOW_FPS"] == DmSourcePlist, "the plist default, not a stored copy");
+      [pl setValue:@"0" forKey:@"DM_SHOW_FPS"]; CHECK([pl sourceForKey:@"DM_SHOW_FPS"] == DmSourceUser && ![pl boolForKey:@"DM_SHOW_FPS"], "off against a plist default is a choice");
+      [pl setValue:@"1" forKey:@"DM_SHOW_FPS"]; CHECK([pl sourceForKey:@"DM_SHOW_FPS"] == DmSourcePlist, "and on again drops it");
+      DmSettings *gd = makeEx(builtin, @{@"DM_LANG": @"fr", @"DM_SHAKE_G": @"2"}, nil, tmpFile(), [NSMutableDictionary dictionary], @{});
+      [gd setValue:@"en-US" forKey:@"DM_LANG"]; EQ([gd valueForKey:@"DM_LANG"], @"en-US"); CHECK([gd sourceForKey:@"DM_LANG"] == DmSourceUser, "the registry default is not the default of this game: stored");
+      [gd setValue:@"fr" forKey:@"DM_LANG"]; CHECK([gd sourceForKey:@"DM_LANG"] == DmSourceDefault, "the game's default is the default: dropped"); [gd setValue:@"2" forKey:@"DM_SHAKE_G"]; CHECK([gd sourceForKey:@"DM_SHAKE_G"] == DmSourceDefault, "slider with a game default");
+      CHECK([gd restartPending] == NO, "a restart setting set back to its launch value is not pending");
+      // the environment still locks
+      NSMutableDictionary *e2 = [@{@"DM_SHOW_FPS": @"1"} mutableCopy]; DmSettings *lk = make(builtin, tmpFile(), e2, @{}); CHECK(![lk setValue:@"0" forKey:@"DM_SHOW_FPS"], "locked: the default is refused too"); CHECK(![lk setValue:@"1" forKey:@"DM_SHOW_FPS"], "locked");
+      // what was stored survives a launch, and only choices are in the file
+      DmSettings *w = make(builtin, path, [NSMutableDictionary dictionary], @{}); [w setValue:@"1" forKey:@"DM_SHOW_FPS"]; [w setValue:@"Zed" forKey:@"DM_NICK"]; [w setValue:@"1" forKey:@"DM_SHOW_FPS"]; EQ(stored()[@"DM_SHOW_FPS"], @"1"); [w setValue:@"0" forKey:@"DM_SHOW_FPS"];
+      DmSettings *again = make(builtin, path, [NSMutableDictionary dictionary], @{}); CHECK(![again boolForKey:@"DM_SHOW_FPS"] && [again sourceForKey:@"DM_SHOW_FPS"] == DmSourceDefault, "after a relaunch it is still the default"); EQ([again valueForKey:@"DM_NICK"], @"Zed"); CHECK(stored().count == 1, "only the nickname is a choice"); }
+
+    // 14. a setting that has no effect under another's value is disabled (`enabledWhen`): a registry field, evaluated on the effective value
+    { NSMutableDictionary *env = [NSMutableDictionary dictionary]; DmSettings *s = make(builtin, tmpFile(), env, @{}); DmSetting *amb = find(s, @"DM_AMBIENT_LEVEL"), *lb = find(s, @"DM_LETTERBOX");
+      EQ(amb.enabledWhenKey, @"DM_LETTERBOX"); EQ(amb.enabledNotEquals, @"black"); EQ(amb.enabledEquals, nil); CHECK(lb.enabledWhenKey == nil, "most entries have no condition");
+      CHECK([s isEnabled:amb] && [s disabledNote:amb] == nil, "ambient bars: brightness is live");
+      [s setValue:@"black" forKey:@"DM_LETTERBOX"]; CHECK(![s isEnabled:amb], "black bars: brightness does nothing"); EQ([s disabledNote:amb], @"Has no effect while Bars around the picture is Black");
+      CHECK([s isEnabled:lb] && [s isEnabled:find(s, @"DM_SHOW_FPS")], "the others are untouched");
+      CHECK([s setValue:@"0.8" forKey:@"DM_AMBIENT_LEVEL"], "the store itself still takes the value (the screen refuses to edit a disabled row)"); [s setValue:@"ambient" forKey:@"DM_LETTERBOX"]; CHECK([s isEnabled:amb], "ambient again"); EQ([s valueForKey:@"DM_AMBIENT_LEVEL"], @"0.8");   // what the user set while it was disabled is kept
+      DmSettings *vp = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{@"DMLetterbox": @"black"}); CHECK(![vp isEnabled:find(vp, @"DM_AMBIENT_LEVEL")], "the Info.plist's black bars count");
+      DmSettings *ev = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"black"} mutableCopy], @{}); CHECK(![ev isEnabled:find(ev, @"DM_AMBIENT_LEVEL")], "so does the environment");
+      DmSettings *al = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"0"} mutableCopy], @{}); CHECK(![al isEnabled:find(al, @"DM_AMBIENT_LEVEL")], "an alias of the option counts as the option");
+      // equals form, a game's own entry, and the ways an entry can be wrong
+      NSDictionary *game = @{@"id": @"game", @"title": @"G", @"settings": @[
+          @{@"key": @"DM_G_ON", @"label": @"On", @"type": @"toggle", @"default": @"1"},
+          @{@"key": @"DM_G_LVL", @"label": @"Level", @"type": @"slider", @"min": @0, @"max": @1, @"step": @0.1, @"default": @"0.5", @"enabledWhen": @{@"key": @"DM_G_ON", @"equals": @"1"}},
+          @{@"key": @"DM_G_BAD1", @"label": @"B1", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_G_ON"}},
+          @{@"key": @"DM_G_BAD2", @"label": @"B2", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_G_ON", @"equals": @"1", @"notEquals": @"0"}},
+          @{@"key": @"DM_G_BAD3", @"label": @"B3", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_G_BAD3", @"equals": @"1"}},
+          @{@"key": @"DM_G_BAD4", @"label": @"B4", @"type": @"toggle", @"default": @"0", @"enabledWhen": @"DM_G_ON"},
+          @{@"key": @"DM_G_ORPHAN", @"label": @"Orphan", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_NOT_THERE", @"equals": @"1"}},
+          @{@"key": @"DM_G_JUNK", @"label": @"Junk", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_G_ON", @"equals": @"maybe"}}]};
+      DmSettings *g = make(@[game], tmpFile(), [NSMutableDictionary dictionary], @{}); DmSetting *lv = find(g, @"DM_G_LVL");
+      CHECK(lv != nil && find(g, @"DM_G_ON") != nil, "valid entries kept"); for (NSString *k in @[@"DM_G_BAD1", @"DM_G_BAD2", @"DM_G_BAD3", @"DM_G_BAD4"]) CHECK(find(g, k) == nil, "%s skipped", k.UTF8String);
+      CHECK([g isEnabled:lv], "on"); [g setValue:@"0" forKey:@"DM_G_ON"]; CHECK(![g isEnabled:lv], "equals: off disables"); EQ([g disabledNote:lv], @"Has no effect unless On is On"); [g setValue:@"1" forKey:@"DM_G_ON"]; CHECK([g isEnabled:lv], "on again");
+      CHECK([g isEnabled:find(g, @"DM_G_ORPHAN")], "a condition on a setting that is not registered never disables"); CHECK([g isEnabled:find(g, @"DM_G_JUNK")] && [g disabledNote:find(g, @"DM_G_JUNK")] == nil, "a condition value that does not parse never disables");
+      // the built-in registry's conditions refer to real settings, with values those settings accept, and never to themselves or in a cycle of two
+      for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) if (st.enabledWhenKey) {
+          DmSetting *dep = find(s, st.enabledWhenKey); CHECK(dep != nil && dep != st, "%s depends on a registered other setting", st.key.UTF8String);
+          CHECK([dep normalized:st.enabledEquals ?: st.enabledNotEquals] != nil, "%s: the condition value parses for %s", st.key.UTF8String, dep.key.UTF8String);
+          CHECK(dep.enabledWhenKey == nil, "%s: no chain of conditions", st.key.UTF8String); } }
+
+    // 15. the toggle / slider track is at least 3:1 against the row and the pane in both styles (WCAG non-text contrast), computed from the colour values the screen uses
+    { CHECK(fabs(dm_contrast(0xFFFFFF, 0x000000) - 21) < 1e-9 && fabs(dm_contrast(0x777777, 0xFFFFFF) - 4.48) < 0.01, "the formula matches the WCAG reference values");
+      double lr = dm_contrast(DM_TRACK_LIGHT, DM_ROW_LIGHT), lp = dm_contrast(DM_TRACK_LIGHT, DM_PANEL_LIGHT), dr = dm_contrast(DM_TRACK_DARK, DM_ROW_DARK), dp = dm_contrast(DM_TRACK_DARK, DM_PANEL_DARK);
+      printf("track contrast: light row %.2f pane %.2f, dark row %.2f pane %.2f\n", lr, lp, dr, dp);
+      CHECK(lr >= 3 && lp >= 3 && dr >= 3 && dp >= 3, "track %.2f %.2f %.2f %.2f", lr, lp, dr, dp);
+      uint32_t seen = (uint32_t)lround(0.9 * 0xA6) * 0x010101; CHECK(dm_contrast(seen, DM_ROW_DARK) >= 3, "still 3:1 when a device renders the colour 10%% darker (measured on the old one)");
+      CHECK(dm_contrast(0x8C8C8C, DM_ROW_DARK) < 3 && dm_contrast(0x8E8E8E, DM_ROW_LIGHT) < 3, "the old track colours were under 3:1"); }
 
     printf("t_settings: %d checks, %d failed\n", g_n, g_fail);
     return g_fail ? 1 : 0;
