@@ -22,6 +22,7 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 @property (nonatomic, readonly) NSInteger decimals;                 // slider: decimals shown (derived from step x scale unless the entry says "decimals")
 @property (nonatomic, readonly) NSUInteger maxLength, maxBytes;     // text: at most this many characters (composed sequences) and, when maxBytes is not 0, UTF-8 bytes
 @property (nonatomic, readonly) NSString *requires;                 // capability the build must have for the row to be shown ("fstep": the frame-step stubs), or nil
+@property (nonatomic, readonly) NSString *enabledWhenKey, *enabledEquals, *enabledNotEquals;   // `enabledWhen`: {"key": "DM_X", "equals": "v"} or {"key": "DM_X", "notEquals": "v"}: the entry has an effect only then, else the screen shows it disabled (nil when it always has one)
 @property (nonatomic, readonly) NSString *def;                      // registry default as a string
 @property (nonatomic, readonly) BOOL restart;                       // applies on the next launch (the screen offers a restart), else live
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err;
@@ -35,7 +36,7 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 
 // Where the focus is on the settings screen: what the footer's button hints say follows from it
 typedef NS_ENUM(NSInteger, DmFocusKind) { DmFocusCategory, DmFocusToggle, DmFocusChoice, DmFocusSlider, DmFocusText, DmFocusRestore, DmFocusRestoreAll, DmFocusRestart, DmFocusEditor };
-// The footer hints {glyph, text} for a focus: only the buttons that do something there (a slider has no A, a locked row has neither A nor left / right, a restore-all that waits for its second press says Confirm; the text editor shows its own: Return saves, B cancels, no category switch)
+// The footer hints {glyph, text} for a focus: only the buttons that do something there (a slider has no A, a locked or disabled row has neither A nor left / right, a restore-all that waits for its second press says Confirm; the text editor has its own Cancel and Save buttons, so the footer shows nothing then)
 NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed);
 
 @interface DmSection : NSObject
@@ -52,13 +53,16 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 @property (nonatomic, readonly) NSArray<DmSection *> *sections;           // every page of the registry; sections with the same id are merged (a game's entries join the built-in page)
 @property (nonatomic, readonly) NSArray<DmSection *> *visibleSections;    // the pages with at least one available entry
 - (DmSetting *)settingForKey:(NSString *)key;
+- (BOOL)isEnabled:(DmSetting *)s;                                         // false while the entry's `enabledWhen` condition on another setting's effective value does not hold (it has no effect then: the screen dims it and does not edit it)
+- (NSString *)disabledNote:(DmSetting *)s;                                // why it is disabled ("Has no effect while Bars around the picture is Black"), nil when enabled
 - (BOOL)isAvailable:(DmSetting *)s;                                       // the build has what the entry requires
 - (NSArray<DmSetting *> *)visibleSettingsInSection:(DmSection *)s;
 - (NSString *)valueForKey:(NSString *)key;                // the effective value, normalized
+- (NSString *)defaultValueForKey:(NSString *)key;         // the value when the user has chosen none and the environment sets none: Info.plist, else the game's default, else the registry's
 - (BOOL)boolForKey:(NSString *)key;
 - (double)doubleForKey:(NSString *)key;
 - (DmSettingSource)sourceForKey:(NSString *)key;
-- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse
+- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse. A value equal to the default is not stored (the user's choice is dropped), so a later change of the default still applies
 - (void)resetSection:(DmSection *)s;                       // drops the user's choices of the section
 - (void)resetAll;                                          // drops every choice of every section; each changed key is announced once, keys the environment sets are left alone
 - (BOOL)restartPending;                                    // a restart-only setting differs from what this launch started with

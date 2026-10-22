@@ -86,14 +86,14 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     [self refreshRows]; [self layoutPane];
 }
 - (void)refreshRows {
-    for (DmRowView *r in _rows) if (r.setting) [r showValue:[_settings valueForKey:r.setting.key] source:[_settings sourceForKey:r.setting.key]];
+    for (DmRowView *r in _rows) if (r.setting) [r showValue:[_settings valueForKey:r.setting.key] source:[_settings sourceForKey:r.setting.key] disabledNote:[_settings disabledNote:r.setting]];
     if (_settings.restartPending != _hasRestartRow) {   // a restart-only setting changed: the restart row appears (keep the focus on the same setting)
         NSString *key = _row < (NSInteger)_rows.count ? _rows[(NSUInteger)_row].setting.key : nil;
         [self rebuildRows];
         if (key) for (NSUInteger i = 0; i < _rows.count; i++) if ([_rows[i].setting.key isEqualToString:key]) _row = (NSInteger)i;
         [self updateFocus:NO];
     }
-    [self layoutPane]; [self updateHints];   // a row may have become locked or unlocked
+    [self layoutPane]; [self updateHints];   // a row may have become locked, unlocked, disabled or enabled
 }
 
 #pragma mark - Layout
@@ -148,7 +148,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     DmFocusKind k = DmFocusCategory; BOOL locked = NO;
     if (_editing) k = DmFocusEditor;
     else if (_inPane && _row < (NSInteger)_rows.count) {
-        DmRowView *r = _rows[(NSUInteger)_row]; locked = r.locked;
+        DmRowView *r = _rows[(NSUInteger)_row]; locked = r.inert;   // a disabled row changes as little as a locked one
         switch (r.kind) {
             case DmItemReset: k = DmFocusRestore; break;
             case DmItemResetAll: k = DmFocusRestoreAll; break;
@@ -158,9 +158,9 @@ static void on_trait(UIView *v, void (^apply)(void)) {
                 break;
         }
     }
-    _hints.onScrim = _editing;
     NSArray *h = dm_hints_for_focus(k, locked, _armed);
     if (![h isEqual:_shownHints]) { _shownHints = h; [_hints setHints:h]; }
+    _hints.hidden = h.count == 0;   // the editor has its own buttons, above the keyboard
 }
 - (void)selectSection:(NSInteger)s focusPane:(BOOL)pane row:(NSInteger)row {
     s = MIN(MAX(s, 0), (NSInteger)_cats.count - 1);
@@ -177,7 +177,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 - (void)requestClose { if (self.onClose) self.onClose(); }
 - (void)restart { if (self.onRestart) self.onRestart(); else exit(0); }   // the choices are stored already; the player starts the app again
 - (void)setRow:(DmRowView *)r value:(NSString *)v {
-    if (![_settings setValue:v forKey:r.setting.key]) { [r shake]; return; }
+    if (r.disabled || ![_settings setValue:v forKey:r.setting.key]) { [r shake]; return; }
     [self refreshRows];
 }
 - (void)adjust:(DmRowView *)r by:(int)dir {   // left / right on a row (dir -1 / +1)
@@ -215,7 +215,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 // A text row opens the editor panel (DmSettingsEditor.m): the system keyboard for touch, a hardware keyboard works as usual (Return saves, Escape cancels).
 // The controller and the key commands are paused while it is up, except B, which cancels
 - (void)editText:(DmRowView *)r {
-    DmSetting *s = r.setting; if (r.locked) { [r shake]; return; }
+    DmSetting *s = r.setting; if (r.inert) { [r shake]; return; }
     DmEditorView *e = [[DmEditorView alloc] initWithSetting:s text:[_settings valueForKey:s.key] compact:_compact];
     __weak DmSettingsVC *w = self; __weak DmRowView *wr = r;
     e.onSave = ^(NSString *text) {
@@ -226,7 +226,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     e.onCancel = ^{ [w textEditorClosed]; };
     e.frame = self.view.bounds; e.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _editor = e; _editing = YES; _editB = (_prev & 1ull << DMB_B) != 0;
-    [self.view addSubview:e]; [self.view bringSubviewToFront:_hints]; [self updateHints]; [e open];   // the footer stays above the scrim and names the editor's buttons
+    [self.view addSubview:e]; [self updateHints]; [e open];   // the footer goes while the editor is up: the soft keyboard would cover it, and the panel has its own Cancel and Save
 }
 - (void)textEditorClosed { _editing = NO; _editor = nil; _baselined = NO; [self updateHints]; [self becomeFirstResponder]; }   // what the controller holds now does nothing until it is released
 - (void)cancelEditor { [_editor cancel]; }
@@ -238,7 +238,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     }
     DmRowView *r = _rows[(NSUInteger)_row];
     if (d == DirUp || d == DirDown) { _row = MIN(MAX(_row + (d == DirDown ? 1 : -1), 0), (NSInteger)_rows.count - 1); [self updateFocus:YES]; }
-    else if (r.kind != DmItemSetting || r.locked || r.setting.type == DmSettingText) { if (d == DirLeft) [self selectSection:_section focusPane:NO row:_row]; }   // no left / right on this row: left goes back to the list
+    else if (r.kind != DmItemSetting || r.inert || r.setting.type == DmSettingText) { if (d == DirLeft) [self selectSection:_section focusPane:NO row:_row]; }   // no left / right on this row: left goes back to the list
     else [self adjust:r by:d == DirRight ? 1 : -1];
 }
 - (void)accept { if (!_inPane) [self selectSection:_section focusPane:YES row:0]; else [self activate:_rows[(NSUInteger)_row]]; }
