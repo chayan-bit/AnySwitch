@@ -1,7 +1,7 @@
 # Contributing to AnySwitch
 
 Thanks for helping.
-AnySwitch is a fork of [nxnative](https://github.com/seedds/nxnative), and keeping it mergeable with upstream matters, so a few rules below are stricter than usual.
+AnySwitch keeps its internals mergeable with the upstream project it grew from (see the [credits](README.md#credits-and-acknowledgements)), so a few rules below are stricter than usual.
 By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Ground rules
@@ -23,12 +23,25 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Development setup
 
 You need a Mac with Apple silicon, [Xcode](https://apps.apple.com/app/xcode/id497799835) (the Metal and iOS toolchains), and Python 3.
-The command line tools come either from Homebrew or from Nix.
+The command line tools come either from Nix or from Homebrew.
+The same steps are in the README's [Setup](README.md#setup).
+
+```
+git clone https://github.com/chayan-bit/AnySwitch.git
+cd AnySwitch
+```
 
 With Nix:
 
 ```
-nix-shell -p xcodegen zstd spirv-cross dotnet-sdk 'python3.withPackages (p: [p.lz4 p.capstone p.fonttools])'
+nix-shell -p xcodegen zstd spirv-cross dotnet-sdk_10 'python3.withPackages (p: [p.lz4 p.capstone p.fonttools])'
+```
+
+Inside that shell, make Xcode's own `xcrun` win over the one Nix puts first, so the Metal compiler is found:
+
+```
+unset DEVELOPER_DIR SDKROOT
+PATH=$(echo "$PATH" | tr ':' '\n' | grep -v xcrun | paste -sd: -)
 ```
 
 With Homebrew:
@@ -55,7 +68,7 @@ The packing script, its options, building by hand and per-game notes are in [doc
 | `dm/ios/` | The iOS app shell, the settings screen, `tools/build_ipa.sh` |
 | `dm/games/` | One game profile per title: `game.tsv` plus generated shader tables. See [dm/games/README.md](dm/games/README.md) |
 | `dm/third_party/` | Code from other projects with its licenses. See [THIRD_PARTY.md](THIRD_PARTY.md) |
-| `docs/` | Documentation, indexed in [docs/README.md](docs/README.md). `docs/agents` is a guide to porting a title |
+| `docs/` | Documentation, indexed in [docs/README.md](docs/README.md). `docs/internals` holds the porting and debugging notes |
 
 ## Running the tests
 
@@ -84,7 +97,7 @@ Add a test with every fix or feature, and fix a failing or flaky test you meet e
 
 1. Run `scripts/build_ipa_from_nsp.py` on the game's NSP folder with your own keys.
    With no matching profile it writes a survey (`<title ID>_survey/survey.md`) and a provisional profile outside the repository, then packs a best-effort IPA.
-2. Bring the game up with [docs/agents](docs/agents/README.md): extraction, binary survey, host bring-up failures, graphics, debugging.
+2. Bring the game up with the [internals and porting notes](docs/internals/README.md): extraction, binary survey, host bring-up failures, graphics, debugging.
 3. Move the profile into `dm/games/<base game title ID>/` as described in [dm/games/README.md](dm/games/README.md): `game.tsv` (with a `name` row, which the README table and the Mac window title use) and the generated tables (`shader_map.tsv`, `shader_facts.tsv`, `shader_pairs.tsv`, `c1_full.tsv`, `cb_extent.tsv`, `pso_manifest.tsv`, `dmsh_chain.h`).
    The tables hold hashes, shader keys and file paths inside the game, never game bytes.
 4. Check `python3 dm/games/game.py list` shows it, and that the host tests still pass.
