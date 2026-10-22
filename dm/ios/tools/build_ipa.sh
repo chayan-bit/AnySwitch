@@ -145,7 +145,8 @@ xcodegen generate -q > /dev/null || die "xcodegen"
 
 t "xcodebuild (Release, unsigned, iPhone + iPad)"
 mkdir -p "$O"
-xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+# XCODE_JOBS = how many compile jobs xcodebuild runs at once (default: its own choice, one per core)
+xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" ${XCODE_JOBS:+-jobs "$XCODE_JOBS"} \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build > "$O/build.log" 2>&1 \
   || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
 # When Xcode's Locations setting is a custom location, products ignore -derivedDataPath: take the actual path from this build's log
