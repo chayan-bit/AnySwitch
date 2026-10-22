@@ -57,6 +57,7 @@ extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_s
 // of any kind (the stubs, or an engine frame limit kept in game memory: hle_fpslock.c). 0 for a name it does not know. Valid once the game's modules are loaded
 int dm_capability(const char *name);
 int dm_fps_lock_present(void);   // hle_fpslock.c: the main module has an engine frame limit row
+void dm_audio_volume(double v);   // master volume 0...1 (the "Volume" setting): applied in the sound card callback, lock-free, any thread
 void dm_audio_suspend(int on);
 uint64_t dm_audio_render_calls(void);   // Cumulative sound card callback count (the silent sink is not counted)
 void dm_audio_reset(void);   // iOS media services reset: recreate the AudioUnits (hle_audio.c)

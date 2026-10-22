@@ -12,7 +12,42 @@ void hle_signal_system_event(void *g) { (void)g; atomic_fetch_add_explicit(&g_si
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }   // the real implementation needs a guest thread + SDK kernel event; the unit test only counts triggers
 module_t *module_of(const void *p) { (void)p; return NULL; }   // call sites in the log: no guest modules in the unit test
 void dm_host_helper_qos(qos_class_t q) { (void)q; }   // hle_thread.c: the helper threads keep the default class in the unit test
+// Master volume: the gain curve, the ramp and the clamping of apply_gain (hle_audio.c). Pure arithmetic: no device.
+static int gain_selftest(void) {
+    int bad = 0;
+#define EXPECT(c, ...) do { if (!(c)) { bad++; printf("FAIL volume line %d: %s  ", __LINE__, #c); printf(__VA_ARGS__); printf("\n"); } } while (0)
+    EXPECT(gain_of(1) == GAIN_UNITY && gain_of(7) == GAIN_UNITY && gain_of(0) == 0 && gain_of(-1) == 0 && gain_of(NAN) == 0, "clamps");
+    EXPECT(gain_of(0.5) == GAIN_UNITY / 4 && gain_of(0.25) == GAIN_UNITY / 16, "the curve is the square: %d %d", gain_of(0.5), gain_of(0.25));
+    int16_t a[8] = {1000, -1000, 32767, -32768, 5, -5, 0, 12345}, keep[8]; memcpy(keep, a, sizeof a);
+    apply_gain(a, 4, 2, GAIN_UNITY, GAIN_UNITY); EXPECT(!memcmp(a, keep, sizeof a), "unity leaves the samples bit-exact");
+    apply_gain(a, 4, 2, GAIN_UNITY / 2, GAIN_UNITY / 2); EXPECT(a[0] == 500 && a[1] == -500 && a[2] == 16383 && a[3] == -16384 && a[7] == 6172, "half: %d %d %d %d %d", a[0], a[1], a[2], a[3], a[7]);
+    memcpy(a, keep, sizeof a); apply_gain(a, 4, 2, 0, 0); for (int i = 0; i < 8; i++) EXPECT(a[i] == 0, "silence");
+    int16_t r[64]; for (int i = 0; i < 64; i++) r[i] = 20000;   // 32 stereo frames, ramping from silence to unity: monotonic, ends at the full level, the channels move together
+    apply_gain(r, 32, 2, 0, GAIN_UNITY); for (int i = 1; i < 32; i++) EXPECT(r[2 * i] >= r[2 * (i - 1)] && r[2 * i] == r[2 * i + 1], "ramp up at %d", i);
+    EXPECT(r[0] < 1000 && r[62] == 20000, "ramp ends: %d ... %d", r[0], r[62]);
+    for (int i = 0; i < 64; i++) r[i] = -20000;
+    apply_gain(r, 32, 2, GAIN_UNITY, 0); for (int i = 1; i < 32; i++) EXPECT(r[2 * i] >= r[2 * (i - 1)], "ramp down at %d", i);
+    EXPECT(r[62] == 0, "ramp down ends silent");
+    apply_gain(a, 0, 2, 0, GAIN_UNITY);   // an empty block does nothing and does not divide by zero
+    dm_audio_volume(0.5); EXPECT(atomic_load(&g_gain) == GAIN_UNITY / 4, "the setter stores the gain"); dm_audio_volume(1);
+    {   // through the sound card callback itself: the first block after a change ramps, the next is steady; a fresh output starts at the current gain (no fade-in from silence)
+        char out[64], ev[64]; uint8_t prm[16]; gbuf b; static int16_t pcm[480 * 2]; h_au_InitParam(prm);
+        for (int i = 0; i < 480 * 2; i++) pcm[i] = 20000;
+        if (h_au_Open(out, ev, NULL, prm)) return 0;
+        h_au_SetBuf(&b, pcm, sizeof pcm, sizeof pcm); h_au_Append(out, &b);
+        aout *a = ao(out); atomic_store(&a->state, STATE_STARTED);   // no backend: the callback is called by hand
+        static int16_t dst[480 * 2]; AudioBufferList bl = {.mNumberBuffers = 1, .mBuffers[0] = {.mNumberChannels = 2, .mDataByteSize = sizeof dst, .mData = dst}};
+        dm_audio_volume(0.5); au_render(a, NULL, NULL, 0, 480, &bl);
+        EXPECT(dst[0] == 5000 && dst[2 * 479 + 1] == 5000, "the first block is at the current gain: %d %d", dst[0], dst[2 * 479 + 1]);
+        h_au_Append(out, &b); a->pos = 0; dm_audio_volume(1); au_render(a, NULL, NULL, 0, 480, &bl);
+        EXPECT(dst[0] > 5000 && dst[0] < 20000 && dst[2 * 479] == 20000, "the next block ramps up to unity: %d ... %d", dst[0], dst[2 * 479]);
+        usleep(50000); h_au_Close(out); usleep(50000); atomic_store(&g_sig, 0);   // the releases above signaled the event: the scenarios below count their own
+    }
+    printf("volume: gain curve, ramp and clamping %s\n", bad ? "FAILED" : "ok");
+    return !bad;
+}
 int main(void) {
+    if (!gain_selftest()) return 1;
     char out[64], ev[64]; uint8_t prm[16]; gbuf b[3]; static int16_t pcm[3][4800 * 2];
     h_au_InitParam(prm);
     if (h_au_Open(out, ev, NULL, prm)) return 1;

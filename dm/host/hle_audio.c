@@ -35,6 +35,7 @@ typedef struct {
     uint64_t st_calls, st_qsum, st_u0, st_ub0; uint32_t st_fmin, st_fmax;   // sound card callback statistics (read and written only on the callback thread)
     _Atomic uint64_t cb_n;             // device callbacks of this output (the watchdog's evidence that the device still plays it)
     uint64_t wd_n, wd_t;               // watchdog: callback count last seen and when it last moved (under g_aos_lock)
+    int gain_init; int32_t gain_prev;  // the master gain the last callback ended at (callback thread only): the next block ramps from it
     int stalled, retry_ms; uint64_t retry_at;   // the device stopped calling back (or would not start): the silent sink stands in and the watchdog retries the AudioUnit at retry_at, backing off
 } aout;
 
@@ -110,6 +111,22 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     }
 }
 
+// Master volume (the in-app "Volume" setting, DM_VOLUME): a Q15 gain on everything the sound card plays, read by the render callback, written by dm_audio_volume (any thread).
+// The callback only loads an atomic and multiplies: no allocation, no lock. Silent sinks (paused, stalled) need no gain: nothing audible comes out of them
+#define GAIN_UNITY 32768
+static _Atomic int32_t g_gain = GAIN_UNITY;
+// A volume 0...1 as a gain: the amplitude follows the square of the slider, a rough loudness curve (half way is -12 dB, a quarter is -24 dB); out of range clamps, not a number is silence
+static int32_t gain_of(double v) { if (!(v > 0)) return 0; if (v >= 1) return GAIN_UNITY; return (int32_t)lround(v * v * GAIN_UNITY); }
+void dm_audio_volume(double v) { atomic_store_explicit(&g_gain, gain_of(v), memory_order_relaxed); }
+// Interleaved PCM16, the gain moving linearly from g0 to g1 across the block (a step in the middle of a block would click); unity both ends leaves the samples untouched
+static void apply_gain(int16_t *s, uint32_t frames, uint32_t ch, int32_t g0, int32_t g1) {
+    if (g0 == GAIN_UNITY && g1 == GAIN_UNITY) return;
+    for (uint32_t i = 0; i < frames; i++) {
+        int32_t g = g0 + (int32_t)(((int64_t)(g1 - g0) * (int64_t)(i + 1)) / (int64_t)frames);
+        for (uint32_t c = 0; c < ch; c++) { int16_t *p = &s[(size_t)i * ch + c]; *p = (int16_t)(((int32_t)*p * g) >> 15); }
+    }
+}
+
 static _Atomic uint64_t g_render_calls;   // Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
 uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
@@ -127,6 +144,8 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
     { static int mute = -1; if (mute < 0) { const char *e = getenv("DM_AUDIO_MUTE"); mute = e && atoi(e); }   // diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
       if (mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); }
+    {   int32_t g1 = atomic_load_explicit(&g_gain, memory_order_relaxed), g0 = a->gain_init ? a->gain_prev : g1; a->gain_init = 1; a->gain_prev = g1;
+        apply_gain(bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize / (2u * (uint32_t)a->ch), (uint32_t)a->ch, g0, g1); }
     return noErr;
 }
 static OSStatus au_create(aout *a) {
