@@ -1366,6 +1366,10 @@ def main(args=None):
     if not keep:
         say(f'deleting the extracted game files: {ex}'); rmtree(ex)
     say(f'done: {out_ipa} ({out_ipa.stat().st_size / 2**30:.1f} GB)')
+    if ipa_env.get('IPA_ROMFS', 'store') == 'store':   # build_ipa.sh's default: the game files are a chunk store beside the IPA, not in it
+        store = Path(ipa_env.get('ROMSTORE') or Path(ipa_env['W']) / 'build' / 'romfs.dmstore')
+        say(f'the game files are in a chunk store, not in the IPA: {store}')
+        say(f'  after installing the app, copy it: python3 {repo}/dm/tools/romstore/romstore.py install {store} --device <udid> --bundle {bundle_id}  (IPA_ROMFS=1 packs the files into the IPA instead)')
     if provisional:
         say(f'[RED] this IPA was built from a provisional game profile and the game may not boot: {g.dir}')
         say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/internals')

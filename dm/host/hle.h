@@ -54,7 +54,7 @@ void dm_focus_set(int st);
 // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
 extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag, +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
 // What the loaded build can do, asked by the settings screen to show only the rows that have an effect: "fstep" the frame-step stubs (frame cap and render scale), "fpscap" a frame cap
-// of any kind (the stubs, or an engine frame limit kept in game memory: hle_fpslock.c), "internalres" render targets above the Switch's resolution (the game draws with NVN). 0 for a name it does not know. Valid once the game's modules are loaded
+// of any kind (the stubs, or an engine frame limit kept in game memory: hle_fpslock.c), "internalres" render targets above the Switch's resolution and "nvn" the flexible pipelines (both: the game draws with NVN). 0 for a name it does not know. Valid once the game's modules are loaded
 int dm_capability(const char *name);
 int dm_fps_lock_present(void);   // hle_fpslock.c: the main module has an engine frame limit row
 void dm_audio_volume(double v);   // master volume 0...1 (the "Volume" setting): applied in the sound card callback, lock-free, any thread

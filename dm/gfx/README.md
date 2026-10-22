@@ -212,7 +212,7 @@ Comparison and testing:
 | `DM_FPS=30` or `60` | Pins the target frame rate |
 | `DM_NVN_BARRIER=game`, `DM_NVN_CUT` | Pass ordering and segment commits: see [docs/internals/04-graphics.md](../../docs/internals/04-graphics.md) section 7 |
 | `DM_LETTERBOX=ambient` or `black` | What the bars show when the picture does not fill the screen: `ambient` (default) the blurred live frame, `black` plain black bars; see "Letterbox" below |
-| `DM_UPSCALE=bilinear` or `sharp`, `DM_UPSCALE_SHARPNESS=0..1` | How the picture is enlarged to the drawable: `bilinear` (default) the plain stretch, `sharp` AMD FSR 1 with RCAS at the given strength (default 0.8); see "Upscale" below |
+| `DM_UPSCALE=bilinear` or `sharp`, `DM_UPSCALE_SHARPNESS=0..1` | How the picture is enlarged to the drawable: `bilinear` (the host's default) the plain stretch, `sharp` AMD FSR 1 with RCAS at the given strength (default 0.8); the iOS app sets it itself, Sharp by default at 30 fps (docs/settings.md); see "Upscale" below |
 | `DM_CONTROLS_LAYOUT=auto` or `overlay` | iOS only: `auto` (default) puts the touch controls in the letterbox bars when they are tall enough, `overlay` keeps them over the picture |
 | `DM_CONTROLS_SCALE=0.75..2.5` | iOS only, controls in the bars: size of the A / B / X / Y keys, the left stick and the D-pad (default 1; Info.plist key `DMControlsScale`); they grow upward from the bar over the picture |
 | `DM_PRESENT_HZ=N` | The frequency of presentation pacing (default 60); 0 means no frame limit and is for performance profiling only |
@@ -287,7 +287,7 @@ A shader in no pair compiles on first use; a shader in a pair is necessary but n
 
 ### Flexible pipelines and skip-draw
 
-`nvn/nvn_flexpso.m` (on with `DM_PSO_FLEX=1`) makes pipelines through Metal 4's `MTL4Compiler` with colour formats, write masks and blending unspecialized, so one unspecialized pipeline per shader pair and vertex layout serves every colour state.
+`nvn/nvn_flexpso.m` (on with `DM_PSO_FLEX=1`; off by default in the host, on by default in the iOS app, whose Performance setting "Flexible pipelines" exports it) makes pipelines through Metal 4's `MTL4Compiler` with colour formats, write masks and blending unspecialized, so one unspecialized pipeline per shader pair and vertex layout serves every colour state.
 The unspecialized pipeline comes from a shipped `MTL4Archive` (`dm/pso_flex.metallib`, or `DM_PSO_FLEX_ARCHIVE=path|off`) or is compiled; a worker then specializes it for the draw's colour state.
 The render thread never compiles or specializes: it asks, draws if the pipeline is ready, and otherwise either skips the draw or waits for the worker, by the target-history rule below.
 

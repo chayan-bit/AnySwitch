@@ -173,6 +173,8 @@ The first build takes 30 to 60 minutes, later ones about 10.
 All options with examples: [docs/development.md](docs/development.md#the-packing-script-in-detail).
 
 **5. Install the IPA** with your sideloading tool.
+By default the build packs the game files into a compressed chunk store next to the IPA instead of into the IPA (about 46% of their size); the script prints the command that copies it to the device once, after the app is installed.
+`IPA_ROMFS=1 python3 scripts/build_ipa_from_nsp.py ...` packs the files into the IPA instead, one self-contained file that needs no copy.
 The app gets the game's name, icon and version (the update's version when there is an update, else the base game's).
 It runs on iPad and iPhone alike.
 With a free Apple ID the signature lasts seven days, and the app has to be installed again after that.
@@ -186,7 +188,8 @@ A connected game controller hides the touch controls and keeps every button.
 
 **Settings.**
 The gear button at the top (or + and - held together on a controller, or Cmd and comma on a keyboard) opens the settings screen.
-It changes the bars around the picture, the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
+It changes the bars around the picture, how the picture is enlarged (Upscaling: Sharp by default for games that run at 30 fps, Bilinear for 60 fps ones), the flexible pipelines (on by default), the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
+A choice you make is kept over these defaults.
 
 **Shaking.**
 Shake the device (iPhone or iPad) to shake the controller, in games that read its motion.

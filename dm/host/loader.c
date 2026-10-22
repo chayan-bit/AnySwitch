@@ -200,7 +200,7 @@ int dm_capability(const char *name) {
     if (!name) return 0;
     if (!strcmp(name, "fstep")) return dm_fps_state != NULL;
     if (!strcmp(name, "fpscap")) return dm_fps_state != NULL || dm_fps_lock_present();
-    if (!strcmp(name, "internalres")) return force_referenced("nvnBootstrapLoader");   // the NVN layer (nvn_mtl.m) scales render targets; the Vulkan layer does not
+    if (!strcmp(name, "internalres") || !strcmp(name, "nvn")) return force_referenced("nvnBootstrapLoader");   // the NVN layer (nvn_mtl.m) scales render targets (internalres) and makes the flexible pipelines (nvn): the Vulkan layer does neither
     return 0;
 }
 static void install_fps_state(module_t *m) {
