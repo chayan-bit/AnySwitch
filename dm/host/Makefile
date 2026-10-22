@@ -16,7 +16,7 @@ endif
 GAME_H = gen/$(GAME)/game_profile.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m romstore.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S
 # Dev input channel (docs/dev-control.md): only with make DEVCTL=1 (also read from the environment, so build_ipa.sh / gen_build.py carry it into the iOS app); product builds have none of it
 ifneq ($(strip $(DEVCTL)),)
 CFLAGS += -DDM_DEVCTL
@@ -35,6 +35,16 @@ gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
 	@mkdir -p $(dir $@)
 	clang -O2 -g -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_LIB): $(VPX_OBJ)
+	rm -f $@; ar rcs $@ $^
+# Third party: zstd's decompressor only (lib/common + lib/decompress), for the chunk store reader romstore.c; a static library like libvpx, and the iOS build compiles the same files
+ZSTD=../third_party/zstd/lib
+ZSTD_SRC=$(sort $(wildcard $(ZSTD)/common/*.c $(ZSTD)/decompress/*.c))
+ZSTD_OBJ=$(patsubst $(ZSTD)/%.c,gen/zstd/%.o,$(ZSTD_SRC))
+ZSTD_LIB=gen/zstd/libzstd.a
+gen/zstd/%.o: $(ZSTD)/%.c $(wildcard $(ZSTD)/*.h $(ZSTD)/common/*.h $(ZSTD)/decompress/*.h)
+	@mkdir -p $(dir $@)
+	clang -O2 -g -DZSTD_DISABLE_ASM -I$(ZSTD) -c $< -o $@
+$(ZSTD_LIB): $(ZSTD_OBJ)
 	rm -f $@; ar rcs $@ $^
 .DEFAULT_GOAL := dmhost   # The header generation rules are written first below, so the default goal must be stated explicitly (otherwise make only generates the headers and does not build the host)
 .PHONY: game_profile
@@ -57,5 +67,5 @@ endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h devctl.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
-	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h devctl.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB) $(ZSTD_LIB) romstore.h
+	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I$(ZSTD) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(ZSTD_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers

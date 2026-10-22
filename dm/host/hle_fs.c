@@ -1,5 +1,5 @@
 // nn::fs: on the real device it goes through the fsp-srv service; the host connects directly to the Mac file system. Mount name → host directory:
-//   rom   → $DM_ROMFS (default $DM_ROOT/romfs, read-only; the game parses the storage blocks in it itself)
+//   rom   → $DM_ROMFS (default $DM_ROOT/romfs, read-only; the game parses the storage blocks in it itself); when $DM_ROMFS names a file, it is a chunk store (romstore.h) read through romstore.c
 //   save  → $DM_SAVE (must be set, pointing to this run's copy of the standard save save_ref; if unset, report a failure and abort)
 //   temp  → $DM_TEMP (default $DM_ROOT/run/platform/temp)
 // Paths look like "rom:/data/x". FileHandle / DirectoryHandle are 8 bytes passed by value, here they store the host fd / DIR*.
@@ -7,6 +7,7 @@
 #include "hle.h"
 #include <mach/mach.h>
 #include "front.h"
+#include "romstore.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -35,7 +36,7 @@ _Static_assert(sizeof(DirectoryEntry) == 0x310, "DirectoryEntry layout");
 // Host: at mount, the committed directory commit (= $DM_SAVE) is clonefile'd as a whole tree into the working directory <commit>.work (APFS copy-on-write, nearly zero cost), and the mount points at the working directory,
 // all game reads and writes happen in the working directory; Commit = clonefile(work → <commit>.new), then renamex_np(RENAME_SWAP) swaps it atomically with commit, then the swapped-out old version is deleted.
 // Killed at any moment, commit is either the old version or the new version, never half-written / a mix of old and new; the next mount discards leftover .work / .new.
-typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; } mount_t;
+typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; romstore *store; } mount_t;   // store: a chunk store mount (read-only; paths resolve in its index)
 static mount_t g_mnt[MAX_MOUNT];   // commit non-empty = transactional save mount
 static int g_nmnt;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -44,6 +45,9 @@ static void path_unlock(pthread_mutex_t **m) { pthread_mutex_unlock(*m); }
 #define PATH_LOCK() pthread_mutex_t *path_guard __attribute__((cleanup(path_unlock))) = &g_path_lock; pthread_mutex_lock(path_guard)
 static uint8_t g_fmode[65536];              // fd → open mode
 static uint8_t g_fsave[65536];              // fd → whether it is on a transactional save mount (the save write injection point only counts these)
+// fd → the chunk store file it reads. A store file's handle is an fd of its own, a dup of the store's: the fd-indexed tables above, the null-handle checks and the fd limit work as for a
+// host file, and a write or resize on it fails like on any read-only fd; ReadFile, GetFileSize and CloseFile look here first
+static struct { romstore *st; uint32_t file; } g_sfile[65536];
 static _Atomic int g_save_writes;           // number of writes on the save mount (shared by the injection point and the commit log)
 static _Atomic uint64_t g_txn_first_ns;     // time of this transaction's first save write (used by the commit log to report timing; cleared to 0 at commit)
 // Write failures are refused per transaction: on the real device save space is reserved when the save is created, overwrites cannot fail, and the game does not check the return values of WriteFile / SetFileSize either, it Commits as usual after a failure
@@ -78,13 +82,13 @@ static int dm_fs_test_fail(const char *pt) {
 }
 static int in_txn_dir(const char *hp) { for (int i = 0; i < g_nmnt; i++) { size_t n = strlen(g_mnt[i].dir); if (g_mnt[i].commit[0] && !strncmp(hp, g_mnt[i].dir, n) && (hp[n] == '/' || !hp[n])) return 1; } return 0; }
 static int rm_tree(const char *p);
-static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
+static Result mount_ex(const char *name, const char *dir, int ro, int txn, romstore *store) {
     PATH_LOCK(); pthread_mutex_lock(&g_lock);
     for (int i = 0; i < g_nmnt; i++)
         if (!strcmp(g_mnt[i].name, name)) { pthread_mutex_unlock(&g_lock); return RES_OK; }
     if (g_nmnt >= MAX_MOUNT) die("mount table full");
     strlcpy(g_mnt[g_nmnt].name, name, sizeof g_mnt[0].name);
-    g_mnt[g_nmnt].ro = ro; g_mnt[g_nmnt].overlay[0] = 0; g_mnt[g_nmnt].commit[0] = 0;
+    g_mnt[g_nmnt].ro = ro; g_mnt[g_nmnt].overlay[0] = 0; g_mnt[g_nmnt].commit[0] = 0; g_mnt[g_nmnt].store = store;
     if (!strcmp(name, "rom") && getenv("DM_ROMFS_OVERLAY"))
         strlcpy(g_mnt[g_nmnt].overlay, getenv("DM_ROMFS_OVERLAY"), sizeof g_mnt[0].overlay);
     // The transaction directory cannot be set up (leftovers cannot be cleared / clone failed, which really happens on a full disk): do not exit; mount the committed directory read-only -- saves still read, every write fails, commits are no-ops, the committed version is untouched, and the front end is told
@@ -108,10 +112,10 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
     pthread_mutex_unlock(&g_lock);
     if (txn_err) front_save_failed(txn_err);
     if (!ro && !txn) mkdir(dir, 0755);
-    LOG("fs mount %s: → %s%s%s", name, txn ? g_mnt[g_nmnt - 1].dir : dir, ro || txn_err ? " (read-only)" : txn ? " (transactional save: work directory, swapped in atomically on Commit)" : "", g_mnt[g_nmnt - 1].overlay[0] ? " (overlay first)" : "");
+    LOG("fs mount %s: → %s%s%s%s", name, txn ? g_mnt[g_nmnt - 1].dir : dir, ro || txn_err ? " (read-only)" : txn ? " (transactional save: work directory, swapped in atomically on Commit)" : "", g_mnt[g_nmnt - 1].overlay[0] ? " (overlay first)" : "", store ? " (chunk store)" : "");
     return RES_OK;
 }
-static Result mount(const char *name, const char *dir, int ro) { return mount_ex(name, dir, ro, 0); }
+static Result mount(const char *name, const char *dir, int ro) { return mount_ex(name, dir, ro, 0, NULL); }
 
 // APFS is case-insensitive by default, Horizon paths are case-sensitive: every component is looked up exactly by guest name.
 // Ordinary host names are unchanged; only when a name collides on the host is a separate physical name chosen, with the guest name stored in an xattr.
@@ -259,6 +263,7 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     for (int i = 0; i < g_nmnt; i++) {
         if (strlen(g_mnt[i].name) != ln || strncmp(g_mnt[i].name, p, ln)) continue;
         if (ro) *ro = g_mnt[i].ro;
+        if (g_mnt[i].store) { errno = EROFS; return 0; }   // a chunk store has no host path: its reads resolve in store_lookup, anything else is a write to a read-only mount
         char normed[1024]; const char *rest = c + 1;
         if (strstr(rest, "/.")) { if (!norm_rest(rest, normed, sizeof normed)) return 0; rest = normed; }   // only paths with "." components are normalized; the rest walk component by component as before
         if (g_mnt[i].overlay[0] && !create) return rom_overlay_path(&g_mnt[i], rest, out, n);
@@ -280,6 +285,18 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     errno = ENOENT; return 0;
 }
 static int host_path(const char *p, char *out, size_t n, int *ro) { return host_path_ex(p, out, n, ro, 0); }
+// A path on a chunk store mount: 0 = not on one (the caller takes the host path), 1 = found (*idx is a dir or file index of *st), -1 = not found (errno set). Caller holds PATH_LOCK
+static int store_lookup(const char *p, romstore **st, uint32_t *idx, int *is_dir) {
+    const char *c = strchr(p, ':'); if (!c) return 0;
+    for (int i = 0; i < g_nmnt; i++) {
+        if (strlen(g_mnt[i].name) != (size_t)(c - p) || strncmp(g_mnt[i].name, p, c - p)) continue;
+        if (!(*st = g_mnt[i].store)) return 0;
+        char normed[1024];
+        if (!norm_rest(c + 1, normed, sizeof normed)) return -1;
+        return romstore_lookup(*st, normed, idx, is_dir) ? 1 : -1;
+    }
+    return 0;
+}
 static int set_guest_name(const char *hp, const char *path) {
     const char *end = path + strlen(path); while (end > path && end[-1] == '/') end--;
     const char *start = end; while (start > path && start[-1] != '/' && start[-1] != ':') start--;
@@ -305,9 +322,23 @@ static Result err_res(const char *op, const char *path) {
 
 // ---------- Mount ----------
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host directory directly, the cache gets only the minimum size", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
-HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
-    (void)cache; (void)sz; char b[1024];
-    Result r = mount(name, envdir("DM_ROMFS", "romfs", b, sizeof b), 1);
+// A chunk store is opened once, at the first MountRom that finds one, and stays open; DM_ROMSTORE_CACHE_MB sizes its cache of partly read chunks (default 32)
+static romstore *rom_store(const char *path) {
+    static romstore *st; static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&m);
+    if (!st) {
+        if (getenv("DM_ROMFS_OVERLAY")) die("DM_ROMFS_OVERLAY layers over a RomFS directory; DM_ROMFS=%s is a chunk store", path);
+        const char *mb = getenv("DM_ROMSTORE_CACHE_MB"); char err[1200]; uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+        if (!(st = romstore_open(path, (size_t)(mb ? atoi(mb) : 32) << 20, err, sizeof err))) die("chunk store: %s", err);
+        LOG("fs chunk store %s opened and checked in %.1f ms (cache %s MB)", path, (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6, mb ? mb : "32");
+    }
+    pthread_mutex_unlock(&m);
+    return st;
+}
+HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory or chunk store", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
+    (void)cache; (void)sz; char b[1024]; const char *root = envdir("DM_ROMFS", "romfs", b, sizeof b); struct stat st;
+    if (!stat(root, &st) && S_ISREG(st.st_mode)) return mount_ex(name, root, 1, 0, rom_store(root));
+    Result r = mount(name, root, 1);
     if (r == RES_OK && getenv("DM_ROMFS_OVERLAY")) {
         PATH_LOCK();
         for (int i = 0; i < g_nmnt; i++) if (!strcmp(g_mnt[i].name, name)) {
@@ -409,7 +440,7 @@ HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv; save data 
     const char *d = getenv("DM_SAVE");
     if (!d) die("DM_SAVE is not set: point it at a writable copy of a save directory");
     char dd[1024]; strlcpy(dd, d, sizeof dd); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;   // strip trailing slashes (.work / .new are appended at the same level)
-    return mount_ex(name, dd, 0, 1);
+    return mount_ex(name, dd, 0, 1, NULL);
 }
 static _Atomic uint64_t g_save_commits;   // number of successful commits (used by the front end when going to background to wait for "the game's current save has been committed")
 uint64_t dm_fs_commit_count(void) { return atomic_load(&g_save_commits); }
@@ -496,7 +527,26 @@ HLE_FORCE("_ZN2nn2fs14CommitSaveDataEPKc", "fsp-srv; same as Commit (SDK 11's ol
 HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; the mount table is permanent, unmounting is a no-op", void, h_fs_Unmount, const char *name) { (void)name; }
 
 // ---------- Files ----------
-HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+static void opened(int fd, const char *path, int mode) {   // the read log and DM_FS line of an opened file
+    fslog_init();
+    if (g_fslog && fd < 4096) { pthread_mutex_lock(&g_fslog_lock); free(g_fdpath[fd]); g_fdpath[fd] = strdup(path); pthread_mutex_unlock(&g_fslog_lock); }
+    if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → fd %d", (now_ns() - g_t0_ns) / 1e9, path, mode, fd);
+}
+static Result store_open_file(int found, romstore *st, uint32_t idx, int is_dir, uint64_t *out, const char *path, int mode) {
+    if (found < 0) return err_res("open", path);
+    if (mode & (MODE_WRITE | MODE_APPEND)) { LOG("fs write to a read-only mount: %s", path); return RES_FAIL; }
+    if (is_dir) return RES_PATH_NOT_FOUND;
+    int fd = dup(romstore_fd(st));
+    if (fd < 0) return err_res("open", path);
+    if (fd >= (int)sizeof g_fmode) die("fd beyond the table");
+    g_sfile[fd].st = st; g_sfile[fd].file = idx; g_fmode[fd] = (uint8_t)mode; g_fsave[fd] = 0; *out = (uint64_t)fd;
+    opened(fd, path, mode);
+    return RES_OK;
+}
+HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2), or a chunk store file", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+    romstore *rs; uint32_t idx; int is_dir, found;
+    { PATH_LOCK(); found = store_lookup(path, &rs, &idx, &is_dir); }
+    if (found) return store_open_file(found, rs, idx, is_dir, out, path, mode);
     HP(path);
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
@@ -507,16 +557,18 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     g_fmode[fd] = (uint8_t)mode; *out = (uint64_t)fd;
     { const char *c = strchr(path, ':'); size_t ln = c ? (size_t)(c - path) : 0; g_fsave[fd] = 0;
       for (int i = 0; c && i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, path, ln)) g_fsave[fd] = g_mnt[i].commit[0] != 0; }
-    fslog_init();
-    if (g_fslog && fd < 4096) { pthread_mutex_lock(&g_fslog_lock); free(g_fdpath[fd]); g_fdpath[fd] = strdup(path); pthread_mutex_unlock(&g_fslog_lock); }
-    if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → fd %d", (now_ns() - g_t0_ns) / 1e9, path, mode, fd);
+    opened(fd, path, mode);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", Result, h_fs_ReadFile, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz) {
     if (!h) { *out = 0; return RES_FAIL; }   // a file handle is an fd; 0 is stdin and never a file the game opened: the null handle the game keeps using after a failed open
     size_t got = 0;
     dm_guest_write_prepare(buf, sz);   // The destination may be a texture pool page write-protected by the graphics layer: a kernel write to a read-only page returns EFAULT instead of page-faulting, so unprotect and mark dirty first
-    while (got < sz) {
+    if (h < 65536 && g_sfile[h].st) {
+        ssize_t r = off < 0 ? (errno = EINVAL, -1) : romstore_read(g_sfile[h].st, g_sfile[h].file, (uint64_t)off, buf, sz);
+        if (r < 0) return err_res("chunk store read", "fd");
+        got = (size_t)r;
+    } else while (got < sz) {
         ssize_t r = pread((int)h, (uint8_t *)buf + got, sz - got, off + got);
         if (r < 0) { if (errno == EINTR) continue;
             if (errno == EFAULT) {   // the destination is not writable host memory: say where, with the protection of its VM region
@@ -538,7 +590,10 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
     if (g_flag.fs) {   // Read metering: print a line every 64 MiB accumulated or every 1000 reads
         static uint64_t n, bytes, next_b = 64 << 20; static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
         pthread_mutex_lock(&m); n++; bytes += got;
-        if (bytes >= next_b || n % 1000 == 0) { LOG("fs read total: %llu reads %.1f MiB (this one: fd %d offset %#llx length %#zx)", n, bytes / 1048576.0, (int)h, off, got); if (bytes >= next_b) next_b += 64 << 20; }
+        if (bytes >= next_b || n % 1000 == 0) { LOG("fs read total: %llu reads %.1f MiB (this one: fd %d offset %#llx length %#zx)", n, bytes / 1048576.0, (int)h, off, got); if (bytes >= next_b) next_b += 64 << 20;
+            if (h < 65536 && g_sfile[h].st) { romstore_stats q; romstore_get_stats(g_sfile[h].st, &q);
+                LOG("fs chunk store: %llu reads %.1f MiB, %llu chunks decompressed, cache %llu hits / %llu misses, %.1f MiB held (peak %.1f MiB)", (unsigned long long)q.reads, q.bytes / 1048576.0,
+                    (unsigned long long)q.chunks, (unsigned long long)q.cache_hits, (unsigned long long)q.cache_misses, q.cache_bytes / 1048576.0, q.cache_peak / 1048576.0); } }
         pthread_mutex_unlock(&m);
     }
     return RES_OK;
@@ -567,6 +622,7 @@ HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp
 }
 HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", Result, h_fs_GetFileSize, int64_t *out, uint64_t h) {
     if (!h) return RES_FAIL;
+    if (h < 65536 && g_sfile[h].st) { *out = (int64_t)romstore_file_size(g_sfile[h].st, g_sfile[h].file); return RES_OK; }
     struct stat st; if (fstat((int)h, &st)) return err_res("fstat", "fd");
     *out = st.st_size; return RES_OK;
 }
@@ -579,7 +635,7 @@ HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)
 HLE_FORCE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", "fsp-srv; host writes are already in the page cache, flushing is a no-op", Result, h_fs_FlushFile, uint64_t h) { (void)h; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fsp-srv → close(2)", void, h_fs_CloseFile, uint64_t h) {
     if (!h) return;   // the null handle after a failed open (see ReadFile): do not touch fd 0
-    g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0;
+    g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0; g_sfile[(int)h & 0xffff].st = NULL;
     close((int)h); }
 HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) { return g_fmode[(int)h & 0xffff]; }
 
@@ -648,14 +704,18 @@ static Result rename_entry(const char *from, const char *to) {
 HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_RenameFile, const char *from, const char *to) { return rename_entry(from, to); }
 // The Great Ace Attorney Chronicles (SDK 10) imports it; a directory carries its guest name the same way as a file
 HLE_FORCE("_ZN2nn2fs15RenameDirectoryEPKcS2_", "fsp-srv → rename(2) of a directory", Result, h_fs_RenameDir, const char *from, const char *to) { return rename_entry(from, to); }
-HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) {
+HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2), or the chunk store index", Result, h_fs_GetEntryType, int32_t *out, const char *path) {
+    romstore *rs; uint32_t idx; int is_dir, found;
+    { PATH_LOCK(); found = store_lookup(path, &rs, &idx, &is_dir); }
+    if (found < 0) return err_res("stat", path);
+    if (found) { *out = is_dir ? ENT_DIR : ENT_FILE; return RES_OK; }
     HP(path); struct stat st;
     if (stat(hp, &st)) return err_res("stat", hp);
     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
 }
 
 // ---------- Directories ----------
-typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; } dirh_t;
+typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; romstore *st; uint32_t sdir, spos; } dirh_t;   // st: a chunk store directory (d is NULL), listed from its index at spos
 static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     char *roots = strdup(m->overlay);
     char (*names)[0x301] = calloc(2048, sizeof *names);
@@ -689,7 +749,13 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     }
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
-HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3), or the chunk store index", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+    romstore *rs; uint32_t idx; int is_dir, found;
+    { PATH_LOCK(); found = store_lookup(path, &rs, &idx, &is_dir); }
+    if (found < 0) return err_res("opendir", path);
+    if (found && !is_dir) return RES_PATH_NOT_FOUND;
+    if (found) { dirh_t *h = calloc(1, sizeof *h); if (!h) die("directory handle allocation failed");
+        h->st = rs; h->sdir = idx; h->mode = mode; strlcpy(h->path, path, sizeof h->path); *out = (uint64_t)h; return RES_OK; }
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
@@ -702,6 +768,11 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
 HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", "fsp-srv → readdir(3)", Result, h_fs_ReadDirectory, int64_t *count, DirectoryEntry *ents, uint64_t hh, int64_t max) {
     if (!hh) { *count = 0; return RES_FAIL; }
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0; struct dirent *e;
+    if (h->st) { uint32_t ne = romstore_dir_entries(h->st, h->sdir);
+        while (n < max && h->spos < ne) { int isdir; uint64_t size; const char *name = romstore_dir_entry(h->st, h->sdir, h->spos++, &isdir, &size);
+            if (!(h->mode & (isdir ? DIRMODE_DIR : DIRMODE_FILE))) continue;
+            DirectoryEntry *o = &ents[n++]; memset(o, 0, sizeof *o); strlcpy(o->name, name, sizeof o->name); o->type = isdir ? ENT_DIR : ENT_FILE; o->size = (int64_t)size; }
+        *count = n; return RES_OK; }
     if (h->snap) { while (n < max && h->psnap < h->nsnap) { DirectoryEntry *src = &h->snap[h->psnap++]; if (!(h->mode & (src->type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE))) continue; ents[n++] = *src; } *count = n; return RES_OK; }
     int dfd = dirfd(h->d);
     while (n < max && (e = readdir(h->d))) {
@@ -719,7 +790,7 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
 }
 HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → closedir(3)", void, h_fs_CloseDirectory, uint64_t hh) {
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------
@@ -735,6 +806,9 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", "fsp-
           size_t *out, uint64_t h, int64_t off, void *buf, size_t sz, const void *opt) { (void)opt; return h_fs_ReadFile(out, h, off, buf, sz); }
 HLE_FORCE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", "fsp-srv; directory entry count (filtered by the mode given at open, read position untouched)", Result, h_fs_DirCount, int64_t *out, uint64_t hh) {
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0;
+    if (h->st) { uint32_t ne = romstore_dir_entries(h->st, h->sdir);
+        for (uint32_t i = 0; i < ne; i++) { int isdir; uint64_t size; romstore_dir_entry(h->st, h->sdir, i, &isdir, &size); if (h->mode & (isdir ? DIRMODE_DIR : DIRMODE_FILE)) n++; }
+        *out = n; return RES_OK; }
     if (h->snap) { for (int64_t i = 0; i < h->nsnap; i++) if (h->mode & (h->snap[i].type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE)) n++; *out = n; return RES_OK; }
     DIR *d = opendir(h->path); if (!d) return err_res("opendir", h->path);
     struct dirent *e;

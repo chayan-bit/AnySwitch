@@ -4,7 +4,7 @@ B = build
 # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 GAME_H = ../gen/$(GAME)/game_profile.h
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl $(B)/t_vib
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl $(B)/t_vib $(B)/t_romstore
 	$(B)/t_touch
 	$(B)/t_vib
 	$(B)/t_oe 2>/dev/null
@@ -23,6 +23,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_sync
 	$(B)/t_gate_cost
 	$(B)/t_devctl
+	TMPDIR="$(abspath $(B))" $(B)/t_romstore 2>/dev/null
 $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
@@ -31,12 +32,12 @@ $(B)/t_vib: t_vib.c ../hle_vibration.c ../hle.h ../dm_input.h ../dm.h $(GAME_H) 
 	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_vib.c
 $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_thread_leak.c
-$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs.c t_fs_stub.c ../hle_bigstack.c
-$(B)/t_fs_commit_list: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_fs_commit_list.c t_fs_stub.c ../hle_bigstack.c
-$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c
+$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../romstore.c ../romstore.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) $(B)/libzstd.a | $(B)
+	clang -O1 -Wno-unused-function -I.. $(GINC) -I$(ZSTD) -o $@ t_fs.c t_fs_stub.c ../romstore.c ../hle_bigstack.c $(B)/libzstd.a
+$(B)/t_fs_commit_list: t_fs_commit_list.c t_fs_stub.c ../hle_fs.c ../romstore.c ../romstore.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) $(B)/libzstd.a | $(B)
+	clang -O1 -Wall -Wno-unused-function -I.. $(GINC) -I$(ZSTD) -o $@ t_fs_commit_list.c t_fs_stub.c ../romstore.c ../hle_bigstack.c $(B)/libzstd.a
+$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../romstore.c ../romstore.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) $(B)/libzstd.a | $(B)
+	clang -O1 -Wno-unused-function -I.. $(GINC) -I$(ZSTD) -o $@ t_fs_case.c ../romstore.c ../hle_bigstack.c $(B)/libzstd.a
 $(B)/t_audio: t_audio.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio.c -framework AudioToolbox
 $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
@@ -61,6 +62,17 @@ $(B)/t_sync: t_sync.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wall -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_sync.c t_condvar_stub.c ../hle_thread.c
 $(B)/t_devctl: t_devctl.c ../devctl.c ../devctl.h ../dm_input.h | $(B)
 	clang -O1 -Wall -I.. -o $@ t_devctl.c ../devctl.c
+# zstd for t_romstore: the reader's decompressor plus the compressor that writes the test's synthetic store
+ZSTD = ../../third_party/zstd/lib
+ZSTD_SRC = $(sort $(wildcard $(ZSTD)/common/*.c $(ZSTD)/decompress/*.c $(ZSTD)/compress/*.c))
+ZSTD_OBJ = $(patsubst $(ZSTD)/%.c,$(B)/zstd/%.o,$(ZSTD_SRC))
+$(B)/zstd/%.o: $(ZSTD)/%.c
+	@mkdir -p $(dir $@)
+	clang -O2 -DZSTD_DISABLE_ASM -I$(ZSTD) -c $< -o $@
+$(B)/libzstd.a: $(ZSTD_OBJ)
+	rm -f $@; ar rcs $@ $^
+$(B)/t_romstore: t_romstore.c t_fs_stub.c ../hle_fs.c ../romstore.c ../romstore.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) $(B)/libzstd.a | $(B)
+	clang -O1 -Wall -Wno-unused-function -I.. -I$(ZSTD) $(GINC) -o $@ t_romstore.c t_fs_stub.c ../hle_bigstack.c $(B)/libzstd.a
 $(B):
 	mkdir -p $@
 $(B)/t_gate_cost: t_gate_cost.c t_gate_cost.S t_condvar_stub.c ../entry.S ../hle.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
