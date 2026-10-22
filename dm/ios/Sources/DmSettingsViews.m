@@ -7,18 +7,20 @@ static UIColor *dyn(uint32_t light, uint32_t dark) {
         return [UIColor colorWithRed:((c >> 16) & 255) / 255.0 green:((c >> 8) & 255) / 255.0 blue:(c & 255) / 255.0 alpha:1];
     }];
 }
-static CGColorRef cg(UIView *v, UIColor *c) { return [c resolvedColorWithTraitCollection:v.traitCollection].CGColor; }
+CGColorRef dm_cg(UIView *v, UIColor *c) { return [c resolvedColorWithTraitCollection:v.traitCollection].CGColor; }
 
 @implementation DmUI
 + (UIColor *)bg { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xEBEBEB, 0x2B2B2B); }); return c; }
 + (UIColor *)panel { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xFFFFFF, 0x363636); }); return c; }
-+ (UIColor *)row { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xF3F3F3, 0x424242); }); return c; }
++ (UIColor *)row { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xF0F0F0, 0x424242); }); return c; }
 + (UIColor *)text { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x2D2D2D, 0xF2F2F2); }); return c; }
-+ (UIColor *)sub { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x777777, 0xA6A6A6); }); return c; }
++ (UIColor *)sub { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x6A6A6A, 0xA6A6A6); }); return c; }
 + (UIColor *)sep { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD6D6D6, 0x575757); }); return c; }
 + (UIColor *)accent { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00B9E6, 0x20D5FF); }); return c; }
++ (UIColor *)accentText { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00789C, 0x20D5FF); }); return c; }
++ (UIColor *)track { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x8E8E8E, 0x8C8C8C); }); return c; }
 + (UIColor *)selected { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD2EEF7, 0x3E5059); }); return c; }
-+ (UIColor *)warn { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xE2502A, 0xFF7B54); }); return c; }
++ (UIColor *)warn { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xC73D18, 0xFF7B54); }); return c; }
 + (UIFont *)font:(CGFloat)size weight:(UIFontWeight)w {
     UIFont *f = [UIFont systemFontOfSize:size weight:w];
     UIFontDescriptor *d = [f.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];
@@ -27,7 +29,7 @@ static CGColorRef cg(UIView *v, UIColor *c) { return [c resolvedColorWithTraitCo
 @end
 
 // Runs a block when the light / dark style changes, and once now
-static void on_style(UIView *v, void (^apply)(void)) {
+void dm_on_style(UIView *v, void (^apply)(void)) {
     apply();
     [v registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withHandler:^(__kindof id<UITraitEnvironment> e, UITraitCollection *p) { (void)e; (void)p; apply(); }];
 }
@@ -40,10 +42,12 @@ static void on_style(UIView *v, void (^apply)(void)) {
         self.userInteractionEnabled = NO; self.hidden = YES; _radius = 14;
         CALayer *l = self.layer; l.borderWidth = 3.5; l.cornerRadius = _radius; l.shadowOpacity = 0.85; l.shadowRadius = 7; l.shadowOffset = CGSizeZero;
         __weak DmFocusView *w = self;
-        on_style(self, ^{ DmFocusView *s = w; s.layer.borderColor = cg(s, DmUI.accent); s.layer.shadowColor = cg(s, DmUI.accent); });
+        dm_on_style(self, ^{ [w restyle]; });
     }
     return self;
 }
+- (void)restyle { CGColorRef c = dm_cg(self, _warn ? DmUI.warn : DmUI.accent); self.layer.borderColor = c; self.layer.shadowColor = c; }
+- (void)setWarn:(BOOL)w { _warn = w; [self restyle]; }
 - (void)setRadius:(CGFloat)r { _radius = r; self.layer.cornerRadius = r; }
 - (void)setActive:(BOOL)a {
     _active = a; self.hidden = !a;
@@ -65,7 +69,7 @@ static void on_style(UIView *v, void (^apply)(void)) {
         _knob.shadowColor = UIColor.blackColor.CGColor; _knob.shadowOpacity = 0.25; _knob.shadowRadius = 2; _knob.shadowOffset = CGSizeMake(0, 1);
         [self.layer addSublayer:_knob];
         self.userInteractionEnabled = NO;
-        __weak DmToggleView *w = self; on_style(self, ^{ [w place:NO]; });
+        __weak DmToggleView *w = self; dm_on_style(self, ^{ [w place:NO]; });
     }
     return self;
 }
@@ -73,7 +77,7 @@ static void on_style(UIView *v, void (^apply)(void)) {
 - (void)layoutSubviews { [super layoutSubviews]; _track.frame = self.bounds; [self place:NO]; }
 - (void)place:(BOOL)animated {
     [CATransaction begin]; [CATransaction setDisableActions:!animated]; if (animated) [CATransaction setAnimationDuration:0.14];
-    _track.backgroundColor = cg(self, _on ? DmUI.accent : DmUI.sep);
+    _track.backgroundColor = dm_cg(self, _on ? DmUI.accent : DmUI.track);
     _knob.position = CGPointMake(_on ? CGRectGetWidth(self.bounds) - 15 : 15, CGRectGetHeight(self.bounds) / 2);
     [CATransaction commit];
 }
@@ -93,7 +97,7 @@ static const CGFloat kKnob = 26;
         _knob.shadowColor = UIColor.blackColor.CGColor; _knob.shadowOpacity = 0.3; _knob.shadowRadius = 3; _knob.shadowOffset = CGSizeMake(0, 1);
         _knob.borderWidth = 0.5; _knob.borderColor = [UIColor colorWithWhite:0 alpha:0.15].CGColor;
         [self.layer addSublayer:_knob];
-        __weak DmSliderView *w = self; on_style(self, ^{ DmSliderView *s = w; s->_track.backgroundColor = cg(s, DmUI.sep); s->_fill.backgroundColor = cg(s, DmUI.accent); });
+        __weak DmSliderView *w = self; dm_on_style(self, ^{ DmSliderView *s = w; s->_track.backgroundColor = dm_cg(s, DmUI.track); s->_fill.backgroundColor = dm_cg(s, DmUI.accent); });
     }
     return self;
 }
@@ -131,14 +135,14 @@ static const CGFloat kKnob = 26;
         _title = [UILabel new]; _title.text = title; _title.font = [DmUI font:compact ? 15 : 19 weight:UIFontWeightSemibold]; _title.userInteractionEnabled = NO;
         _title.adjustsFontSizeToFitWidth = YES; _title.minimumScaleFactor = 0.8;
         [self addSubview:_icon]; [self addSubview:_title];
-        __weak DmCategoryView *w = self; on_style(self, ^{ [w paint]; });
+        __weak DmCategoryView *w = self; dm_on_style(self, ^{ [w paint]; });
     }
     return self;
 }
 - (void)paint {
     BOOL fill = _chosen;   // the ring marks the choice while the focus is on the list; once it is in the pane the choice keeps a soft fill
-    self.layer.backgroundColor = fill ? cg(self, _paneFocused ? DmUI.selected : DmUI.panel) : UIColor.clearColor.CGColor;
-    UIColor *t = _chosen ? DmUI.text : DmUI.sub; _title.textColor = t; _icon.tintColor = _chosen ? DmUI.accent : DmUI.sub;
+    self.layer.backgroundColor = fill ? dm_cg(self, _paneFocused ? DmUI.selected : DmUI.panel) : UIColor.clearColor.CGColor;
+    UIColor *t = _chosen ? DmUI.text : DmUI.sub; _title.textColor = t; _icon.tintColor = _chosen ? DmUI.accentText : DmUI.sub;
 }
 - (void)setChosen:(BOOL)c { _chosen = c; [self paint]; }
 - (void)setPaneFocused:(BOOL)p { _paneFocused = p; [self paint]; }
@@ -188,7 +192,7 @@ static const CGFloat kKnob = 26;
             _title.textAlignment = NSTextAlignmentCenter; _detail.textAlignment = NSTextAlignmentCenter;
             [self showPlainTitle];
         }
-        __weak DmRowView *w = self; on_style(self, ^{ [w paint]; });
+        __weak DmRowView *w = self; dm_on_style(self, ^{ [w paint]; });
     }
     return self;
 }
@@ -205,9 +209,9 @@ static const CGFloat kKnob = 26;
 }
 - (void)setConfirming:(BOOL)c { _confirming = c; [self showPlainTitle]; [self paint]; [self setNeedsLayout]; }
 - (void)paint {
-    self.layer.backgroundColor = cg(self, DmUI.row);
-    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accent);
-    _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accent;
+    self.layer.backgroundColor = dm_cg(self, DmUI.row);
+    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accentText);
+    _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accentText;
     _note.textColor = DmUI.warn;
     for (int i = 0; i < 2; i++) _chev[i].tintColor = DmUI.sub;
     self.alpha = _locked ? 0.62 : 1;
@@ -279,7 +283,7 @@ typedef struct { CGRect title, detail, value, note, toggle, slider, chevL, chevR
         UILabel *g = [UILabel new]; g.text = p[0]; g.textAlignment = NSTextAlignmentCenter; g.layer.masksToBounds = YES; g.tag = 1;
         UILabel *t = [UILabel new]; t.text = p[1]; t.tag = 2;
         [self addSubview:g]; [self addSubview:t]; [_parts addObject:g]; [_parts addObject:t];
-        __weak UILabel *wg = g, *wt = t; on_style(self, ^{ wg.textColor = DmUI.bg; wg.backgroundColor = DmUI.text; wt.textColor = DmUI.text; });
+        __weak UILabel *wg = g, *wt = t; dm_on_style(self, ^{ wg.textColor = DmUI.bg; wg.backgroundColor = DmUI.text; wt.textColor = DmUI.text; });
     }
     [self setNeedsLayout];
 }

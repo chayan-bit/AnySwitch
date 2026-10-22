@@ -81,9 +81,27 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     return cut.length ? cut : nil;
 }
 - (BOOL)textFits:(NSString *)text {
+    return [self textCount:text] <= _maxLength && (!_maxBytes || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= _maxBytes);
+}
+- (NSUInteger)textCount:(NSString *)text {
     __block NSUInteger chars = 0;
     [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *s, NSRange r, NSRange e, BOOL *stop) { (void)s; (void)r; (void)e; (void)stop; chars++; }];
-    return chars <= _maxLength && (!_maxBytes || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= _maxBytes);
+    return chars;
+}
+- (NSString *)textLimitNote:(NSString *)text {
+    if ([self textCount:text] >= _maxLength) return @"Limit reached";
+    if (_maxBytes && [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] + 1 > _maxBytes) return [NSString stringWithFormat:@"Limit reached (%lu bytes)", (unsigned long)_maxBytes];
+    return nil;
+}
+- (NSString *)clippedReplacement:(NSString *)rep inText:(NSString *)text range:(NSRange)range {
+    NSString *head = [text substringToIndex:range.location], *tail = [text substringFromIndex:NSMaxRange(range)];
+    __block NSUInteger end = 0;
+    [rep enumerateSubstringsInRange:NSMakeRange(0, rep.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *s, NSRange r, NSRange e, BOOL *stop) {
+        (void)s; (void)e;
+        if (![self textFits:[[head stringByAppendingString:[rep substringToIndex:NSMaxRange(r)]] stringByAppendingString:tail]]) { *stop = YES; return; }
+        end = NSMaxRange(r);
+    }];
+    return [rep substringToIndex:end];
 }
 - (NSString *)displayValue:(NSString *)v {
     switch (_type) {
@@ -288,3 +306,20 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 @end
 
 void dm_settings_boot(void) { [[DmSettings shared] applyToEnvironment]; }
+
+NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed) {
+    NSMutableArray *h = [NSMutableArray array];
+    if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
+    if (!locked) switch (kind) {
+        case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
+        case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;
+        case DmFocusSlider: [h addObject:@[@"↔", @"Change"]]; break;
+        case DmFocusText: [h addObject:@[@"A", @"Edit"]]; break;
+        case DmFocusRestore: [h addObject:@[@"A", @"Restore"]]; break;
+        case DmFocusRestoreAll: [h addObject:@[@"A", armed ? @"Confirm" : @"Restore"]]; break;
+        case DmFocusRestart: [h addObject:@[@"A", @"Restart"]]; break;
+        case DmFocusCategory: break;
+    }
+    [h addObject:@[@"B", @"Back"]]; [h addObject:@[@"L R", @"Category"]];
+    return h;
+}

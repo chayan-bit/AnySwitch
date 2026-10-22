@@ -2,24 +2,23 @@
 // All data comes from DmSettings (the registry): the screen knows no setting by name.
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
+#import "DmSettingsEditor.h"
 #import "DmPadBits.h"
-#import <objc/runtime.h>
 
-@interface DmSettingsVC () <UITextFieldDelegate>
-@end
 static void on_trait(UIView *v, void (^apply)(void));
 typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight };
 
 @implementation DmSettingsVC {
     DmSettings *_settings; BOOL _compact; NSArray<DmSection *> *_secs; BOOL _editing, _armed;   // _secs: the pages this build has; _editing: the text editor is up; _armed: restore-all waits for a second tap
+    DmEditorView *_editor; BOOL _editB;   // _editB: the controller's B is held (it cancels the editor once released)
     NSInteger _section, _row; BOOL _inPane;
     NSMutableArray<DmCategoryView *> *_cats; NSMutableArray<DmRowView *> *_rows; BOOL _hasRestartRow;
     UILabel *_head, *_paneTitle; UIButton *_close; UIView *_catBox, *_panel, *_clip; UIScrollView *_scroll; DmHintBar *_hints;
     DmFocusView *_catRing, *_rowRing;
-    uint64_t _prev; BOOL _baselined; Dir _held; NSTimer *_repeat; NSInteger _hintMode;
+    uint64_t _prev; BOOL _baselined; Dir _held; NSTimer *_repeat; NSArray *_shownHints;
 }
 - (instancetype)initWithSettings:(DmSettings *)s size:(CGSize)size {
-    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _secs = s.visibleSections; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; _hintMode = -1; }
+    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _secs = s.visibleSections; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; }
     return self;
 }
 - (NSInteger)section { return _section; }
@@ -37,7 +36,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     [_close addTarget:self action:@selector(requestClose) forControlEvents:UIControlEventTouchUpInside];
     _catBox = [UIView new]; _panel = [UIView new]; _panel.layer.cornerRadius = _compact ? 18 : 26;
     _paneTitle = [UILabel new]; _paneTitle.font = [DmUI font:_compact ? 18 : 26 weight:UIFontWeightBold]; _paneTitle.textColor = DmUI.text;
-    _clip = [UIView new]; _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO; _scroll.alwaysBounceVertical = NO; _scroll.delaysContentTouches = NO;
+    _clip = [UIView new]; _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO; _scroll.showsHorizontalScrollIndicator = NO; _scroll.alwaysBounceVertical = NO; _scroll.alwaysBounceHorizontal = NO; _scroll.directionalLockEnabled = YES; _scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever; _scroll.delaysContentTouches = NO;   // vertical only
     _hints = [DmHintBar new];
     _catRing = [DmFocusView new]; _catRing.radius = _compact ? 14 : 19;
     _rowRing = [DmFocusView new]; _rowRing.radius = _compact ? 14 : 19;
@@ -94,7 +93,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
         if (key) for (NSUInteger i = 0; i < _rows.count; i++) if ([_rows[i].setting.key isEqualToString:key]) _row = (NSInteger)i;
         [self updateFocus:NO];
     }
-    [self layoutPane];
+    [self layoutPane]; [self updateHints];   // a row may have become locked or unlocked
 }
 
 #pragma mark - Layout
@@ -126,7 +125,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     CGFloat ix = 12, iy = 10, w = _scroll.bounds.size.width - ix * 2, y = iy, gap = _compact ? 8 : 12;   // room around the rows for the focus border's glow (the scroll view clips)
     if (w <= 0) return;
     for (DmRowView *r in _rows) { CGFloat h = [r heightForWidth:w]; r.frame = CGRectMake(ix, y, w, h); y += h + gap; }
-    _scroll.contentSize = CGSizeMake(_scroll.bounds.size.width, y - gap + iy);
+    _scroll.contentSize = CGSizeMake(_scroll.bounds.size.width, y - gap + iy);   // exactly the pane's width: nothing to scroll sideways
 }
 
 #pragma mark - Focus
@@ -142,8 +141,24 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     if (animated) [UIView animateWithDuration:0.13 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:place completion:nil]; else place();
     _catRing.active = !_inPane; _rowRing.active = _inPane;
     if (_inPane) [_scroll scrollRectToVisible:CGRectInset(_rows[(NSUInteger)_row].frame, 0, -10) animated:animated];
-    if (_hintMode != _inPane) [_hints setHints:_inPane ? @[@[@"↔", @"Change"], @[@"A", @"Select"], @[@"B", @"Back"], @[@"L R", @"Category"]] : @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]]];
-    _hintMode = _inPane;
+    [self updateHints];
+}
+// The footer says what the focused spot can do (dm_hints_for_focus)
+- (void)updateHints {
+    DmFocusKind k = DmFocusCategory; BOOL locked = NO;
+    if (_inPane && _row < (NSInteger)_rows.count) {
+        DmRowView *r = _rows[(NSUInteger)_row]; locked = r.locked;
+        switch (r.kind) {
+            case DmItemReset: k = DmFocusRestore; break;
+            case DmItemResetAll: k = DmFocusRestoreAll; break;
+            case DmItemRestart: k = DmFocusRestart; break;
+            case DmItemSetting:
+                switch (r.setting.type) { case DmSettingToggle: k = DmFocusToggle; break; case DmSettingChoice: k = DmFocusChoice; break; case DmSettingSlider: k = DmFocusSlider; break; case DmSettingText: k = DmFocusText; break; }
+                break;
+        }
+    }
+    NSArray *h = dm_hints_for_focus(k, locked, _armed);
+    if (![h isEqual:_shownHints]) { _shownHints = h; [_hints setHints:h]; }
 }
 - (void)selectSection:(NSInteger)s focusPane:(BOOL)pane row:(NSInteger)row {
     s = MIN(MAX(s, 0), (NSInteger)_cats.count - 1);
@@ -173,17 +188,17 @@ static void on_trait(UIView *v, void (^apply)(void)) {
             [self setRow:r value:s.options[(NSUInteger)((i + dir + n) % n)][@"value"]]; break;
         }
         case DmSettingSlider: [self setRow:r value:[NSString stringWithFormat:@"%g", cur.doubleValue + dir * s.step]]; break;
-        case DmSettingText: break;   // edited in the alert (A / tap)
+        case DmSettingText: break;   // edited in the editor (A / tap)
     }
 }
-- (void)disarm { if (_armed) { _armed = NO; for (DmRowView *r in _rows) if (r.kind == DmItemResetAll) r.confirming = NO; [self layoutPane]; } }
+- (void)disarm { if (_armed) { _armed = NO; for (DmRowView *r in _rows) if (r.kind == DmItemResetAll) r.confirming = NO; [self layoutPane]; [self updateHints]; } }
 - (void)activate:(DmRowView *)r {   // A / tap
     if (r.kind != DmItemResetAll) [self disarm];
     switch (r.kind) {
         case DmItemReset: [_settings resetSection:self.currentSection]; [self refreshRows]; break;
         case DmItemResetAll:
-            if (!_armed) { _armed = YES; r.confirming = YES; [self layoutPane]; break; }   // a second A or tap restores everything
-            [_settings resetAll]; _armed = NO; r.confirming = NO; [self refreshRows]; break;
+            if (!_armed) { _armed = YES; r.confirming = YES; [self layoutPane]; [self updateHints]; break; }   // a second A or tap restores everything
+            [_settings resetAll]; _armed = NO; r.confirming = NO; [self refreshRows]; [self updateHints]; break;
         case DmItemRestart: [self restart]; break;
         case DmItemSetting:
             if (r.setting.type == DmSettingToggle) [self setRow:r value:[[_settings valueForKey:r.setting.key] isEqualToString:@"1"] ? @"0" : @"1"];
@@ -195,40 +210,24 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 
 #pragma mark - Text editing
 
-static const void *kSaveKey = &kSaveKey, *kSettingKey = &kSettingKey;   // on the alert's text field: the save block and the setting it edits
-// A text row opens a small editor: the system keyboard for touch, the hardware keyboard works as usual (Return saves, Escape cancels). The controller and the key commands are paused while it is up
+// A text row opens the editor panel (DmSettingsEditor.m): the system keyboard for touch, a hardware keyboard works as usual (Return saves, Escape cancels).
+// The controller and the key commands are paused while it is up, except B, which cancels
 - (void)editText:(DmRowView *)r {
     DmSetting *s = r.setting; if (r.locked) { [r shake]; return; }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:s.label message:s.detail preferredStyle:UIAlertControllerStyleAlert];
-    __weak DmSettingsVC *w = self; __weak DmRowView *wr = r; __weak UIAlertController *wa = a;
-    void (^save)(void) = ^{
-        DmSettingsVC *me = w; DmRowView *row = wr; UITextField *f = wa.textFields.firstObject; if (!me || !row || !f) return;
-        if (![me->_settings setValue:f.text forKey:s.key]) { [row shake]; return; }
-        [me refreshRows];
+    DmEditorView *e = [[DmEditorView alloc] initWithSetting:s text:[_settings valueForKey:s.key] compact:_compact];
+    __weak DmSettingsVC *w = self; __weak DmRowView *wr = r;
+    e.onSave = ^(NSString *text) {
+        DmSettingsVC *me = w; DmRowView *row = wr; if (!me) return;
+        if (![me->_settings setValue:text forKey:s.key]) [row shake]; else [me refreshRows];
+        [me textEditorClosed];
     };
-    UIAlertAction *ok = [UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; save(); [w textEditorClosed]; }];
-    __weak UIAlertAction *wok = ok;
-    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-        f.text = [self->_settings valueForKey:s.key]; f.clearButtonMode = UITextFieldViewModeWhileEditing; f.autocorrectionType = UITextAutocorrectionTypeNo;
-        f.autocapitalizationType = UITextAutocapitalizationTypeWords; f.returnKeyType = UIReturnKeyDone; f.accessibilityLabel = s.label; f.delegate = self;
-        [f addAction:[UIAction actionWithHandler:^(__kindof UIAction *x) { (void)x; wok.enabled = [s normalized:f.text] != nil; }] forControlEvents:UIControlEventEditingChanged];
-        objc_setAssociatedObject(f, kSaveKey, [save copy], OBJC_ASSOCIATION_COPY_NONATOMIC); objc_setAssociatedObject(f, kSettingKey, s, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; [w textEditorClosed]; }]];
-    [a addAction:ok]; a.preferredAction = ok;
-    _editing = YES; [self presentViewController:a animated:YES completion:nil];
+    e.onCancel = ^{ [w textEditorClosed]; };
+    e.frame = self.view.bounds; e.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _editor = e; _editing = YES; _editB = (_prev & 1ull << DMB_B) != 0;
+    [self.view addSubview:e]; [e open];
 }
-- (void)textEditorClosed { _editing = NO; _baselined = NO; [self becomeFirstResponder]; }   // what the controller holds now does nothing until it is released
-- (BOOL)textField:(UITextField *)f shouldChangeCharactersInRange:(NSRange)r replacementString:(NSString *)t {
-    DmSetting *s = objc_getAssociatedObject(f, kSettingKey); if (!s) return YES;
-    return [s textFits:[f.text stringByReplacingCharactersInRange:r withString:t]];
-}
-- (BOOL)textFieldShouldReturn:(UITextField *)f {
-    DmSetting *s = objc_getAssociatedObject(f, kSettingKey); void (^save)(void) = objc_getAssociatedObject(f, kSaveKey);
-    if (!s || ![s normalized:f.text]) return NO;
-    [self.presentedViewController dismissViewControllerAnimated:YES completion:nil]; if (save) save(); [self textEditorClosed];
-    return NO;
-}
+- (void)textEditorClosed { _editing = NO; _editor = nil; _baselined = NO; [self becomeFirstResponder]; }   // what the controller holds now does nothing until it is released
+- (void)cancelEditor { [_editor cancel]; }
 - (void)step:(Dir)d {
     if (!_inPane) {
         if (d == DirUp || d == DirDown) { [self selectSection:_section + (d == DirDown ? 1 : -1) focusPane:NO row:0]; }
@@ -237,7 +236,7 @@ static const void *kSaveKey = &kSaveKey, *kSettingKey = &kSettingKey;   // on th
     }
     DmRowView *r = _rows[(NSUInteger)_row];
     if (d == DirUp || d == DirDown) { _row = MIN(MAX(_row + (d == DirDown ? 1 : -1), 0), (NSInteger)_rows.count - 1); [self updateFocus:YES]; }
-    else if (r.kind != DmItemSetting) { if (d == DirLeft) [self selectSection:_section focusPane:NO row:_row]; }
+    else if (r.kind != DmItemSetting || r.locked || r.setting.type == DmSettingText) { if (d == DirLeft) [self selectSection:_section focusPane:NO row:_row]; }   // no left / right on this row: left goes back to the list
     else [self adjust:r by:d == DirRight ? 1 : -1];
 }
 - (void)accept { if (!_inPane) [self selectSection:_section focusPane:YES row:0]; else [self activate:_rows[(NSUInteger)_row]]; }
@@ -282,7 +281,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     tick(0.4);
 }
 - (void)padState:(uint64_t)m lx:(int32_t)lx ly:(int32_t)ly {
-    if (_editing) return;   // the text editor is up: the controller does nothing
+    if (_editing) {   // the text editor is up: the controller does nothing but B, which cancels it once released
+        BOOL b = (m & 1ull << DMB_B) != 0; if (_editB && !b) [_editor cancel]; _editB = b; return;
+    }
     Dir d = dir_of(m, lx, ly);
     uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_L | 1ull << DMB_R | 1ull << DMB_ZL | 1ull << DMB_ZR);
     if (!_baselined) { _baselined = YES; _prev = want; _held = d; return; }   // what is held when the screen opens (the chord's buttons, a direction) does nothing until it is released
@@ -294,6 +295,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     if (up & (1ull << DMB_R | 1ull << DMB_ZR)) [self page:1];
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
+    if (_editing) {   // the editor's text field takes the arrows and Return itself; only Escape is ours
+        UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:UIKeyInputEscape modifierFlags:0 action:@selector(cancelEditor)]; c.wantsPriorityOverSystemBehavior = YES; return @[c];
+    }
     NSArray *k = @[@[UIKeyInputUpArrow, @"keyUp"], @[UIKeyInputDownArrow, @"keyDown"], @[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"],
                    @[@"\r", @"accept"], @[UIKeyInputEscape, @"back"], @[@"[", @"keyPrev"], @[@"]", @"keyNext"]];
     NSMutableArray *r = [NSMutableArray array];

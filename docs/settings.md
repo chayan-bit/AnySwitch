@@ -11,6 +11,7 @@ It follows the system's light or dark appearance and works on the iPad and the i
 - Hardware keyboard: Cmd and comma.
 - Closing: B on the category list, the X button, the gear again, or the + and - chord again.
 - On a hardware keyboard the arrows, Return, Escape, and the square brackets act as the D-pad, A, B, and L / R.
+The button hints at the bottom show only what the focused row does (a slider has no A, a text row has no left / right, a row the environment locks has neither).
 
 While the screen is open the game is out of focus (the same hook the app uses when it loses focus, `dm_focus_set(2)`) and receives no input.
 The physical controller belongs to the screen (`dm_gamepad_set_capture` in `DmGamepad.m`); touches are covered by the screen itself.
@@ -54,7 +55,7 @@ Types and their fields:
 | `toggle` | none | an on / off switch |
 | `choice` | `options`, each `{value, label, aliases}` | a selector that steps through the options |
 | `slider` | `min`, `max`, `step`, optional `scale` and `suffix` for the display, optional `decimals` | a slider; the value is clamped to the range and snapped to the step, and shown as value times `scale` followed by `suffix` (0.5 with scale 100 and suffix `%` is 50%); `decimals` defaults to what the step times the scale needs |
-| `text` | optional `maxLength` (default 64) and `maxBytes` | a row that opens an editor; the value is trimmed, may not hold control characters, and is cut at a whole character to both limits |
+| `text` | optional `maxLength` (default 64) and `maxBytes` | a row that opens an editor panel in the screen's own style (a live n/limit counter, a visible refusal at the limit and for an empty text; Return or Save stores it, Escape, B or Cancel drops it, and the controller and the key commands pause meanwhile); the value is trimmed, may not hold control characters, and is cut at a whole character to both limits |
 
 Sections that share an `id` are merged into one page, so a game's entries can join a built-in page.
 A page with no available entry is not listed.

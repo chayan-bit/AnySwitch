@@ -3,6 +3,9 @@
 #import <UIKit/UIKit.h>
 #import "DmSettings.h"
 
+void dm_on_style(UIView *v, void (^apply)(void));   // runs the block now and again whenever the light / dark style of the view changes
+CGColorRef dm_cg(UIView *v, UIColor *c);             // a dynamic colour resolved for the view's current style (for layers)
+
 @interface DmUI : NSObject
 + (UIColor *)bg;       // screen background
 + (UIColor *)panel;    // the right pane
@@ -11,6 +14,8 @@
 + (UIColor *)sub;      // secondary text
 + (UIColor *)sep;      // hairlines
 + (UIColor *)accent;   // focus cyan
++ (UIColor *)accentText;   // cyan for text and icons on a row: the same hue, darker in the light style so it reads on a light row
++ (UIColor *)track;    // the empty part of a toggle or slider: at least 3:1 against a row in both styles
 + (UIColor *)selected; // the chosen category while the focus is in the pane
 + (UIColor *)warn;     // restart tags, locked rows
 + (UIFont *)font:(CGFloat)size weight:(UIFontWeight)w;
@@ -19,6 +24,7 @@
 @interface DmFocusView : UIView   // rounded cyan border with a soft glow that pulses while active
 @property (nonatomic) CGFloat radius;
 @property (nonatomic) BOOL active;
+@property (nonatomic) BOOL warn;   // the border takes the warning colour (a refused entry)
 @end
 
 @interface DmToggleView : UIView

@@ -27,8 +27,16 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err;
 - (NSString *)normalized:(id)raw;      // a raw value (env, plist, file) as this setting stores it: toggles "0" / "1", choices one of the options, sliders clamped to the range and the step, text trimmed and cut to its limits; nil when it does not parse
 - (BOOL)textFits:(NSString *)text;      // text: within the length and byte limits (the editor refuses typing past them)
+- (NSUInteger)textCount:(NSString *)text;   // text: the number of characters (composed sequences) the editor's counter shows
+- (NSString *)textLimitNote:(NSString *)text;   // text: nil while another character would still fit, else "Limit reached" (with the byte limit named when that is what stops the typing)
+- (NSString *)clippedReplacement:(NSString *)replacement inText:(NSString *)text range:(NSRange)range;   // text: the part of the replacement (cut at a whole character) that still fits when it replaces range in text; a paste past the limit keeps what fits
 - (NSString *)displayValue:(NSString *)value;  // what the row shows: "Ambient", "On", "75%", "1.5 G"
 @end
+
+// Where the focus is on the settings screen: what the footer's button hints say follows from it
+typedef NS_ENUM(NSInteger, DmFocusKind) { DmFocusCategory, DmFocusToggle, DmFocusChoice, DmFocusSlider, DmFocusText, DmFocusRestore, DmFocusRestoreAll, DmFocusRestart };
+// The footer hints {glyph, text} for a focus: only the buttons that do something there (a slider has no A, a locked row has neither A nor left / right, a restore-all that waits for its second press says Confirm)
+NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed);
 
 @interface DmSection : NSObject
 @property (nonatomic, readonly) NSString *ident, *title, *icon;     // icon: an SF Symbol name
