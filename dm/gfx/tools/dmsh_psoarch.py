@@ -10,6 +10,7 @@
 # (chain_metal) and linked by the driver: the same AIR, so for nearly every library the same function hashes the app looks up. The driver link folds the bitcode of shaders that only write
 # constants (iOS SDK 26: a fragment shader returning a fixed color, a vertex shader writing a fixed position), which gives their functions another hash: pipelines of such a library could never be
 # found, so they are left out and counted (they compile on first use as before). The rebuilt libraries stay in a temporary folder, the shipped ones are untouched.
+# Shader packs (dmsh_pack.py, <dir>/pack/<n>.metallib) are found the same way and need no relink: the pack tool links them with the driver, so metal-tt reads the shipped pack itself.
 # Usage: dmsh_psoarch.py <harvest.metallib>... --libs <dir>... --target-libs <dir> --msl <dir> -o <out.metallib> [--platform ios|macos] [--arch applegpu_g16g ...]
 #   --platform: ios (default, the app) or macos (dmhost, tests); --arch: GPU architectures to build (default: every GPU of the platform; xcrun metal-arch prints this Mac's)
 # The output is game-derived (compiled game shaders): write it only under the gitignored build output
@@ -43,6 +44,13 @@ def fn_hashes(path):
     """The function hashes a metallib lists (HASH tags: 2-byte size, 32-byte sha256): what a binary archive keys its pipelines by"""
     b = open(path, 'rb').read()
     return [b[m.start() + 6:m.start() + 38] for m in re.finditer(b'HASH', b)]
+
+
+def pack_index(d):
+    """{key: 'pack/<n>.metallib'} from a folder's pack/index.tsv (dmsh_pack.py), empty without one"""
+    p = os.path.join(d, 'pack', 'index.tsv')
+    if not os.path.exists(p): return {}
+    return {c[0]: f'pack/{c[1]}.metallib' for c in (ln.split('\t') for ln in open(p) if not ln.startswith('#'))}
 
 
 def merge(docs, names):
@@ -93,8 +101,14 @@ def main():
     o = a.parse_args()
     names = {}   # sha256 of a library -> its file name (the shader key + _b / _bf)
     for d in o.libs:
-        for p in glob.glob(os.path.join(d, '*.metallib')): names[sha(p)] = os.path.basename(p)
+        for p in glob.glob(os.path.join(d, '*.metallib')) + glob.glob(os.path.join(d, 'pack', '*.metallib')): names[sha(p)] = os.path.relpath(p, d)   # pack/<n>.metallib: dmsh_pack.py
     names = {h: n for h, n in names.items() if os.path.exists(os.path.join(o.target_libs, n))}
+    covered = pack_index(o.target_libs)   # with packs the app does not ship the loose library of a packed key (build_ipa.sh), so pipelines harvested on it would never be looked up
+    names = {h: n for h, n in names.items() if n.startswith('pack/') or n[:-len('.metallib')] not in covered}
+    if any(n.startswith('pack/') for n in names.values()):   # a pack is compiled against the target pack of the same number: both must hold the same shaders
+        tix = pack_index(o.target_libs)
+        for d in o.libs:
+            if pack_index(d) not in ({}, tix): sys.exit(f'[RED] the shader packs of {d} and {o.target_libs} differ: rebuild both with the same dmsh_pack.py --per-pack and key set')
     with tempfile.TemporaryDirectory() as work:
         docs = [s for h in o.harvest for s in scripts(h, work)]
         script, libs, kept, dropped = merge(docs, names)
@@ -102,7 +116,7 @@ def main():
         if not kept: sys.exit('[RED] nothing to compile')
         rl = os.path.join(work, 'libs'); os.makedirs(rl)
         with cf.ThreadPoolExecutor(os.cpu_count()) as ex:
-            paths = dict(zip(libs, ex.map(lambda n: relink(n, o.target_libs, o.msl, rl), libs.values())))
+            paths = dict(zip(libs, ex.map(lambda n: os.path.join(o.target_libs, n) if n.startswith('pack/') else relink(n, o.target_libs, o.msl, rl), libs.values())))   # packs are driver-linked already
         moved = {l for l, p in paths.items() if fn_hashes(p) != fn_hashes(os.path.join(o.target_libs, libs[l]))}
         if moved:
             n0 = sum(len(v) for v in script['pipelines'].values())
