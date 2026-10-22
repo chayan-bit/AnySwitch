@@ -38,4 +38,15 @@ class MacHost(unittest.TestCase):
                          [[('gen/vpx/libvpx.a', True), ('gen/zstd/libzstd.a', True), ('gen/next/libnext.a', True)]])
 
 
+
+class RecordPack(unittest.TestCase):
+    def test_records_the_pack_in_an_existing_mac_run_json_only(self):
+        with tempfile.TemporaryDirectory() as t:
+            rj, pack = Path(t) / 'mac_run.json', Path(t) / 'pack'
+            self.assertFalse(b.record_pack(rj, pack))   # no --mac-only run: nothing to record into, nothing written
+            self.assertFalse(rj.exists())
+            rj.write_text('{"host": "h", "patched": "p"}\n')
+            self.assertTrue(b.record_pack(rj, pack))
+            self.assertEqual(b.json.loads(rj.read_text()), {'host': 'h', 'patched': 'p', 'pack': str(pack)})
+
 if __name__ == '__main__': unittest.main()
