@@ -19,8 +19,8 @@ import collections, ctypes, getpass, hashlib, os, re, shlex, shutil, struct, sub
 from pathlib import Path
 
 # ---- Settings ----
-NSP_DIR = '/Volumes/S790/nsp/The Legend of Zelda Tears of the Kingdom/'                            # folder holding the NSPs (empty = ask at run time)
-PROD_KEYS = '/Users/seedds/My Drive/Python_Scripts/nsp_check/prod.keys'                          # path of prod.keys (empty = ask at run time)
+NSP_DIR = ''                            # folder holding the NSPs (empty = ask at run time)
+PROD_KEYS = ''                          # path of prod.keys (empty = ask at run time)
 PACKAGE = ''                            # version packed into the IPA (empty = the profile's package; Mario 'v327680' i.e. 1.2.1, or 'v0')
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder)
 APP_NAME = ''                           # app name on the home screen (empty = the game name in the base NSP)
@@ -434,7 +434,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         notes.append('no BNSH / BAHS at the top level: the shaders are inside compressed or other containers or in main, and must be located first')
     major = {v.split('_')[0] for v in F['sdkver']}
     if not major: notes.append('no SDK version string found')
-    elif major != {'16'}: notes.append(f'SDK {"/".join(sorted(major))}, not Mario\'s 16: NVN object sizes, API version and service layouts differ by SDK (the host was converted from D2R\'s SDK 12 to SDK 16 sizes); check them one by one per docs/agents/03')
+    elif major != {'16'}: notes.append(f'SDK {"/".join(sorted(major))}, not Mario\'s 16: NVN object sizes, API version and service layouts differ by SDK (the host was converted from D2R\'s SDK 12 to SDK 16 sizes); check them one by one per docs/internals/03')
     if any(l.split()[:1] == ['nn::ro'] for l in R):   # hle_ro.c answers nn::ro as if no NRO were loaded: enough unless the game ships NRO modules
         nro = rom['exts']['.nro']
         notes.append(f'imports nn::ro (loads NRO modules at run time): the RomFS has {nro} .nro files; the host loads none (hle_ro.c)' + (', so their code never runs' if nro else ', which is enough'))
@@ -442,7 +442,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     R += ['', '## What it means for a port', ''] + [f'- {n}' for n in notes or ['—']]
     R += ['', '## Provisional profile keys (dm/games/profile_guess.py)', '', 'What the game files decide; mem_used follows the rewrite, and a game with virtual address memory that sets a heap gets a heap check on the Mac (scripts/build_ipa_from_nsp.py heap_check).', '', '```']
     R += [f'{k}\t{v}' + (f'\t# {why}' if why else '') for k, (v, why) in G.items()] + ['```']
-    R += ['', 'Next steps: docs/agents (02 survey, 03 bring-up).']
+    R += ['', 'Next steps: docs/internals (02 survey, 03 bring-up).']
     (work / 'survey.md').write_text('\n'.join(R) + '\n')
     for n in notes: say(n)
     say(f'survey report: {work / "survey.md"}')
@@ -1194,7 +1194,7 @@ def main(args=None):
         if force and gamemod.by_title(app):   # dm/games has the game too: every tool (game.py, make, build_ipa.sh) takes the provisional profile first (DM_GAMES_FIRST)
             os.environ['DM_GAMES_FIRST'] = env['DM_GAMES_FIRST'] = '1'; shadowed = True
         g, provisional = gamemod.load(f'{app:016X}'), True
-        say('[RED] provisional game profile: values guessed from the survey, the game may not boot; bring it up per docs/agents after packing')
+        say('[RED] provisional game profile: values guessed from the survey, the game may not boot; bring it up per docs/internals after packing')
     say(f'game profile: {g.id}{" (provisional: " + str(g.dir) + ")" if provisional else ""}')
     builds, need = g.builds(), g.words('shader_versions')
     pkg_ver = args.package or PACKAGE or g.get('package')
@@ -1296,7 +1296,7 @@ def main(args=None):
     say(f'done: {out_ipa} ({out_ipa.stat().st_size / 2**30:.1f} GB)')
     if provisional:
         say(f'[RED] this IPA was built from a provisional game profile and the game may not boot: {g.dir}')
-        say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')
+        say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/internals')
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
