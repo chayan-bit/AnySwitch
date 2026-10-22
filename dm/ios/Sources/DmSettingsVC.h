@@ -1,4 +1,4 @@
-// The settings screen: a category list on the left, the chosen category's rows on the right, a cyan pulsing focus border, button hints at the bottom (see DmSettingsVC.m).
+// The settings screen: a category list on the left, the chosen category's rows on the right, an amber focus ring with a breathing glow, button hints at the bottom (see DmSettingsVC.m).
 // Controller: D-pad or left stick moves, A selects / changes, B goes back (closes from the category list), L / R (and ZL / ZR) switch category. Touch: tap, drag a slider. Hardware keyboard: arrows, return, escape, [ and ].
 #import <UIKit/UIKit.h>
 #import "DmSettings.h"

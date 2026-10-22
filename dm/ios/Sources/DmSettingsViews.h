@@ -1,4 +1,4 @@
-// Building blocks of the settings screen (DmSettingsVC.m), modelled on the Switch's System Settings: colours that follow the system theme, a cyan focus border with a soft pulse,
+// Building blocks of the settings screen (DmSettingsVC.m), modelled on the Switch's System Settings: colours that follow the system theme, an amber focus ring whose glow breathes slowly,
 // category cells, rows with a toggle / selector / slider, and the button hints at the bottom.
 #import <UIKit/UIKit.h>
 #import "DmSettings.h"
@@ -13,15 +13,15 @@ CGColorRef dm_cg(UIView *v, UIColor *c);             // a dynamic colour resolve
 + (UIColor *)text;
 + (UIColor *)sub;      // secondary text
 + (UIColor *)sep;      // hairlines
-+ (UIColor *)accent;   // focus cyan
-+ (UIColor *)accentText;   // cyan for text and icons on a row: the same hue, darker in the light style so it reads on a light row
++ (UIColor *)accent;   // focus amber (DmPalette.h)
++ (UIColor *)accentText;   // amber for text and icons on a row: the same hue, deeper in the light style so it reads at 4.5:1
 + (UIColor *)track;    // the empty part of a toggle or slider: at least 3:1 against a row in both styles
 + (UIColor *)selected; // the chosen category while the focus is in the pane
 + (UIColor *)warn;     // restart tags, locked rows
 + (UIFont *)font:(CGFloat)size weight:(UIFontWeight)w;
 @end
 
-@interface DmFocusView : UIView   // rounded cyan border with a soft glow that pulses while active
+@interface DmFocusView : UIView   // rounded amber ring with a soft glow that breathes while active (HearthTheme.h)
 @property (nonatomic) CGFloat radius;
 @property (nonatomic) BOOL active;
 @property (nonatomic) BOOL warn;   // the border takes the warning colour (a refused entry)

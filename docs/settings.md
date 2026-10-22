@@ -1,7 +1,7 @@
 # In-app settings screen (iOS)
 
 The settings screen is the player's way to change how the app presents and controls the game, without editing files.
-It looks like the Switch's System Settings: categories on the left, the chosen category's rows on the right, rounded rows, a cyan border that pulses on the focused item, and the button hints at the bottom.
+It looks like the Switch's System Settings: categories on the left, the chosen category's rows on the right, rounded rows, an amber ring with a slowly breathing glow on the focused item, and the button hints at the bottom.
 It follows the system's light or dark appearance and works on the iPad and the iPhone.
 
 ## Opening and closing

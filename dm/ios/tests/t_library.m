@@ -2,6 +2,7 @@
 // Foundation only, runs on the Mac: make -C dm/ios/tests run
 #import <Foundation/Foundation.h>
 #import "HearthLibrary.h"
+#import "HearthSound.h"
 #include "boot.h"
 #include "dm_abi.h"
 
@@ -90,6 +91,21 @@ int main(void) { @autoreleasepool {
     CHECK([[lib logDirFor:b] hasSuffix:@"Documents/Logs/0100000000030000"] && [fm fileExistsAtPath:[lib logDirFor:b]], "log dir");
 
     [fm removeItemAtPath:t error:nil];
+    // menu sounds: short, within full scale, no click at the start or the end, the open chime rises and the close chime falls
+    { double rate = 48000;
+      double (^pitch)(const float *, size_t) = ^double(const float *s, size_t n) { size_t z = 0; for (size_t i = 1; i < n; i++) if ((s[i - 1] < 0) != (s[i] < 0)) z++; return z * rate / 2 / n; };   // zero crossings
+      for (int k = HearthSoundMove; k <= HearthSoundClose; k++) {
+          NSData *d = hearth_sound_samples((HearthSoundKind)k, rate); const float *s = d.bytes; size_t n = d.length / sizeof(float);
+          float peak = 0; for (size_t i = 0; i < n; i++) peak = fmaxf(peak, fabsf(s[i]));
+          CHECK(n > rate * 0.03 && n < rate * 0.6, "sound %d: %zu frames", k, n);
+          CHECK(peak > 0.05 && peak <= 1, "sound %d peak %.2f", k, peak);
+          CHECK(fabsf(s[0]) < 0.01 && fabsf(s[n - 1]) < 0.01, "sound %d starts and ends quietly (%.3f, %.3f)", k, s[0], s[n - 1]);
+      }
+      NSData *o = hearth_sound_samples(HearthSoundOpen, rate), *c = hearth_sound_samples(HearthSoundClose, rate); size_t w = (size_t)(0.06 * rate);
+      const float *os = o.bytes, *cs = c.bytes; size_t on = o.length / sizeof(float), cn = c.length / sizeof(float);
+      double o1 = pitch(os, w), o2 = pitch(os + on - w * 3, w), c1 = pitch(cs, w), c2 = pitch(cs + cn - w * 3, w);
+      CHECK(o2 > o1 * 1.3 && c2 < c1 / 1.3, "open %.0f -> %.0f Hz, close %.0f -> %.0f Hz", o1, o2, c1, c2); }
+
     printf("t_library: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;
 } }

@@ -50,8 +50,8 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 @end
 
 @interface DmSettings : NSObject
-+ (instancetype)shared;   // the app's store: the running game's store (dm_settings_set_game), else the system store; over the process environment and the main bundle's Info.plist
-+ (instancetype)systemStore;   // the system layer only (no game rows); the shared store when no game runs
++ (instancetype)shared;   // the running game's store (dm_settings_set_game before the first call), over the process environment and the main bundle's Info.plist; made once per process
++ (instancetype)systemStore;   // the system layer only (no game rows), for Home; it neither exports nor announces (a game's store reads the file when the game starts)
 + (instancetype)storeForGame:(NSString *)titleId packRoot:(NSString *)root;   // a game's store (its pack's profile/settings.json rows and defaults): the shared store for the running game, else one that neither exports nor announces
 // Documents/settings.json is {"version": 2, "system": {key: value}, "games": {title id: {key: value}}}; a version 1 file ({"values": ...}) is read as the system layer and written as version 2 on the first change.
 // Each change merges into the file on disk key by key, so a system store and a game store over the same file do not undo each other's changes

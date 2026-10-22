@@ -3,8 +3,8 @@ t_settings: t_settings.m ../Sources/DmSettings.m ../Sources/DmSettings.h ../Sour
 	clang -O1 -g -Wall -fobjc-arc -I../Sources -o $@ t_settings.m ../Sources/DmSettings.m -framework Foundation
 t_haptics: t_haptics.c ../Sources/DmHapticMap.h ../../host/dm_input.h
 	clang -O1 -g -Wall -I../Sources -I../../host -o $@ t_haptics.c -lm
-t_library: t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthLibrary.h ../../host/boot.m ../../host/boot.h ../../host/profile.m
-	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_library.m ../Hearth/HearthLibrary.m ../../host/boot.m ../../host/profile.m -framework Foundation
+t_library: t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthLibrary.h ../Hearth/HearthSound.m ../Hearth/HearthSound.h ../../host/boot.m ../../host/boot.h ../../host/profile.m
+	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthSound.m ../../host/boot.m ../../host/profile.m -framework Foundation
 run: t_settings t_haptics t_library
 	./t_settings
 	./t_library

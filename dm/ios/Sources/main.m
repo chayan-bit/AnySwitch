@@ -20,6 +20,7 @@ static char *g_argv[4]; static int g_argc; static int g_boot_ok;
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
 static double g_t0;   // process start on the clock the host's [bootprof] lines use (its t= counts from process start, so a launch from Home subtracts this line's t)
 __attribute__((constructor)) static void hearth_t0(void) { g_t0 = now_s(); }
+static void apply_appearance(UIWindow *w);
 
 static void log_to(NSString *dir, NSString *name) {   // stderr (the host's log) into dir/name.txt; the previous one is kept as name.prev.txt
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -82,9 +83,16 @@ int hearth_boot_game(HearthGame *g) {
     if (dm_boot_game(pack.fileSystemRepresentation)) return 0;   // a refused pack: the reason is in the game's log, and Home stays
     g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(pack.fileSystemRepresentation); g_argc = 2;   // the same two arguments dm_boot_game gave the early start
     g_boot_ok = 1;
+    if (NSThread.isMainThread && UIApplication.sharedApplication)   // launched from Home: the window exists already (a launch intent has none yet; the scene applies it)
+        for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) if ([sc isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)sc).windows) apply_appearance(w);
     return 1;
 }
 
+// DM_APPEARANCE=light|dark (env.txt diagnostics): Hearth in that style whatever the system's; the Appearance setting of the System Settings will set the same override
+static void apply_appearance(UIWindow *w) {
+    const char *ap = getenv("DM_APPEARANCE"); if (!ap) return;
+    w.overrideUserInterfaceStyle = !strcmp(ap, "light") ? UIUserInterfaceStyleLight : !strcmp(ap, "dark") ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
+}
 static void *boot_thread(void *p) {
     (void)p;
     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
@@ -116,6 +124,7 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     fprintf(stderr, "hearth: scene connects at t=%.3f s, %s\n", now_s() - g_t0, hearth_running_game() ? "game" : "Home");
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    apply_appearance(self.window);
     self.window.rootViewController = hearth_running_game() ? front_ios_root() : [HearthHomeVC new];   // a launch intent booted its game before UIApplicationMain
     [self.window makeKeyAndVisible];
 }

@@ -266,7 +266,11 @@ static NSDictionary *gameFile(NSString *path) {
     return j[@"defaults"];
 }
 static NSString *g_game_id, *g_pack_root;   // the launched game and its pack (Hearth); nil = no game: the shared store is the system store
-void dm_settings_set_game(NSString *titleId, NSString *root) { g_game_id = titleId.copy; g_pack_root = root.copy; }
+static BOOL g_shared_made;
+void dm_settings_set_game(NSString *titleId, NSString *root) {
+    if (g_shared_made) say(@"[RED] dm_settings_set_game after the shared store was made: it stays the store it was");
+    g_game_id = titleId.copy; g_pack_root = root.copy;
+}
 // A store over Documents/settings.json and the process environment; live = it exports to the environment and announces changes (the running game's, or the system store when none runs)
 static DmSettings *app_store(NSString *gameId, NSString *packRoot, BOOL live) {
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -282,12 +286,12 @@ static DmSettings *app_store(NSString *gameId, NSString *packRoot, BOOL live) {
 }
 + (instancetype)shared {
     static DmSettings *s; static dispatch_once_t once;
-    dispatch_once(&once, ^{ s = app_store(g_game_id, g_pack_root, YES); });
+    dispatch_once(&once, ^{ g_shared_made = YES; s = app_store(g_game_id, g_pack_root, YES); });
     return s;
 }
-// ponytail: while a game runs, the system store and the running game's store each keep their own copy of the system layer, so a change in one reaches the other at the next start; one shared layer object when Home's settings open over a running game (step 8)
+// Its own store, never the shared one: Home reads it before a game is launched in this process, and the shared store must become that game's.
+// ponytail: it neither exports nor announces, and while a game runs it and the game's store each keep their own copy of the system layer (a change in one reaches the other at the next start); one shared layer object when Home's settings open over a running game (step 8)
 + (instancetype)systemStore {
-    if (!g_game_id) return [self shared];
     static DmSettings *s; static dispatch_once_t once;
     dispatch_once(&once, ^{ s = app_store(nil, nil, NO); });
     return s;

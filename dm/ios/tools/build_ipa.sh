@@ -187,18 +187,17 @@ if [ -n "${PACK:-}" ]; then
   t "done: $PACK ($(du -sh "$PACK" | cut -f1) as du counts it; clones share their blocks with the sources)"
   exit 0
 fi
-# App icon: the game's own icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one). DM_ICON can point at another image; by default the icon.jpg next to the RomFS is used.
-# It is scaled to a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes); with neither, no icon is set and the home-screen icon is blank.
-# The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set
+# App icon: Hearth's own mark, drawn by Hearth/Assets/hearth_icon.c as a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes).
+# The game's icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one; DM_ICON can point at another image) is the game's tile on Home, in the pack's meta/
 ICON=${DM_ICON:-$(dirname "$ROMFS")/icon.jpg}
 mkdir -p Gen/Assets.xcassets && printf '{"info":{"author":"xcode","version":1}}\n' > Gen/Assets.xcassets/Contents.json || die "asset catalog"
-if [ -f "$ICON" ]; then
-  AI=Gen/Assets.xcassets/AppIcon.appiconset; mkdir -p "$AI" || die "mkdir $AI"
-  sips -s format png -z 1024 1024 "$ICON" --out "$AI/icon.png" > /dev/null || die "sips: cannot convert the icon $ICON"
-  printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
-  echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
-  t "app icon: $ICON"
-else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
+AI=Gen/Assets.xcassets/AppIcon.appiconset; mkdir -p "$AI" || die "mkdir $AI"
+clang -O1 -o Gen/hearth_icon Hearth/Assets/hearth_icon.c -framework CoreGraphics -framework ImageIO -framework CoreFoundation || die "build the app icon renderer"
+Gen/hearth_icon "$AI/icon.png" 1024 || die "draw the app icon"
+printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
+echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
+t "app icon: Hearth's mark (Hearth/Assets/hearth_icon.c)"
+[ -f "$ICON" ] || t "no game icon ($ICON not found): the game's tile on Home shows a placeholder"
 # The bundled pack's own parts: icon and control data, then manifest.json (pack_manifest.py --bundled: the code is the executable's own and the app's signature seals the files, so no inventory)
 if [ -f "$ICON" ]; then cp "$ICON" Gen/pack/meta/icon.jpg || die "copy $ICON"; fi
 if [ -f "$VNACP" ]; then cp "$VNACP" Gen/pack/meta/control.nacp || die "copy $VNACP"; fi

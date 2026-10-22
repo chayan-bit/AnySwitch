@@ -27,6 +27,13 @@ The license files sit next to the code they cover and must stay there.
 | `dm/gfx/nvn/nvn_tex.c` | Texture layout size algorithm ported from deko3d | zlib | the header of the file |
 | `dm/gfx/nvn/nvn_upscale.h` | AMD FidelityFX Super Resolution 1 (EASU and RCAS from `ffx_fsr1.h` v1.20210629), ported to Metal from the copy Ryujinx vendors | MIT | the header of the file |
 
+## Hearth's own look and sound
+
+Hearth's app icon, accent colours, focus style and menu sounds are original and use no third-party assets.
+The icon is vector art drawn in code (`dm/ios/Hearth/Assets/hearth_icon.c`), and the sounds are sine tones synthesized at run time (`dm/ios/Hearth/HearthSound.m`), with no sample files.
+The type is the system's SF Pro Rounded, used at run time and not bundled, and the system buttons use SF Symbols.
+`scripts/tests/test_brand_words.py` keeps console brand names out of what the app shows and names, and checks what a built app contains.
+
 ## References and tools (not shipped here)
 
 These are used while building or consulted as references, and are not part of the repository.

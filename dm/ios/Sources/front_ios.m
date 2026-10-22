@@ -185,7 +185,12 @@ static UILabel *front_ios_fps_label(void);
     self.home.frame = CGRectMake(floor(b.size.width / 2 - 22), CGRectGetMaxY(UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets)) - 52, 44, 44);   // bottom centre, between the stick and the face buttons
     self.gear.frame = CGRectMake(CGRectGetMaxX(hud) + 4, CGRectGetMidY(hud) - 22, 44, 44);   // the counter's place stays reserved while it is off, so nothing moves when it is switched
 }
-- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot(); }
+- (void)viewDidAppear:(BOOL)a {
+    [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot();
+    // DM_SETTINGS_AT_START=1 (env.txt diagnostics): the settings screen opens by itself once the game shows, for screenshots on a device that is driven without touching the top of the screen
+    static int once; const char *e = getenv("DM_SETTINGS_AT_START");
+    if (!once++ && e && atoi(e)) { __weak DmGameVC *w = self; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [w openSettings]; }); }
+}
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 - (BOOL)prefersStatusBarHidden { return YES; }

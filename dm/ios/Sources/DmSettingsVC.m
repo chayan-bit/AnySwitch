@@ -1,4 +1,4 @@
-// The settings screen (see DmSettingsVC.h). Two focus levels: the category list and the rows of the chosen category; one cyan border per level, moved with a short animation.
+// The settings screen (see DmSettingsVC.h). Two focus levels: the category list and the rows of the chosen category; one amber focus ring per level, moved with a short animation.
 // All data comes from DmSettings (the registry): the screen knows no setting by name.
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"

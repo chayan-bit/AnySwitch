@@ -372,7 +372,13 @@ int main(void) { @autoreleasepool {
       printf("track contrast: light row %.2f pane %.2f, dark row %.2f pane %.2f\n", lr, lp, dr, dp);
       CHECK(lr >= 3 && lp >= 3 && dr >= 3 && dp >= 3, "track %.2f %.2f %.2f %.2f", lr, lp, dr, dp);
       uint32_t seen = (uint32_t)lround(0.9 * 0xA6) * 0x010101; CHECK(dm_contrast(seen, DM_ROW_DARK) >= 3, "still 3:1 when a device renders the colour 10%% darker (measured on the old one)");
-      CHECK(dm_contrast(0x8C8C8C, DM_ROW_DARK) < 3 && dm_contrast(0x8E8E8E, DM_ROW_LIGHT) < 3, "the old track colours were under 3:1"); }
+      CHECK(dm_contrast(0x8C8C8C, DM_ROW_DARK) < 3 && dm_contrast(0x8E8E8E, DM_ROW_LIGHT) < 3, "the old track colours were under 3:1");
+      // the amber accent (focus ring, a toggle that is on, a slider's fill) at 3:1 or more against the panel and the row in both styles; amber text at 4.5:1
+      double al = fmin(dm_contrast(DM_ACCENT_LIGHT, DM_PANEL_LIGHT), dm_contrast(DM_ACCENT_LIGHT, DM_ROW_LIGHT)), ad = fmin(dm_contrast(DM_ACCENT_DARK, DM_PANEL_DARK), dm_contrast(DM_ACCENT_DARK, DM_ROW_DARK));
+      double tl = fmin(dm_contrast(DM_ACCENT_TEXT_LIGHT, DM_PANEL_LIGHT), dm_contrast(DM_ACCENT_TEXT_LIGHT, DM_ROW_LIGHT)), td = fmin(dm_contrast(DM_ACCENT_TEXT_DARK, DM_PANEL_DARK), dm_contrast(DM_ACCENT_TEXT_DARK, DM_ROW_DARK));
+      printf("accent contrast: light %.2f dark %.2f, accent text: light %.2f dark %.2f\n", al, ad, tl, td);
+      CHECK(al >= 3 && ad >= 3, "accent %.2f %.2f", al, ad); CHECK(tl >= 4.5 && td >= 4.5, "accent text %.2f %.2f", tl, td);
+      CHECK(dm_contrast(0xE08A00, DM_PANEL_LIGHT) < 3, "the brighter amber is under 3:1 on white, the reason for the darker light one"); }
 
     // 17. scopes: one system layer, a layer per game, the version 2 file
     { NSArray *opts = @[@{@"value": @"a", @"label": @"A"}, @{@"value": @"b", @"label": @"B"}, @{@"value": @"c", @"label": @"C"}];
