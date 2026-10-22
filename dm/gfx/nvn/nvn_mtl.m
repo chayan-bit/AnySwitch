@@ -2896,11 +2896,21 @@ static int rt_range_pr_ro(NvProg *p) {
     for (int k=0;k<6;k++) if (p->sh[k] && (k>1 || p->sh[k]->stage != k || !p->sh[k]->range_ro || p->sh[k]->rf.drv_read[0] || p->sh[k]->rf.drv_read[2])) return 0;
     return 1;
 }
+// The canonical shader object of each key, for every thread: pipeline keys hold shader pointers, so a pipeline a worker makes ahead of the draw (program-creation warm-up,
+// record-time kick) only matches the draw's key when both use the same object. Put-if-absent returns the object that won
+static os_unfair_lock g_sh_lock = OS_UNFAIR_LOCK_INIT; static NSMutableDictionary<NSString *, NvShader *> *g_sh_shared;
+static NvShader *sh_shared_get(NSString *k) { os_unfair_lock_lock(&g_sh_lock); NvShader *o = g_sh_shared[k]; os_unfair_lock_unlock(&g_sh_lock); return o; }
+static NvShader *sh_shared_put(NSString *k, NvShader *o) {
+    if (!o) return nil;
+    os_unfair_lock_lock(&g_sh_lock); if (!g_sh_shared) g_sh_shared = [NSMutableDictionary dictionary];
+    NvShader *had = g_sh_shared[k]; if (!had) g_sh_shared[k] = o; os_unfair_lock_unlock(&g_sh_lock); return had ? had : o;
+}
 static NvShader *shader_get(NSString *pc, int stage) {
     if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
     NvShader *o = g_shcache[pc];
     if (o) return o;
-    uint64_t bt = bp_now(); o = shader_load(pc, stage);
+    if ((o = sh_shared_get(pc))) { g_shcache[pc] = o; return o; }   // loaded by a worker ahead of its first draw
+    uint64_t bt = bp_now(); o = sh_shared_put(pc, shader_load(pc, stage));
     if (!o) return nil;
     g_shcache[pc] = o;
     pso_record("S\t%s\t%d\n", pc.UTF8String, stage);
@@ -3854,6 +3864,7 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // Called 
 }
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused);
 static id<MTLFunction> ms_fs_override(NvShader *fs);   // DM_NVN_MAGSCAN (defined before draw)
+static void pw_first_draw(NvShader *vs, NvShader *fs);   // DM_PSO_PROGLOG (program-creation warm-up, below)
 static int pf_int_kind(MTLPixelFormat f);
 // A pipeline Metal refused: when a colour the fragment shader writes has an integer attachment, its output was most likely translated as float (a game without PC reflection has no output types,
 // Tears of the Kingdom's BC4 block encoder and Ultrahand mask were the first cases). Writes the facts row that declares the outputs, for the profile's shader_facts_manual.tsv (merged by shader_split.py)
@@ -3877,6 +3888,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
     if (hm_get_id(&g_pso_fail, &k)) return nil;
+    pw_first_draw(vs, fs);
     id<MTLRenderPipelineState> ps = nil;
     NSError *e = nil; uint64_t bt = bp_now();
     int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw is skipped until then; merged passes and specialized fragments as before
@@ -3984,6 +3996,63 @@ int mtl_warm_wait(int timeout_ms) {
     uint64_t t0 = bp_now();
     while (atomic_load(&g_warm_running) && (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms) usleep(2000);
     return (int)((bp_now() - t0) / 1000000ull) + 1;
+}
+// ---- Program-creation warm-up (dm/gfx/README.md, pipeline coverage, generic path): the game creates its programs (nvnProgramSetShaders) when it loads content, usually well before
+// their first draw, and the call names the exact vertex + pixel pair. DM_PSO_PROGWARM=n (default 2, 0 = off): n utility-QoS workers load the pair's shaders and compile a stand-in
+// pipeline of the pair (no vertex layout, one sample): it cannot be used for the draw, but it leaves both functions in Metal's compiled-function cache, which cuts the draw's own compile
+// (by about a fifth, measured on a Mac). Only programs that carry both stages: a game that binds its stages separately creates single-stage programs whose pair is unknown here.
+// DM_PSO_PROGLOG=path: one line per program created (C), warm-up done (R) and first draw of a pair (D), with uptime in ns, for the measurement (dm/gfx/README.md, pipeline coverage)
+static int g_pw_n = -1; static FILE *g_pw_log; static os_unfair_lock g_pw_lock = OS_UNFAIR_LOCK_INIT;
+static dispatch_semaphore_t pw_sem(void) {   // the background slots shared by the warm-up and the record-time kick: DM_PSO_PROGWARM of them, 2 when it is unset or 0
+    static dispatch_once_t once; static dispatch_semaphore_t s;
+    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"); int v = n ? atoi(n) : 0; s = dispatch_semaphore_create(v > 0 ? v : 2); });
+    return s;
+}
+static NSMutableSet<NSString *> *g_pw_seen, *g_pw_drawn;
+static void pw_log(const char *fmt, ...) {
+    if (!g_pw_log) return;
+    va_list ap; va_start(ap, fmt); os_unfair_lock_lock(&g_pw_lock); vfprintf(g_pw_log, fmt, ap); fflush(g_pw_log); os_unfair_lock_unlock(&g_pw_lock); va_end(ap);
+}
+static NvShader *pw_shader(NSString *key, int stage) { NvShader *sh = sh_shared_get(key); return sh ? sh : sh_shared_put(key, shader_load(key, stage)); }   // shader_get takes it from the shared table
+void mtl_prog_created(const prog_t *p) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ const char *n = getenv("DM_PSO_PROGWARM"), *l = getenv("DM_PSO_PROGLOG"); g_pw_n = n ? atoi(n) : 2; if (l) g_pw_log = fopen(l, "w");
+        g_pw_seen = [NSMutableSet set]; g_pw_drawn = [NSMutableSet set]; });
+    if (!g_pw_log && g_pw_n <= 0) return;
+    shmap_load();
+    NSString *vk = nil, *fk = nil;
+    for (unsigned i = 0; i < p->nstage && i < 6; i++) {
+        uint8_t md[8]; if (!prog_key(p, i, md)) continue;
+        NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]], *st = g_shmap[k];
+        if ([st isEqualToString:@"vertex"]) vk = [k stringByAppendingString:@"_b"]; else if ([st isEqualToString:@"pixel"]) fk = [k stringByAppendingString:@"_b"];
+    }
+    if (!vk || !fk) return;   // single-stage programs: no pair, no warm-up
+    NSString *pair = [NSString stringWithFormat:@"%@\t%@", vk, fk ?: @"-"];
+    os_unfair_lock_lock(&g_pw_lock); int fresh = ![g_pw_seen containsObject:pair]; if (fresh) [g_pw_seen addObject:pair]; os_unfair_lock_unlock(&g_pw_lock);
+    pw_log("C\t%llu\t%s\t%d\n", (unsigned long long)bp_now(), pair.UTF8String, fresh);
+    if (!fresh || g_pw_n <= 0) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_semaphore_wait(pw_sem(), DISPATCH_TIME_FOREVER);
+        @autoreleasepool {
+            struct timespec c0, c1; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0); uint64_t t0 = bp_now();
+            NvShader *vs = pw_shader(vk, 0), *fs = pw_shader(fk, 1); id ps = nil;
+            if (vs && fs) {
+                pso_key k; memset(&k, 0, sizeof k); k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.samples = 1; NSError *e = nil;
+                MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, nil, 0);
+                if (flexpso_on()) { pso_ukey u; pso_ukey_fill(&k, vs, &u); ps = flexpso_make(&u, d, vs->lib, fs->lib, "program warm-up", &e); }
+                else ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];   // not psoarch_render: a stand-in must not reach a harvest archive
+            }
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+            pw_log("R\t%llu\t%s\t%d\t%.3f\t%.3f\n", (unsigned long long)bp_now(), pair.UTF8String, ps != nil, (bp_now() - t0) / 1e6, (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6);
+        }
+        dispatch_semaphore_signal(pw_sem());
+    });
+}
+static void pw_first_draw(NvShader *vs, NvShader *fs) {   // submit thread, pipeline cache miss
+    if (!g_pw_log) return;
+    NSString *pair = [NSString stringWithFormat:@"%s\t%s", vs->key, fs ? fs->key : "-"];
+    if ([g_pw_drawn containsObject:pair]) return;
+    [g_pw_drawn addObject:pair]; pw_log("D\t%llu\t%s\n", (unsigned long long)bp_now(), pair.UTF8String);
 }
 // Precompiled pipelines (nvn_psoarch.m): DM_PSO_ARCHIVE=path or off (default pso_archive.metallib beside the shader map: the app's dm/, put there by build_ipa.sh);
 // DM_PSO_HARVEST=path, or 1 for pso_harvest.metallib beside pso_user.tsv (Documents on iOS): every pipeline created is recorded for tools/dmsh_psoarch.py
@@ -6550,17 +6619,17 @@ static void warm_claim(void) {
     for (WarmItem *item in items) {
         if (item->kind == 0) {
             if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
-            if (!g_shcache[item->key]) { g_shcache[item->key] = item->shader; g_warm_claim_shaders++; }
+            if (!g_shcache[item->key]) { g_shcache[item->key] = sh_shared_put(item->key, item->shader); g_warm_claim_shaders++; }
         } else if (item->kind == 1) {
             if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
             NvShader *vs = g_shcache[item->vs_key], *fs = item->fs_key.length ? g_shcache[item->fs_key] : nil;
-            if (!vs) { vs = item->vs; g_shcache[item->vs_key] = vs; }
-            if (item->fs_key.length && !fs) { fs = item->fs; g_shcache[item->fs_key] = fs; }
+            if (!vs) { vs = sh_shared_put(item->vs_key, item->vs); g_shcache[item->vs_key] = vs; }
+            if (item->fs_key.length && !fs) { fs = sh_shared_put(item->fs_key, item->fs); g_shcache[item->fs_key] = fs; }
             item->pso.vs = (__bridge void *)vs; item->pso.fs = (__bridge void *)fs;
             if (!hm_get_id(&g_pso, &item->pso)) { hm_put_id(&g_pso, &item->pso, item->object); g_warm_claim_rps++; }
         } else {
             NvShader *cs = g_shcache[item->key];
-            if (!cs) { cs = item->shader; if (!g_shcache) g_shcache = [NSMutableDictionary dictionary]; g_shcache[item->key] = cs; }
+            if (!cs) { cs = sh_shared_put(item->key, item->shader); if (!g_shcache) g_shcache = [NSMutableDictionary dictionary]; g_shcache[item->key] = cs; }
             const void *key = (__bridge const void *)cs;
             if (!hm_get_id(&g_cps, &key)) { hm_put_id(&g_cps, &key, item->object); g_warm_claim_cps++; }
         }
