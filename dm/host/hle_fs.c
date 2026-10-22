@@ -322,15 +322,15 @@ static Result err_res(const char *op, const char *path) {
 
 // ---------- Mount ----------
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host directory directly, the cache gets only the minimum size", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
-// A chunk store is opened once, at the first MountRom that finds one, and stays open; DM_ROMSTORE_CACHE_MB sizes its cache of partly read chunks (default 32)
+// A chunk store is opened once, at the first MountRom that finds one, and stays open; DM_ROMSTORE_CACHE_MB sizes its cache of partly read chunks (default 16: replaying a boot-to-gameplay read trace, 16, 32 and 64 MB hit equally often)
 static romstore *rom_store(const char *path) {
     static romstore *st; static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&m);
     if (!st) {
         if (getenv("DM_ROMFS_OVERLAY")) die("DM_ROMFS_OVERLAY layers over a RomFS directory; DM_ROMFS=%s is a chunk store", path);
         const char *mb = getenv("DM_ROMSTORE_CACHE_MB"); char err[1200]; uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-        if (!(st = romstore_open(path, (size_t)(mb ? atoi(mb) : 32) << 20, err, sizeof err))) die("chunk store: %s", err);
-        LOG("fs chunk store %s opened and checked in %.1f ms (cache %s MB)", path, (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6, mb ? mb : "32");
+        if (!(st = romstore_open(path, (size_t)(mb ? atoi(mb) : 16) << 20, err, sizeof err))) die("chunk store: %s", err);
+        LOG("fs chunk store %s opened and checked in %.1f ms (cache %s MB)", path, (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6, mb ? mb : "16");
     }
     pthread_mutex_unlock(&m);
     return st;

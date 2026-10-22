@@ -137,7 +137,7 @@ Notes on these steps:
 - `IPA_ROMFS=store` packs no RomFS and builds a chunk store of it instead (`dm/tools/romstore/romstore.py`: content-defined chunks, deduplicated by SHA-256, each compressed with zstd and a trained dictionary, readable at any offset).
   Copy it to the device with `romstore.py install <store> --device <udid> --bundle <id>`; the app reads `Documents/romfs.dmstore` before `Documents/romfs`.
   On the Mac, `DM_ROMFS` may name a store file instead of a RomFS folder; `romstore.py verify <store> <RomFS>` reads every file back through the host's reader and compares it with the original.
-  `DM_ROMSTORE_CACHE_MB` (default 32) sizes the reader's cache of decompressed chunks.
+  `DM_ROMSTORE_CACHE_MB` (default 16) sizes the reader's cache of decompressed chunks.
 - It also bundles a standard font (macOS's Arial Unicode, `STD_FONT=` overrides it) and the generated `nintendo_ext.ttf`.
 - The icon is the `icon.jpg` that `nx_extract` saves next to `RomFS/`; `DM_ICON=` points at another image.
 - `DM_ENV_FILE=` bakes environment switches into the app, and `DM_DISPLAY_NAME=` renames it.
