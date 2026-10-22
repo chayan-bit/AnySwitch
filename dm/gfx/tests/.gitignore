@@ -54,3 +54,7 @@ t_present_ambient
 t_present_ambient.dSYM/
 pso_replay
 pso_replay.dSYM/
+pso_flexbench
+pso_flexbench.dSYM/
+t_flexpso
+t_flexpso.dSYM/
