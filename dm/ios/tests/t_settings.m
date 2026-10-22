@@ -15,6 +15,12 @@ static DmSettings *make(NSArray *sections, NSString *path, NSMutableDictionary *
         setEnv:^(NSString *k, NSString *v) { if (v) env[k] = v; else [env removeObjectForKey:k]; } plist:^id(NSString *k) { return plist[k]; }];
 }
 
+static DmSettings *makeEx(NSArray *sections, NSDictionary *gameDefaults, BOOL (^caps)(NSString *), NSString *path, NSMutableDictionary *env, NSDictionary *plist) {
+    return [[DmSettings alloc] initWithSections:sections gameDefaults:gameDefaults caps:caps storePath:path env:^NSString *(NSString *k) { return env[k]; }
+        setEnv:^(NSString *k, NSString *v) { if (v) env[k] = v; else [env removeObjectForKey:k]; } plist:^id(NSString *k) { return plist[k]; }];
+}
+static DmSetting *find(DmSettings *s, NSString *key) { return [s settingForKey:key]; }
+
 static NSDictionary *gameSection(void) {
     return @{@"id": @"game", @"title": @"Some Game", @"icon": @"star", @"settings": @[
         @{@"key": @"DM_GAME_FAST", @"label": @"Fast mode", @"type": @"toggle", @"default": @"0", @"apply": @"restart"},
@@ -103,6 +109,85 @@ int main(void) { @autoreleasepool {
       EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1"); EQ([s valueForKey:@"DM_CONTROLS_OPACITY"], @"1"); CHECK([s boolForKey:@"DM_SHOW_FPS"], "performance section untouched");
       CHECK([got containsObject:@"DM_CONTROLS_SCALE"] && [got containsObject:@"DM_CONTROLS_OPACITY"], "announced"); CHECK(![got containsObject:@"DM_CONTROLS_LAYOUT"], "locked key not announced");
       EQ([s valueForKey:@"DM_CONTROLS_LAYOUT"], @"overlay"); [NSNotificationCenter.defaultCenter removeObserver:tok]; }
+
+    // 8. the user-facing registry: the entries exist, parse, and show readable values (a slider's decimals follow its step and scale)
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{});
+      for (NSString *k in @[@"DM_SHAKE_G", @"DM_LANG", @"DM_NICK", @"DM_VOLUME", @"DM_FPS_TARGET", @"DM_RENDER_SCALE"]) CHECK(find(s, k) != nil, "missing %s", k.UTF8String);
+      DmSetting *g = find(s, @"DM_SHAKE_G"); CHECK(g.type == DmSettingSlider && !g.restart, "shake threshold is a live slider");
+      EQ([s valueForKey:@"DM_SHAKE_G"], @"1.5"); EQ([g displayValue:@"1.5"], @"1.5 G"); EQ([g displayValue:@"0.5"], @"0.5 G");
+      EQ([g normalized:@"9"], @"4"); EQ([g normalized:@"0.04"], @"0.5"); EQ([g normalized:@"1.54"], @"1.5"); EQ([g normalized:@"1.56"], @"1.6");
+      DmSetting *v = find(s, @"DM_VOLUME"); EQ([s valueForKey:@"DM_VOLUME"], @"1"); EQ([v displayValue:@"0.35"], @"35%"); EQ([v normalized:@"7"], @"1"); EQ([v normalized:@"-1"], @"0"); CHECK(!v.restart, "volume is live");
+      DmSetting *l = find(s, @"DM_LANG"); CHECK(l.restart && l.type == DmSettingChoice, "language is a restart choice"); EQ([s valueForKey:@"DM_LANG"], @"en-US"); EQ([l normalized:@"EN-GB"], @"en-GB"); EQ([l normalized:@"klingon"], nil);
+      DmSetting *sc = find(s, @"DM_CONTROLS_SCALE"); EQ([sc displayValue:@"1.25"], @"125%");   // unchanged
+      DmSetting *r = find(s, @"DM_RENDER_SCALE"); EQ([r displayValue:@"0.85"], @"85%"); EQ([r normalized:@"0.2"], @"0.5");
+      DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fstep"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides"); }
+
+    // 9. text settings: trimmed, case kept, control characters refused, capped in characters and in bytes (the host copies 32 bytes), exported and locked like the others
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); DmSetting *n = find(s, @"DM_NICK");
+      CHECK(n.type == DmSettingText && n.restart, "player name is a restart text"); EQ([s valueForKey:@"DM_NICK"], @"Player");
+      EQ([n normalized:@"  Ash Ketchum  "], @"Ash Ketchum"); EQ([n normalized:@""], nil); EQ([n normalized:@"   "], nil); EQ([n normalized:@"a\nb"], nil); EQ([n normalized:@"a\tb"], nil);
+      NSString *long40 = [@"" stringByPaddingToLength:40 withString:@"x" startingAtIndex:0]; EQ([n normalized:long40], [long40 substringToIndex:32]);
+      NSString *emoji = [@"" stringByPaddingToLength:80 withString:@"\U0001F600" startingAtIndex:0];   // 4 bytes, 2 UTF-16 units each
+      NSString *cut = [n normalized:emoji]; CHECK(cut.length > 0 && strlen(cut.UTF8String) <= 32, "capped to 32 bytes, got %zu", strlen(cut.UTF8String));
+      CHECK([cut isEqualToString:[@"" stringByPaddingToLength:cut.length withString:@"\U0001F600" startingAtIndex:0]], "no broken character");
+      EQ([n normalized:@"Zoë"], @"Zoë"); EQ([n displayValue:@"Ash"], @"Ash");
+      NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile(); DmSettings *s2 = make(builtin, path, env, @{});
+      CHECK([s2 setValue:@"Misty" forKey:@"DM_NICK"], "set"); EQ(env[@"DM_NICK"], @"Misty"); CHECK(![s2 setValue:@"" forKey:@"DM_NICK"], "empty refused"); EQ([s2 valueForKey:@"DM_NICK"], @"Misty");
+      DmSettings *s3 = make(builtin, path, [NSMutableDictionary dictionary], @{}); EQ([s3 valueForKey:@"DM_NICK"], @"Misty");
+      DmSettings *s4 = make(builtin, path, [@{@"DM_NICK": @"Dev"} mutableCopy], @{}); EQ([s4 valueForKey:@"DM_NICK"], @"Dev"); CHECK(![s4 setValue:@"x" forKey:@"DM_NICK"], "locked");
+      [s2 resetAll]; EQ([s2 valueForKey:@"DM_NICK"], @"Player"); }
+
+    // 10. per-game defaults sit between the Info.plist and the registry default: user > plist > game default > registry default; invalid ones are ignored; reset goes back to the game default
+    { NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile();
+      NSDictionary *gd = @{@"DM_CONTROLS_SCALE": @"1.5", @"DM_CONTROLS_OPACITY": @"zz", @"DM_NOT_A_SETTING": @"1", @"DM_LANG": @"fr"};
+      DmSettings *s = makeEx(builtin, gd, nil, path, env, @{@"DMControlsScale": @"1.1"});
+      EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1.1"); CHECK([s sourceForKey:@"DM_CONTROLS_SCALE"] == DmSourcePlist, "plist beats the game default");
+      EQ([s valueForKey:@"DM_LANG"], @"fr"); CHECK([s sourceForKey:@"DM_LANG"] == DmSourceDefault, "a game default is a default");
+      EQ([s valueForKey:@"DM_CONTROLS_OPACITY"], @"1"); EQ([s valueForKey:@"DM_SHAKE_G"], @"1.5");
+      [s applyToEnvironment]; EQ(env[@"DM_LANG"], @"fr"); CHECK(env[@"DM_SHAKE_G"] == nil, "a registry default is not exported, a game default is");
+      [s setValue:@"en-GB" forKey:@"DM_LANG"]; EQ([s valueForKey:@"DM_LANG"], @"en-GB"); CHECK([s sourceForKey:@"DM_LANG"] == DmSourceUser, "user beats it");
+      DmSection *sys = nil; for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) if ([st.key isEqualToString:@"DM_LANG"]) sys = sec;
+      [s resetSection:sys]; EQ([s valueForKey:@"DM_LANG"], @"fr"); EQ(env[@"DM_LANG"], @"fr");
+      NSString *gpath = tmpFile(); [[NSJSONSerialization dataWithJSONObject:@{@"defaults": @{@"DM_LANG": @"de"}, @"sections": @[]} options:0 error:nil] writeToFile:gpath atomically:YES];
+      EQ([DmSettings gameDefaultsFromFile:gpath][@"DM_LANG"], @"de"); CHECK([DmSettings gameDefaultsFromFile:@"/nonexistent"].count == 0, "missing file"); CHECK([DmSettings gameDefaultsFromFile:nil].count == 0, "no path");
+      [@"{\"defaults\": [1]}" writeToFile:gpath atomically:YES encoding:NSUTF8StringEncoding error:nil]; CHECK([DmSettings gameDefaultsFromFile:gpath].count == 0, "malformed defaults"); }
+
+    // 11. a game section with the id of a built-in one merges into it; a second page appears only for a new id
+    { NSDictionary *extra = @{@"id": @"controls", @"title": @"Ignored", @"settings": @[@{@"key": @"DM_GAME_RUMBLE", @"label": @"Game rumble", @"detail": @"d", @"type": @"toggle", @"default": @"1"},
+                                                                                 @{@"key": @"DM_CONTROLS_SCALE", @"label": @"Again", @"type": @"toggle", @"default": @"0"}]};
+      NSMutableArray *secs = [builtin mutableCopy]; [secs addObject:extra]; DmSettings *s = make(secs, tmpFile(), [NSMutableDictionary dictionary], @{});
+      CHECK(s.sections.count == builtin.count, "no new page"); DmSection *c = s.sections[1]; EQ(c.title, @"Controls"); CHECK([c.settings.lastObject.key isEqualToString:@"DM_GAME_RUMBLE"], "merged at the end");
+      CHECK(find(s, @"DM_CONTROLS_SCALE").type == DmSettingSlider, "a duplicate key keeps the first"); }
+
+    // 12. resetAll drops every choice of every page, announces each changed key once, and leaves locked keys alone
+    { NSMutableDictionary *env = [@{@"DM_CONTROLS_LAYOUT": @"overlay"} mutableCopy]; DmSettings *s = make(builtin, tmpFile(), env, @{});
+      [s setValue:@"1.4" forKey:@"DM_CONTROLS_SCALE"]; [s setValue:@"1" forKey:@"DM_SHOW_FPS"]; [s setValue:@"2.5" forKey:@"DM_SHAKE_G"]; [s setValue:@"Zed" forKey:@"DM_NICK"]; [s setValue:@"black" forKey:@"DM_LETTERBOX"];
+      NSMutableArray *got = [NSMutableArray array]; id tok = [NSNotificationCenter.defaultCenter addObserverForName:DmSettingDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [got addObject:n.object]; }];
+      [s resetAll];
+      EQ([s valueForKey:@"DM_CONTROLS_SCALE"], @"1"); CHECK(![s boolForKey:@"DM_SHOW_FPS"], "fps off"); EQ([s valueForKey:@"DM_SHAKE_G"], @"1.5"); EQ([s valueForKey:@"DM_NICK"], @"Player"); EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient");
+      CHECK(got.count == 5, "%lu announced", (unsigned long)got.count); CHECK(![got containsObject:@"DM_CONTROLS_LAYOUT"], "locked key not announced");
+      EQ([s valueForKey:@"DM_CONTROLS_LAYOUT"], @"overlay");
+      [s resetAll]; CHECK(got.count == 5, "a second reset announces nothing"); [NSNotificationCenter.defaultCenter removeObserver:tok]; }
+
+    // 13. capabilities: a setting with `requires` is shown only when the build has it; a page left empty disappears; no provider = everything shown
+    { NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSMutableSet *have = [NSMutableSet set];
+      DmSettings *s = makeEx(builtin, nil, ^BOOL(NSString *c) { return [have containsObject:c]; }, tmpFile(), env, @{});
+      DmSetting *f = find(s, @"DM_FPS_TARGET"), *r = find(s, @"DM_RENDER_SCALE");
+      CHECK(![s isAvailable:f] && ![s isAvailable:r], "hidden without the capability"); CHECK([s isAvailable:find(s, @"DM_SHAKE_G")], "an unconditional setting is always shown");
+      DmSection *perf = nil; for (DmSection *sec in s.visibleSections) if ([sec.ident isEqualToString:@"performance"]) perf = sec; CHECK(perf != nil, "the page still has the fps counter");
+      for (DmSetting *st in [s visibleSettingsInSection:perf]) CHECK(![st.key isEqualToString:@"DM_FPS_TARGET"], "frame cap hidden");
+      [have addObject:@"fstep"]; CHECK([s isAvailable:f] && [s isAvailable:r], "shown with it"); CHECK([[s visibleSettingsInSection:perf] containsObject:f], "listed");
+      DmSettings *all = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK([all isAvailable:find(all, @"DM_FPS_TARGET")], "no provider: shown");
+      NSDictionary *only = @{@"id": @"x", @"title": @"X", @"settings": @[@{@"key": @"DM_ONLY", @"label": @"Only", @"type": @"toggle", @"default": @"0", @"requires": @"nothing"}]};
+      DmSettings *e = makeEx(@[only], nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), [NSMutableDictionary dictionary], @{}); CHECK(e.sections.count == 1 && e.visibleSections.count == 0, "an empty page is not listed");
+      DmSettings *h = makeEx(builtin, nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), env, @{}); CHECK([h setValue:@"30" forKey:@"DM_FPS_TARGET"], "stored anyway"); EQ([h valueForKey:@"DM_FPS_TARGET"], @"30"); }
+
+    // 14. the registry's own consistency: every `requires` names a known capability, every entry has a label and a detail, every slider default is inside its range
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", nil];
+      for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) {
+          if (st.requires) CHECK([known containsObject:st.requires], "%s requires unknown %s", st.key.UTF8String, st.requires.UTF8String);
+          CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);
+          if (st.type == DmSettingSlider) { double d = st.def.doubleValue; CHECK(d >= st.min && d <= st.max, "%s default in range", st.key.UTF8String); } } }
 
     printf("t_settings: %d checks, %d failed\n", g_n, g_fail);
     return g_fail ? 1 : 0;
