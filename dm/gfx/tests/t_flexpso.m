@@ -1,11 +1,13 @@
 // nvn_flexpso.m: a flexible pipeline (Metal 4 compiler, colour state specialized later) draws the same pixels as the classic pipeline of the same descriptor, in a Metal 4 render
 // encoder as the runtime uses, with blending, a partial write mask, a second colour target and depth; the render thread never waits; one unspecialized pipeline serves every
-// colour state; a pipeline the flexible path cannot make reports failure instead of pending forever
+// colour state; a pipeline the flexible path cannot make reports failure instead of pending forever. Render-target history (nvn_rthist.h): a draw may be skipped only when every target of
+// its pass was also rendered the previous frame; any other draw waits for its pipeline, counted apart from the skips
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include "../nvn/nvn_flexpso.h"
+#include "../nvn/nvn_rthist.h"
 
 #define CHECK(c, ...) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); exit(1); } } while (0)
 static const char *SRC =
@@ -59,7 +61,7 @@ static NSData *draw(id<MTLRenderPipelineState> ps, MTLPixelFormat f1) {
 static id<MTLRenderPipelineState> get(int key, int ukey, MTLRenderPipelineDescriptor *d, int *asks, double *worst) {
     long k = key, u = ukey; int pending = 0; id<MTLRenderPipelineState> ps = nil;
     for (*asks = 0; !ps; (*asks)++) {
-        double t0 = now_ms(); ps = flexpso_get(&k, &u, lib, lib, "test", ^{ return d; }, &pending); double t = now_ms() - t0; if (t > *worst) *worst = t;
+        double t0 = now_ms(); ps = flexpso_get(&k, &u, lib, lib, "test", ^{ return d; }, 1, &pending, NULL); double t = now_ms() - t0; if (t > *worst) *worst = t;
         if (!ps && !pending) return nil;
         if (!ps) usleep(500);
         CHECK(*asks < 20000, "pipeline %d never became ready", key);
@@ -94,7 +96,7 @@ int main(void) { @autoreleasepool {
         MTLRenderPipelineDescriptor *d = desc(1, MTLPixelFormatRGBA8Unorm, "fs"); long k = 3, u = 8; int pending = 0;
         flexpso_kick(&k, &u, lib, lib, "kick", ^{ return d; }, 0);
         for (int i = 0; flexpso_stats().specialized < c.specialized + 1; i++) { CHECK(i < 20000, "the kicked pipeline never became ready"); usleep(500); }
-        id<MTLRenderPipelineState> ps = flexpso_get(&k, &u, lib, lib, "kick", ^{ return d; }, &pending);
+        id<MTLRenderPipelineState> ps = flexpso_get(&k, &u, lib, lib, "kick", ^{ return d; }, 1, &pending, NULL);
         flexpso_counts c2 = flexpso_stats();
         CHECK(ps && c2.kicked == 1 && c2.ready == 1 && c2.skipped == c.skipped, "kicked pipeline: got %p, kicked %llu, ready %llu, skipped %llu -> %llu", (__bridge void *)ps, c2.kicked, c2.ready, c.skipped, c2.skipped);
     }
@@ -102,7 +104,44 @@ int main(void) { @autoreleasepool {
     id<MTLLibrary> other = [dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 lone() { return 1; }\n" options:nil error:&e];
     MTLRenderPipelineDescriptor *bad = desc(0, MTLPixelFormatRGBA8Unorm, "fs"); bad.fragmentFunction = [other newFunctionWithName:@"lone"];
     CHECK(!get(9, 9, bad, &asks, &worst), "a pipeline with a function outside its library was made");
+    // Render-target history: which passes may skip a draw whose pipeline is not ready
+    {
+        nvn_rthist h; rth_init(&h);
+        const uint64_t every[1] = {100}, idle[1] = {200}, fresh[1] = {300}, mixed[2] = {100, 300};
+        CHECK(!rth_pass(&h, every, 1, 1), "the first frame a target is rendered: the draw must wait");
+        CHECK(rth_pass(&h, every, 1, 2) && rth_pass(&h, every, 1, 3), "a target rendered every frame: the draw may skip");
+        CHECK(rth_pass(&h, every, 1, 3), "a second pass into a per-frame target in the same frame: may skip");
+        CHECK(!rth_pass(&h, idle, 1, 3), "first use of the idle target");
+        CHECK(!rth_pass(&h, idle, 1, 7) && !rth_pass(&h, idle, 1, 7), "a target idle last frame (rendered at 3, again at 7): never skips, also for its second pass");
+        CHECK(rth_pass(&h, idle, 1, 8), "rendered at 7 and 8: per-frame again");
+        CHECK(rth_pass(&h, every, 1, 4) && !rth_pass(&h, mixed, 2, 5), "a pass with one per-frame and one new target waits");
+        CHECK(!rth_pass(&h, fresh, 1, 7), "rendered at 5, then 7: idle at 6, waits");
+        CHECK(!rth_pass(&h, NULL, 0, 6), "a pass without targets waits");
+        // Pruning: targets idle for a while leave the table (absent = idle), a per-frame target keeps its history across the prune
+        for (uint64_t f = 6; f <= RTH_PRUNE_EVERY * 2 + 1; f++) rth_pass(&h, every, 1, f);
+        CHECK(h.m.n == 1, "idle targets were not pruned: %u entries", h.m.n);
+        CHECK(rth_pass(&h, every, 1, RTH_PRUNE_EVERY * 2 + 2), "the per-frame target lost its history in the prune");
+        CHECK(!rth_pass(&h, idle, 1, RTH_PRUNE_EVERY * 2 + 2), "a pruned target counts as idle");
+        rth_free(&h);
+    }
+    // A draw that may not skip waits for its pipeline: made on the first ask, counted as waited, not as skipped; a failure under wait is reported, not waited for forever
+    {
+        flexpso_counts c0 = flexpso_stats(); MTLRenderPipelineDescriptor *d = desc(0, MTLPixelFormatRGBA8Unorm, "fs"); long k = 4, u = 10; int pending = 1; uint64_t wns = 0;
+        id<MTLRenderPipelineState> ps = flexpso_get(&k, &u, lib, lib, "wait", ^{ return d; }, 0, &pending, &wns);
+        flexpso_counts c1 = flexpso_stats();
+        CHECK(ps && !pending, "a draw that may not skip did not get its pipeline on the first ask (pending %d)", pending);
+        CHECK(c1.waited == c0.waited + 1 && c1.skipped == c0.skipped, "waited %llu -> %llu, skipped %llu -> %llu", c0.waited, c1.waited, c0.skipped, c1.skipped);
+        CHECK(wns > 0 && c1.wait_ms > c0.wait_ms, "the wait time was not recorded (%llu ns)", wns);
+        uint64_t hs = 0; for (int i = 0; i < FLEXPSO_WAIT_BUCKETS; i++) hs += c1.wait_hist[i];
+        CHECK(hs == c1.waited, "wait histogram holds %llu of %llu waits", hs, c1.waited);
+        // A draw that may skip, its pipeline not made yet: skipped, not waited
+        long k2 = 5; ps = flexpso_get(&k2, &u, lib, lib, "wait2", ^{ return d; }, 1, &pending, NULL);
+        CHECK(!ps && pending && flexpso_stats().skipped == c1.skipped + 1 && flexpso_stats().waited == c1.waited, "a draw that may skip and is not ready: skipped, not waited");
+        MTLRenderPipelineDescriptor *bad2 = desc(0, MTLPixelFormatRGBA8Unorm, "fs"); bad2.fragmentFunction = [other newFunctionWithName:@"lone"]; long k3 = 11, u3 = 11;
+        ps = flexpso_get(&k3, &u3, lib, lib, "badwait", ^{ return bad2; }, 0, &pending, NULL);
+        CHECK(!ps && !pending, "a failing pipeline under wait: got %p pending %d", (__bridge void *)ps, pending);
+    }
     flexpso_log();
-    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, kicked pipeline ready at its first draw, failure reported\n", worst);
+    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, worst ask %.3f ms, kicked pipeline ready at its first draw, failure reported, target history rule, waited draws counted apart\n", worst);
     return 0;
 }}

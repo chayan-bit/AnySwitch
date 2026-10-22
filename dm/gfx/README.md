@@ -276,17 +276,26 @@ A shader in no pair compiles on first use; a shader in a pair is necessary but n
 
 `nvn/nvn_flexpso.m` (on with `DM_PSO_FLEX=1`) makes pipelines through Metal 4's `MTL4Compiler` with colour formats, write masks and blending unspecialized, so one unspecialized pipeline per shader pair and vertex layout serves every colour state.
 The unspecialized pipeline comes from a shipped `MTL4Archive` (`dm/pso_flex.metallib`, or `DM_PSO_FLEX_ARCHIVE=path|off`) or is compiled; a worker then specializes it for the draw's colour state.
-The render thread never compiles or specializes: it asks, draws if the pipeline is ready, and otherwise skips the draw and counts it.
-`DM_PSO_FLEX_WAIT_US=n` lets it wait at most n microseconds (0 by default; -1 waits until ready, for pixel comparisons only).
+The render thread never compiles or specializes: it asks, draws if the pipeline is ready, and otherwise either skips the draw or waits for the worker, by the target-history rule below.
+
+Target-history rule (`nvn/nvn_rthist.h`): a draw whose pipeline is not ready may be skipped only when every target of its render pass (colour and depth / stencil) was also rendered in the previous frame.
+A skipped draw into such a target is lost for one frame, because the game draws it again in the next one.
+A target that is new this frame, was idle last frame, or a pass with no target at all, makes the draw wait for its pipeline instead.
+Games render some content once into a texture and then sample it for many frames: text or icons baked into a texture, maps built on demand.
+A skipped draw there leaves a hole that stays until the game rebuilds that texture, which may be never.
+Each pass begin stamps its targets' serials in a small table on the replay thread (the last frame each was rendered, and the frame before that), and the draws read one flag of the pass, so a draw costs no lookup.
+Entries idle for more than a frame are pruned every 600 frames; an absent entry counts as idle.
+A wait costs one compile or specialization on the render thread, once per pipeline, at a moment the game is already building new content.
+`DM_PSO_FLEX_WAIT_US=n` lets a draw that may be skipped wait at most n microseconds first (0 by default; -1 waits until ready, for pixel comparisons only).
 The archive opens on a worker, so boot does not wait for it.
-A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (the archive's coverage of what was asked), compiles, specializations and skipped draws.
+A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (the archive's coverage of what was asked), compiles, specializations, skipped draws, and draws that waited, with their mean and worst wait and a histogram (under 1, 4, 16, 64, 256 ms, longer).
 
 ### Pipelines started ahead of the draw
 
 - At program creation (`nvnProgramSetShaders`), a program that carries both stages names its pair: up to `DM_PSO_PROGWARM` utility-QoS workers (default 2, 0 turns it off) load both shaders and compile a stand-in pipeline that leaves the functions in Metal's compiled-function cache. Games that create single-stage programs and bind stages separately get nothing here. `DM_PSO_PROGLOG=path` logs creations, warm-ups and first draws.
-- At record time, each recording thread follows the binds of its command buffer (programs per stage, vertex layout, render target formats, colour and multisample state) in `hle_nvn.c`; a draw after a change hands the state to `mtl_rec_draw`, which hashes it and, for a state not seen before, has a worker predict the draw's pipeline key and start it in `nvn_flexpso.m`. The submission replays the draw later and usually finds it made. A thread's state carries over between its command buffers; a thread that never set render targets takes the last ones any thread set, so a wrong guess usually costs only a specialization (the unspecialized pipeline is shared). Only draws with both stages bound are kicked, at utility QoS and at most `DM_PSO_KICK_MAX` (default 1) in flight, the rest dropped: Metal's compiler serves compiles in turn, and a backlog of guesses delays the pipelines draws are waiting for. Off by default, `DM_PSO_RECKICK=1` (with `DM_PSO_FLEX=1`) turns it on: the draw-time path with its scan-ahead already skips most new pipelines for a single frame, and in measurements the guesses did not lower that.
+- At record time, each recording thread follows the binds of its command buffer (programs per stage, vertex layout, render target formats, colour and multisample state) in `hle_nvn.c`; a draw after a change hands the state to `mtl_rec_draw`, which hashes it and, for a state not seen before, has a worker predict the draw's pipeline key and start it in `nvn_flexpso.m`. The submission replays the draw later and usually finds it made. A thread's state carries over between its command buffers; a thread that never set render targets takes the last ones any thread set, so a wrong guess usually costs only a specialization (the unspecialized pipeline is shared). Only draws with both stages bound are kicked, at utility QoS and at most `DM_PSO_KICK_MAX` (default 1) in flight, the rest dropped: Metal's compiler serves compiles in turn, and a backlog of guesses delays the pipelines draws are waiting for. Off by default, `DM_PSO_RECKICK=1` (with `DM_PSO_FLEX=1`) turns it on: the draw-time path with its scan-ahead already gets most new pipelines made within a frame of their first draw (skipped for that frame when the targets are redrawn every frame, waited for otherwise), and in measurements the guesses did not lower that.
 - Worker-loaded shader objects are the ones the submit thread uses (one shared table), so a pipeline made ahead of the draw matches the draw's key.
-- `DM_PSO_SKIPLOG=path` writes one line per skipped draw (present count, key hash), and the `[pso-flex]` lines count kicks, kicks ready at their draw, draws, and the game-thread cost of the kick.
+- `DM_PSO_SKIPLOG=path` writes one line per draw whose pipeline was not ready: present count, key hash, `skip` or `wait`, the wait in microseconds, and the vertex and fragment shader keys. The `[pso-flex]` lines count kicks, kicks ready at their draw, draws, and the game-thread cost of the kick.
 
 ### Archive build and the device's pipeline log
 

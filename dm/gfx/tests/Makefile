@@ -72,7 +72,7 @@ t_pfv: t_pfv.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m ../../host/crash.c t_hle_stubs.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_psoarch: t_psoarch.m ../nvn/nvn_psoarch.m ../nvn/nvn_psoarch.h
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_psoarch.m ../nvn/nvn_psoarch.m -framework Metal -framework Foundation
-t_flexpso: t_flexpso.m ../nvn/nvn_flexpso.m ../nvn/nvn_flexpso.h ../nvn/nvn_hmap.h
+t_flexpso: t_flexpso.m ../nvn/nvn_flexpso.m ../nvn/nvn_flexpso.h ../nvn/nvn_hmap.h ../nvn/nvn_rthist.h
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_flexpso.m ../nvn/nvn_flexpso.m -framework Metal -framework Foundation
 # Build tool, not a test: replays a pipeline manifest through the host's warm-up (tools/pso_replay.m, driven by tools/dmsh_psoexpand.py)
 pso_replay: ../tools/pso_replay.m ../../host/crash.c t_hle_stubs.c $(GFX) $(GFX_H)
