@@ -66,3 +66,5 @@ t_autostat
 t_rscale
 t_rscale_gpu
 t_rscale_gpu.dSYM/
+t_pool_release
+t_pool_release.dSYM/
