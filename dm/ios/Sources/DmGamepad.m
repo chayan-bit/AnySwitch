@@ -25,6 +25,7 @@
 #include "dm_input.h"
 #include "front.h"
 #import "DmPadBits.h"
+#import "DmSettings.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
 enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
@@ -115,7 +116,7 @@ static void (^g_chord)(void);                            // main thread: + and -
 static uint64_t g_chord_gen;
 _Static_assert(B_A == DMB_A && B_B == DMB_B && B_X == DMB_X && B_Y == DMB_Y && B_LS == DMB_LS && B_RS == DMB_RS && B_L == DMB_L && B_R == DMB_R && B_ZL == DMB_ZL && B_ZR == DMB_ZR
     && B_PLUS == DMB_PLUS && B_MINUS == DMB_MINUS && B_LEFT == DMB_LEFT && B_UP == DMB_UP && B_RIGHT == DMB_RIGHT && B_DOWN == DMB_DOWN, "DmPadBits.h and the B_* enum must agree");
-static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
+static NSString *const k_layout_key = @"DmPadLayout";   // the single-game app's NSUserDefaults key (1 = 3D, 0 = 2D), moved into the per-game DM_PAD_LAYOUT setting at the first start
 
 @interface DmGamepad : UIView
 @end
@@ -175,10 +176,16 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
         }
         _swap = shape(_controls); _swapLabel = label(_swap, @"");
-        NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
-        _full = saved ? saved.boolValue : g_profile.pad_full;
+        DmSettings *st = DmSettings.shared; NSString *lay = [st valueForKey:@"DM_PAD_LAYOUT"];
+        NSNumber *old = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+        if (old) {   // the single-game app's choice becomes this game's setting once (an explicit choice in the settings wins)
+            if ([lay isEqualToString:@"auto"] && [st setValue:old.boolValue ? @"3d" : @"2d" forKey:@"DM_PAD_LAYOUT"]) lay = [st valueForKey:@"DM_PAD_LAYOUT"];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:k_layout_key];
+        }
+        _full = [lay isEqualToString:@"auto"] ? g_profile.pad_full : [lay isEqualToString:@"3d"];
         [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+        [nc addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
         [self padsChanged];
@@ -192,12 +199,17 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     _swapLabel.string = _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
-- (void)setFull:(BOOL)full {   // switch layouts: release every touch first (no key stays held), save, lay out again
+- (void)setFull:(BOOL)full {   // switch layouts: release every touch first (no key stays held), lay out again
     if (full == _full) return;
     [self reset];
     _full = full;
-    [NSUserDefaults.standardUserDefaults setObject:@(full) forKey:k_layout_key];
     [self applyLayout]; [self setNeedsLayout];
+}
+- (void)swapLayout { [self setFull:!_full]; [DmSettings.shared setValue:_full ? @"3d" : @"2d" forKey:@"DM_PAD_LAYOUT"]; }   // the 2D / 3D button: kept as this game's choice
+- (void)settingChanged:(NSNotification *)n {   // the Touch layout row (and the button's own change, which is already shown)
+    if (![n.object isEqual:@"DM_PAD_LAYOUT"]) return;
+    NSString *v = n.userInfo[@"value"];
+    [self setFull:[v isEqualToString:@"auto"] ? g_profile.pad_full : [v isEqualToString:@"3d"]];
 }
 
 // ---- Layout (points; computed inside the safe area) ----
@@ -374,7 +386,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     }
     if (game) [self pushGame];
     [self recompute];
-    if (swap) [self setFull:!_full];
+    if (swap) [self swapLayout];
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }

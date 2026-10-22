@@ -225,7 +225,8 @@ static const CGFloat kKnob = 26;
 }
 - (void)showValue:(NSString *)v source:(DmSettingSource)src disabledNote:(NSString *)disabledNote {
     _locked = src == DmSourceEnv; _disabled = disabledNote != nil;
-    _note.text = _locked ? @"Set in env.txt" : (disabledNote ?: _noteText);
+    NSString *note = _scopeNote && _noteText ? [NSString stringWithFormat:@"%@. %@", _scopeNote, _noteText] : (_scopeNote ?: _noteText);
+    _note.text = _locked ? @"Set in env.txt" : (disabledNote ?: note);
     if (_setting.type == DmSettingToggle) { _toggle.on = [v isEqualToString:@"1"]; _value.text = nil; }
     else if (_setting) _value.text = [_setting displayValue:v];
     if (_slider) _slider.value = (v.doubleValue - _setting.min) / (_setting.max - _setting.min);

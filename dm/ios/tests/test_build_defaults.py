@@ -28,7 +28,7 @@ SRC = Path(__file__).resolve().parents[1] / 'Sources'
 dmo = re.findall(r'^  DMO=(\S+); PSO_O=', SH, re.M)   # the PACK branch's, then the IPA's
 yml = (Path(__file__).resolve().parents[1] / 'project.yml').read_text(encoding='utf-8')
 assert dmo[-1:] == ['Gen/pack/profile'] and '"$GD/settings.json" "$DMO"/settings.json' in SH and '- path: Gen/pack ' in yml, 'the IPA bundles the game settings at pack/profile/settings.json'
-assert '@"pack"] stringByAppendingPathComponent:@"profile/settings.json"' in (SRC / 'DmSettings.m').read_text(encoding='utf-8'), 'DmSettings.m reads the bundled game settings where the IPA puts them'
+assert '[packRoot stringByAppendingPathComponent:@"profile/settings.json"]' in (SRC / 'DmSettings.m').read_text(encoding='utf-8') and 'dm_settings_set_game(g.titleId, pack)' in (SRC / 'main.m').read_text(encoding='utf-8'), 'DmSettings.m reads the launched pack\'s settings where the IPA puts them'
 assert '${CODE_DYLIB:-0}' in SH and '${CODE_DYLIB:-1}' not in SH and '"$P/Frameworks=$O/fw"' in SH, 'the code stays in the executable unless CODE_DYLIB=1, which ships Frameworks/<title id>.dylib'
 assert '--dylib "$O/fw/$GAME.dylib"' in SH and '@"/Frameworks/%@.dylib", g.titleId' in (SRC.parent / 'Hearth' / 'HearthLibrary.m').read_text(encoding='utf-8'), 'Hearth points DM_CODE at Frameworks/<title id>.dylib when the app ships it'
 print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile, code in the executable unless CODE_DYLIB=1')

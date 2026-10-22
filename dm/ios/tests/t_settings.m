@@ -10,17 +10,22 @@ static int g_fail, g_n;
 
 static NSString *tmpFile(void) { return [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_settings_%@.json", NSUUID.UUID.UUIDString]]; }
 
-// A store over fake environment and plist dictionaries (the real ones are the process environment and the Info.plist)
+// A store over fake environment and plist dictionaries (the real ones are the process environment and the Info.plist): the store of one game, as the single-game app had (section 17 covers the system store)
 static DmSettings *make(NSArray *sections, NSString *path, NSMutableDictionary *env, NSDictionary *plist) {
-    return [[DmSettings alloc] initWithSections:sections storePath:path env:^NSString *(NSString *k) { return env[k]; }
+    return [[DmSettings alloc] initWithSections:sections gameDefaults:nil caps:nil gameId:@"T" storePath:path env:^NSString *(NSString *k) { return env[k]; }
         setEnv:^(NSString *k, NSString *v) { if (v) env[k] = v; else [env removeObjectForKey:k]; } plist:^id(NSString *k) { return plist[k]; }];
 }
 
 static DmSettings *makeEx(NSArray *sections, NSDictionary *gameDefaults, BOOL (^caps)(NSString *), NSString *path, NSMutableDictionary *env, NSDictionary *plist) {
-    return [[DmSettings alloc] initWithSections:sections gameDefaults:gameDefaults caps:caps storePath:path env:^NSString *(NSString *k) { return env[k]; }
+    return [[DmSettings alloc] initWithSections:sections gameDefaults:gameDefaults caps:caps gameId:@"T" storePath:path env:^NSString *(NSString *k) { return env[k]; }
         setEnv:^(NSString *k, NSString *v) { if (v) env[k] = v; else [env removeObjectForKey:k]; } plist:^id(NSString *k) { return plist[k]; }];
 }
 static DmSetting *find(DmSettings *s, NSString *key) { return [s settingForKey:key]; }
+static DmSettings *makeG(NSArray *sections, NSDictionary *gameDefaults, NSString *gameId, NSString *path, NSMutableDictionary *env) {   // a game's store (gameId nil: the system store)
+    return [[DmSettings alloc] initWithSections:sections gameDefaults:gameDefaults caps:nil gameId:gameId storePath:path env:^NSString *(NSString *k) { return env[k]; }
+        setEnv:^(NSString *k, NSString *v) { if (v) env[k] = v; else [env removeObjectForKey:k]; } plist:^id(NSString *k) { (void)k; return nil; }];
+}
+static NSDictionary *fileOf(NSString *path) { NSData *d = [NSData dataWithContentsOfFile:path]; return d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil; }
 
 static NSDictionary *gameSection(void) {
     return @{@"id": @"game", @"title": @"Some Game", @"icon": @"star", @"settings": @[
@@ -50,7 +55,7 @@ int main(void) { @autoreleasepool {
       CHECK([s boolForKey:@"DM_SHOW_FPS"], "plist YES is on");
       CHECK([s sourceForKey:@"DM_CONTROLS_SCALE"] == DmSourceDefault, "default source");
       CHECK([s setValue:@"ambient" forKey:@"DM_LETTERBOX"], "user value accepted");
-      EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient"); CHECK([s sourceForKey:@"DM_LETTERBOX"] == DmSourceUser, "user beats plist");
+      EQ([s valueForKey:@"DM_LETTERBOX"], @"ambient"); CHECK([s sourceForKey:@"DM_LETTERBOX"] == DmSourceGame, "user beats plist (the game layer: Bars is a both entry)");
       EQ(env[@"DM_LETTERBOX"], @"ambient");   // exported, the graphics layer reads it
       // a second launch with env.txt setting it: the environment beats the user's choice, and the screen cannot change it
       NSMutableDictionary *env2 = [@{@"DM_LETTERBOX": @"black"} mutableCopy];
@@ -70,7 +75,7 @@ int main(void) { @autoreleasepool {
     { NSMutableDictionary *env = [NSMutableDictionary dictionary]; NSString *path = tmpFile();
       DmSettings *s = make(builtin, path, env, @{}); [s setValue:@"1.25" forKey:@"DM_CONTROLS_SCALE"]; [s setValue:@"on" forKey:@"DM_SHOW_FPS"];
       NSDictionary *j = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] options:0 error:nil];
-      EQ(j[@"values"][@"DM_CONTROLS_SCALE"], @"1.25"); EQ(j[@"values"][@"DM_SHOW_FPS"], @"1"); CHECK([j[@"values"] count] == 2, "only the user's choices");
+      EQ(j[@"system"][@"DM_CONTROLS_SCALE"], @"1.25"); EQ(j[@"system"][@"DM_SHOW_FPS"], @"1"); CHECK([j[@"system"] count] == 2 && [j[@"version"] intValue] == 2, "only the user's choices");
       DmSettings *again = make(builtin, path, [NSMutableDictionary dictionary], @{}); EQ([again valueForKey:@"DM_CONTROLS_SCALE"], @"1.25"); CHECK([again boolForKey:@"DM_SHOW_FPS"], "toggle persisted");
       [@"{\"version\":1,\"values\":{\"DM_CONTROLS_SCALE\":\"abc\",\"DM_LETTERBOX\":\"black\",\"DM_UNKNOWN\":\"1\"}}" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
       DmSettings *bad = make(builtin, path, [NSMutableDictionary dictionary], @{}); EQ([bad valueForKey:@"DM_CONTROLS_SCALE"], @"1"); EQ([bad valueForKey:@"DM_LETTERBOX"], @"black");
@@ -128,7 +133,7 @@ int main(void) { @autoreleasepool {
       DmSetting *f = find(s, @"DM_FPS_TARGET"); CHECK(f.restart, "frame cap restarts"); EQ(f.requires, @"fpscap"); EQ([f normalized:@"30"], @"30"); EQ([f normalized:@"45"], nil); EQ([f displayValue:@"0"], @"Game decides");
       DmSetting *ir = find(s, @"DM_INTERNAL_RES"); CHECK(ir.restart && ir.type == DmSettingChoice, "internal resolution is a restart choice"); EQ(ir.requires, @"internalres"); EQ(ir.plistKey, @"DMInternalRes");
       EQ([s valueForKey:@"DM_INTERNAL_RES"], @"1"); EQ([ir normalized:@"1.0"], @"1"); EQ([ir normalized:@"1.5"], @"1.5"); EQ([ir normalized:@"2.0"], @"2"); EQ([ir normalized:@"3"], nil); EQ([ir normalized:@"1.25"], nil);
-      EQ([ir displayValue:@"1"], @"1x (Switch)"); EQ([ir displayValue:@"2"], @"2x");
+      EQ([ir displayValue:@"1"], @"1x (original)"); EQ([ir displayValue:@"2"], @"2x");
       NSString *d12 = [DmSettings internalResDetailForMemory:12ull << 30], *d8 = [DmSettings internalResDetailForMemory:7900ull << 20];
       CHECK(![d12 containsString:@"8 GB"] && [d8 hasPrefix:d12] && [d8 containsString:@"8 GB of memory or less"], "2x memory note only on devices with 8 GB or less");
       DmSettings *hid = makeEx(builtin, nil, ^BOOL(NSString *c) { return ![c isEqualToString:@"internalres"]; }, tmpFile(), [NSMutableDictionary dictionary], @{});
@@ -160,7 +165,7 @@ int main(void) { @autoreleasepool {
       EQ([s valueForKey:@"DM_LANG"], @"fr"); CHECK([s sourceForKey:@"DM_LANG"] == DmSourceDefault, "a game default is a default");
       EQ([s valueForKey:@"DM_CONTROLS_OPACITY"], @"1"); EQ([s valueForKey:@"DM_SHAKE_G"], @"1.5");
       [s applyToEnvironment]; EQ(env[@"DM_LANG"], @"fr"); CHECK(env[@"DM_SHAKE_G"] == nil, "a registry default is not exported, a game default is");
-      [s setValue:@"en-GB" forKey:@"DM_LANG"]; EQ([s valueForKey:@"DM_LANG"], @"en-GB"); CHECK([s sourceForKey:@"DM_LANG"] == DmSourceUser, "user beats it");
+      [s setValue:@"en-GB" forKey:@"DM_LANG"]; EQ([s valueForKey:@"DM_LANG"], @"en-GB"); CHECK([s sourceForKey:@"DM_LANG"] == DmSourceGame, "user beats it");
       DmSection *sys = nil; for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) if ([st.key isEqualToString:@"DM_LANG"]) sys = sec;
       [s resetSection:sys]; EQ([s valueForKey:@"DM_LANG"], @"fr"); EQ(env[@"DM_LANG"], @"fr");
       NSString *gpath = tmpFile(); [[NSJSONSerialization dataWithJSONObject:@{@"defaults": @{@"DM_LANG": @"de"}, @"sections": @[]} options:0 error:nil] writeToFile:gpath atomically:YES];
@@ -235,7 +240,7 @@ int main(void) { @autoreleasepool {
 
     // 13. a value equal to the default is not stored: the user's choice goes back to "default", for every type, so a later change of the default still applies
     { NSString *path = tmpFile(); NSMutableDictionary *env = [NSMutableDictionary dictionary]; DmSettings *s = make(builtin, path, env, @{});
-      NSDictionary *(^stored)(void) = ^NSDictionary *{ NSData *d = [NSData dataWithContentsOfFile:path]; return d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil][@"values"] : @{}; };
+      NSDictionary *(^stored)(void) = ^NSDictionary *{ NSData *d = [NSData dataWithContentsOfFile:path]; NSDictionary *j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil; NSMutableDictionary *m = [NSMutableDictionary dictionary]; [m addEntriesFromDictionary:j[@"system"] ?: @{}]; [m addEntriesFromDictionary:j[@"games"][@"T"] ?: @{}]; return m; };   // both layers of the test game
       NSMutableArray *got = [NSMutableArray array]; id tok = [NSNotificationCenter.defaultCenter addObserverForName:DmSettingDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [got addObject:n.object]; }];
       // toggle (the reported case), choice, slider, text
       CHECK([s setValue:@"1" forKey:@"DM_SHOW_FPS"], "on"); EQ(stored()[@"DM_SHOW_FPS"], @"1"); CHECK([s sourceForKey:@"DM_SHOW_FPS"] == DmSourceUser, "chosen");
@@ -255,7 +260,7 @@ int main(void) { @autoreleasepool {
       [pl setValue:@"0" forKey:@"DM_SHOW_FPS"]; CHECK([pl sourceForKey:@"DM_SHOW_FPS"] == DmSourceUser && ![pl boolForKey:@"DM_SHOW_FPS"], "off against a plist default is a choice");
       [pl setValue:@"1" forKey:@"DM_SHOW_FPS"]; CHECK([pl sourceForKey:@"DM_SHOW_FPS"] == DmSourcePlist, "and on again drops it");
       DmSettings *gd = makeEx(builtin, @{@"DM_LANG": @"fr", @"DM_SHAKE_G": @"2"}, nil, tmpFile(), [NSMutableDictionary dictionary], @{});
-      [gd setValue:@"en-US" forKey:@"DM_LANG"]; EQ([gd valueForKey:@"DM_LANG"], @"en-US"); CHECK([gd sourceForKey:@"DM_LANG"] == DmSourceUser, "the registry default is not the default of this game: stored");
+      [gd setValue:@"en-US" forKey:@"DM_LANG"]; EQ([gd valueForKey:@"DM_LANG"], @"en-US"); CHECK([gd sourceForKey:@"DM_LANG"] == DmSourceGame, "the registry default is not the default of this game: stored");
       [gd setValue:@"fr" forKey:@"DM_LANG"]; CHECK([gd sourceForKey:@"DM_LANG"] == DmSourceDefault, "the game's default is the default: dropped"); [gd setValue:@"2" forKey:@"DM_SHAKE_G"]; CHECK([gd sourceForKey:@"DM_SHAKE_G"] == DmSourceDefault, "slider with a game default");
       CHECK([gd restartPending] == NO, "a restart setting set back to its launch value is not pending");
       // the environment still locks
@@ -324,9 +329,9 @@ int main(void) { @autoreleasepool {
       DmSettings *ev = make(builtin, tmpFile(), [@{@"DM_UPSCALE": @"bilinear"} mutableCopy], @{}); ev.frameTarget = 30; EQ([ev valueForKey:@"DM_UPSCALE"], @"bilinear"); CHECK([ev sourceForKey:@"DM_UPSCALE"] == DmSourceEnv, "env.txt wins");
       // the user's choice, stored: wins over the new default in both directions, and survives a change of the target and a new launch, even when it equals the default of the moment
       NSString *path = tmpFile(); DmSettings *u = make(builtin, path, [NSMutableDictionary dictionary], @{}); u.frameTarget = 60;
-      CHECK([u setValue:@"bilinear" forKey:@"DM_UPSCALE"], "chosen at 60 fps, where it is the default"); CHECK([u sourceForKey:@"DM_UPSCALE"] == DmSourceUser, "stored all the same");
+      CHECK([u setValue:@"bilinear" forKey:@"DM_UPSCALE"], "chosen at 60 fps, where it is the default"); CHECK([u sourceForKey:@"DM_UPSCALE"] == DmSourceGame, "stored all the same");
       u.frameTarget = 30; EQ([u valueForKey:@"DM_UPSCALE"], @"bilinear");
-      DmSettings *u2 = make(builtin, path, [NSMutableDictionary dictionary], @{}); u2.frameTarget = 30; EQ([u2 valueForKey:@"DM_UPSCALE"], @"bilinear"); CHECK([u2 sourceForKey:@"DM_UPSCALE"] == DmSourceUser, "a new launch keeps it");
+      DmSettings *u2 = make(builtin, path, [NSMutableDictionary dictionary], @{}); u2.frameTarget = 30; EQ([u2 valueForKey:@"DM_UPSCALE"], @"bilinear"); CHECK([u2 sourceForKey:@"DM_UPSCALE"] == DmSourceGame, "a new launch keeps it");
       u2.frameTarget = 60; CHECK([u2 setValue:@"sharp" forKey:@"DM_UPSCALE"], "sharp chosen at 60 fps"); u2.frameTarget = 30; EQ([u2 valueForKey:@"DM_UPSCALE"], @"sharp");
       [u2 resetAll]; EQ([u2 valueForKey:@"DM_UPSCALE"], @"sharp"); CHECK([u2 sourceForKey:@"DM_UPSCALE"] == DmSourceDefault, "restore defaults drops the choice: the default of 30 fps is Sharp again");
       u2.frameTarget = 60; EQ([u2 valueForKey:@"DM_UPSCALE"], @"bilinear");
@@ -368,6 +373,78 @@ int main(void) { @autoreleasepool {
       CHECK(lr >= 3 && lp >= 3 && dr >= 3 && dp >= 3, "track %.2f %.2f %.2f %.2f", lr, lp, dr, dp);
       uint32_t seen = (uint32_t)lround(0.9 * 0xA6) * 0x010101; CHECK(dm_contrast(seen, DM_ROW_DARK) >= 3, "still 3:1 when a device renders the colour 10%% darker (measured on the old one)");
       CHECK(dm_contrast(0x8C8C8C, DM_ROW_DARK) < 3 && dm_contrast(0x8E8E8E, DM_ROW_LIGHT) < 3, "the old track colours were under 3:1"); }
+
+    // 17. scopes: one system layer, a layer per game, the version 2 file
+    { NSArray *opts = @[@{@"value": @"a", @"label": @"A"}, @{@"value": @"b", @"label": @"B"}, @{@"value": @"c", @"label": @"C"}];
+      NSArray *secs = @[@{@"id": @"t", @"title": @"T", @"settings": @[
+          @{@"key": @"K_SYS", @"label": @"Sys", @"type": @"choice", @"default": @"a", @"options": opts},
+          @{@"key": @"K_GAME", @"label": @"Game", @"type": @"choice", @"default": @"a", @"options": opts, @"scope": @"game"},
+          @{@"key": @"K_BOTH", @"label": @"Both", @"type": @"choice", @"default": @"a", @"options": opts, @"scope": @"both"},
+          @{@"key": @"K_BAD", @"label": @"Bad", @"type": @"toggle", @"default": @"0", @"scope": @"everywhere"}]}];
+      NSString *path = tmpFile(); NSMutableDictionary *env = [NSMutableDictionary dictionary];
+      DmSettings *sys = makeG(secs, nil, nil, path, [NSMutableDictionary dictionary]), *g1 = makeG(secs, @{@"K_BOTH": @"b"}, @"G1", path, [NSMutableDictionary dictionary]);
+      CHECK(find(sys, @"K_BAD") == nil, "an unknown scope is skipped");
+      CHECK(find(sys, @"K_SYS").scope == DmScopeSystem && find(sys, @"K_GAME").scope == DmScopeGame && find(sys, @"K_BOTH").scope == DmScopeBoth, "scopes parse, system by default");
+      DmSection *sec = sys.sections.firstObject;
+      CHECK(![[sys visibleSettingsInSection:sec] containsObject:find(sys, @"K_GAME")] && [[g1 visibleSettingsInSection:g1.sections.firstObject] containsObject:find(g1, @"K_GAME")], "a game-only row is hidden in the system store");
+      CHECK(![sys setValue:@"b" forKey:@"K_GAME"], "the system store refuses a game-only entry");
+      // precedence in a game store: environment > this game > system > the pack's default > the registry's
+      EQ([g1 valueForKey:@"K_BOTH"], @"b"); CHECK([g1 sourceForKey:@"K_BOTH"] == DmSourceDefault && [g1 followsSystem:find(g1, @"K_BOTH")], "the pack's default, following the system");
+      CHECK([sys setValue:@"c" forKey:@"K_BOTH"], "system value");
+      DmSettings *g1b = makeG(secs, @{@"K_BOTH": @"b"}, @"G1", path, env);
+      EQ([g1b valueForKey:@"K_BOTH"], @"c"); CHECK([g1b sourceForKey:@"K_BOTH"] == DmSourceUser, "the system value beats the pack's default");
+      CHECK([g1b setValue:@"a" forKey:@"K_BOTH"], "game value"); EQ([g1b valueForKey:@"K_BOTH"], @"a"); CHECK([g1b sourceForKey:@"K_BOTH"] == DmSourceGame && ![g1b followsSystem:find(g1b, @"K_BOTH")], "this game's value beats the system's");
+      EQ(env[@"K_BOTH"], @"a");   // exported
+      NSMutableDictionary *env2 = [@{@"K_BOTH": @"b"} mutableCopy]; DmSettings *g1e = makeG(secs, nil, @"G1", path, env2);
+      EQ([g1e valueForKey:@"K_BOTH"], @"b"); CHECK([g1e sourceForKey:@"K_BOTH"] == DmSourceEnv, "the environment beats this game's value");
+      DmSettings *g2 = makeG(secs, nil, @"G2", path, [NSMutableDictionary dictionary]); EQ([g2 valueForKey:@"K_BOTH"], @"c");   // another game sees the system value only
+      // the file holds both layers
+      NSDictionary *f = fileOf(path); CHECK([f[@"version"] intValue] == 2, "version 2"); EQ(f[@"system"][@"K_BOTH"], @"c"); EQ(f[@"games"][@"G1"][@"K_BOTH"], @"a");
+      // Use system setting, and a game value equal to the system value: no override is kept
+      [g1b useSystemForKey:@"K_BOTH"]; EQ([g1b valueForKey:@"K_BOTH"], @"c"); CHECK([g1b followsSystem:find(g1b, @"K_BOTH")], "back to the system setting");
+      CHECK(fileOf(path)[@"games"][@"G1"] == nil, "an empty game layer is dropped from the file");
+      [g1b setValue:@"b" forKey:@"K_BOTH"]; [g1b setValue:@"c" forKey:@"K_BOTH"]; CHECK([g1b followsSystem:find(g1b, @"K_BOTH")] && fileOf(path)[@"games"][@"G1"] == nil, "choosing the system value drops the override");
+      // a system entry written from a game store goes to the system layer; a game entry stays with its game
+      CHECK([g1b setValue:@"b" forKey:@"K_SYS"], "system entry from a game"); EQ(fileOf(path)[@"system"][@"K_SYS"], @"b");
+      EQ([makeG(secs, nil, @"G2", path, [NSMutableDictionary dictionary]) valueForKey:@"K_SYS"], @"b");
+      CHECK([g1b setValue:@"c" forKey:@"K_GAME"], "game entry"); EQ([makeG(secs, nil, @"G2", path, [NSMutableDictionary dictionary]) valueForKey:@"K_GAME"], @"a"); EQ([makeG(secs, nil, @"G1", path, [NSMutableDictionary dictionary]) valueForKey:@"K_GAME"], @"c");
+      // two stores over one file do not undo each other's changes (the merge is per key)
+      DmSettings *sysOld = sys; CHECK([sysOld setValue:@"c" forKey:@"K_SYS"], "an older store writes"); f = fileOf(path);
+      EQ(f[@"system"][@"K_SYS"], @"c"); EQ(f[@"system"][@"K_BOTH"], @"c"); EQ(f[@"games"][@"G1"][@"K_GAME"], @"c");
+      // Restore in a game store drops this game's choices and the system-only ones, not the system values of shared entries
+      DmSettings *g1c = makeG(secs, nil, @"G1", path, [NSMutableDictionary dictionary]); [g1c setValue:@"b" forKey:@"K_BOTH"]; [g1c resetSection:g1c.sections.firstObject];
+      f = fileOf(path); CHECK(f[@"games"][@"G1"] == nil && f[@"system"][@"K_SYS"] == nil, "game choices and system-only entries restored"); EQ(f[@"system"][@"K_BOTH"], @"c");
+      // a version 1 file is the system layer, and becomes version 2 on the first change
+      NSString *old = tmpFile(); [@"{\"version\": 1, \"values\": {\"K_BOTH\": \"b\", \"K_GAME\": \"c\"}}" writeToFile:old atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      DmSettings *m = makeG(secs, nil, @"G1", old, [NSMutableDictionary dictionary]);
+      EQ([m valueForKey:@"K_BOTH"], @"b"); EQ([m valueForKey:@"K_GAME"], @"c");   // the single game's old choices still apply
+      [m setValue:@"b" forKey:@"K_SYS"]; f = fileOf(old); CHECK([f[@"version"] intValue] == 2 && f[@"values"] == nil, "rewritten as version 2"); EQ(f[@"system"][@"K_BOTH"], @"b"); EQ(f[@"system"][@"K_GAME"], @"c");
+      // a pack's own rows are per game unless they say otherwise
+      NSString *gf = tmpFile(); [@"{\"sections\": [{\"id\": \"g\", \"title\": \"G\", \"settings\": [{\"key\": \"P1\", \"label\": \"P1\", \"type\": \"toggle\", \"default\": \"0\"}, {\"key\": \"P2\", \"label\": \"P2\", \"type\": \"toggle\", \"default\": \"0\", \"scope\": \"both\"}]}]}" writeToFile:gf atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      DmSettings *p = makeG([DmSettings gameSectionsFromFile:gf], nil, @"G1", tmpFile(), [NSMutableDictionary dictionary]);
+      CHECK(find(p, @"P1").scope == DmScopeGame && find(p, @"P2").scope == DmScopeBoth, "pack rows: game unless they name a scope"); }
+
+    // 18. the scope of every built-in entry (docs/settings.md), the new entries, and no console brand words in what the screen shows
+    { NSDictionary *want = @{@"DM_LETTERBOX": @"both", @"DM_AMBIENT_LEVEL": @"system", @"DM_UPSCALE": @"both", @"DM_UPSCALE_SHARPNESS": @"both", @"DM_RENDER_SCALE": @"game", @"DM_INTERNAL_RES": @"game",
+          @"DM_OPMODE": @"both", @"DM_CONTROLS_LAYOUT": @"both", @"DM_PAD_LAYOUT": @"game", @"DM_CONTROLS_SCALE": @"system", @"DM_CONTROLS_OPACITY": @"system", @"DM_CONTROLS_IDLE_FADE": @"system",
+          @"DM_SHAKE_G": @"system", @"DM_VIBRATION": @"both", @"DM_VIBRATION_STRENGTH": @"system", @"DM_VOLUME": @"system", @"DM_FPS_TARGET": @"game", @"DM_PSO_FLEX": @"game", @"DM_SHOW_FPS": @"system",
+          @"DM_LANG": @"both", @"DM_NICK": @"system"};
+      NSArray *names = @[@"system", @"game", @"both"];
+      DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSUInteger n = 0;
+      for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) { n++; CHECK(want[st.key] != nil, "%s has no scope in the table", st.key.UTF8String); if (want[st.key]) EQ(names[(NSUInteger)st.scope], want[st.key]); }
+      CHECK(n == want.count, "%lu entries, %lu in the table", (unsigned long)n, (unsigned long)want.count);
+      DmSetting *om = find(s, @"DM_OPMODE"); EQ([s valueForKey:@"DM_OPMODE"], @"1"); CHECK(om.restart && om.exportDefault, "console mode: Docked by default, exported, at the next start");
+      EQ([om displayValue:@"auto"], @"Auto"); EQ([om displayValue:[om normalized:@"handheld"]], @"Handheld"); EQ([om displayValue:@"1"], @"Docked");
+      NSMutableDictionary *oe = [NSMutableDictionary dictionary]; [make(builtin, tmpFile(), oe, @{}) applyToEnvironment]; EQ(oe[@"DM_OPMODE"], @"1");
+      DmSettings *hh = makeEx(builtin, @{@"DM_OPMODE": @"0"}, nil, tmpFile(), [NSMutableDictionary dictionary], @{}); EQ([hh valueForKey:@"DM_OPMODE"], @"0");   // a game that needs Handheld says so in its pack
+      EQ([s valueForKey:@"DM_CONTROLS_IDLE_FADE"], @"1"); EQ([s valueForKey:@"DM_PAD_LAYOUT"], @"auto");
+      EQ([find(s, @"DM_INTERNAL_RES") displayValue:@"1"], @"1x (original)");
+      NSMutableArray *shown = [NSMutableArray array];
+      for (DmSection *sec in s.sections) { [shown addObject:sec.title]; for (DmSetting *st in sec.settings) { [shown addObject:st.label]; if (st.detail) [shown addObject:st.detail]; for (NSDictionary *o in st.options) [shown addObject:o[@"label"]]; } }
+      [shown addObject:[DmSettings internalResDetailForMemory:4ull << 30]];
+      NSRegularExpression *banned = [NSRegularExpression regularExpressionWithPattern:@"\\b(nintendo|switch|home menu|joy-con|mii|amiibo|eshop|my page)\\b" options:NSRegularExpressionCaseInsensitive error:nil];
+      for (NSString *t in shown) CHECK([banned numberOfMatchesInString:t options:0 range:NSMakeRange(0, t.length)] == 0, "brand word in: %s", t.UTF8String);
+      CHECK([banned numberOfMatchesInString:@"1x (Switch)" options:0 range:NSMakeRange(0, 11)] == 1, "the check catches a planted word"); }
 
     printf("t_settings: %d checks, %d failed\n", g_n, g_fail);
     return g_fail ? 1 : 0;

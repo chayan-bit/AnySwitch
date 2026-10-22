@@ -47,6 +47,7 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemReset
 @property (nonatomic, readonly) DmSetting *setting;
 @property (nonatomic, readonly) DmItemKind kind;
 @property (nonatomic, readonly) DmSliderView *slider;
+@property (nonatomic, copy) NSString *scopeNote;   // a game's settings: whether the row follows the system setting or is this game's own (shown before the restart note); set before showValue
 - (void)showValue:(NSString *)value source:(DmSettingSource)src disabledNote:(NSString *)disabledNote;   // refresh from the store (env: the row is locked; a disabledNote: the setting has no effect now, the row is dimmed and shows the note)
 @property (nonatomic, readonly) BOOL locked;
 @property (nonatomic, readonly) BOOL disabled;

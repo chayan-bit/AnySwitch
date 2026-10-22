@@ -71,6 +71,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     _hasRestartRow = _settings.restartPending;
     void (^add)(DmRowView *) = ^(DmRowView *r) {
         UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(rowTapped:)]; [r addGestureRecognizer:t];
+        if (self->_settings.gameId && r.setting.scope == DmScopeBoth) [r addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowHeld:)]];
         [self->_scroll insertSubview:r belowSubview:self->_rowRing]; [self->_rows addObject:r];
     };
     if (_hasRestartRow) add([[DmRowView alloc] initWithSetting:nil kind:DmItemRestart compact:_compact]);
@@ -86,6 +87,8 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     [self refreshRows]; [self layoutPane];
 }
 - (void)refreshRows {
+    for (DmRowView *r in _rows) if (r.setting) r.scopeNote = !_settings.gameId || r.setting.scope != DmScopeBoth ? nil
+        : [_settings followsSystem:r.setting] ? @"System setting" : @"This game only, hold to use the system setting";
     for (DmRowView *r in _rows) if (r.setting) [r showValue:[_settings valueForKey:r.setting.key] source:[_settings sourceForKey:r.setting.key] disabledNote:[_settings disabledNote:r.setting]];
     if (_settings.restartPending != _hasRestartRow) {   // a restart-only setting changed: the restart row appears (keep the focus on the same setting)
         NSString *key = _row < (NSInteger)_rows.count ? _rows[(NSUInteger)_row].setting.key : nil;
@@ -248,6 +251,11 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 #pragma mark - Touch
 
 - (void)categoryTapped:(DmCategoryView *)c { [self selectSection:c.tag focusPane:NO row:0]; }
+- (void)rowHeld:(UILongPressGestureRecognizer *)g {   // Use system setting: drops this game's own choice of the row
+    DmRowView *r = (DmRowView *)g.view;
+    if (g.state != UIGestureRecognizerStateBegan || !r.setting || [_settings followsSystem:r.setting] || [_settings sourceForKey:r.setting.key] == DmSourceEnv) return;
+    [_settings useSystemForKey:r.setting.key]; [self refreshRows];
+}
 - (void)rowTapped:(UITapGestureRecognizer *)g {
     DmRowView *r = (DmRowView *)g.view; NSUInteger i = [_rows indexOfObject:r]; if (i == NSNotFound) return;
     if (r.slider && CGRectContainsPoint(CGRectInset(r.slider.frame, 0, -10), [g locationInView:r])) return;

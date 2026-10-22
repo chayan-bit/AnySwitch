@@ -54,8 +54,13 @@ int hearth_boot_game(HearthGame *g) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
-    dm_settings_set_pack(pack);
-    dm_settings_boot();   // Documents/settings.json (the in-app settings screen) and the pack's defaults, for every key env.txt did not set: DmSettings.m
+    dm_settings_set_game(g.titleId, pack);
+    dm_settings_boot();   // Documents/settings.json (the in-app settings screen: this game's choices, then the system ones) and the pack's defaults, for every key env.txt did not set: DmSettings.m
+    // Console mode Auto: Docked while an external display is connected, else Handheld (the host reads DM_OPMODE once, as 0 or 1)
+    if ([[DmSettings.shared valueForKey:@"DM_OPMODE"] isEqualToString:@"auto"]) {
+        BOOL ext = UIScreen.screens.count > 1;
+        setenv("DM_OPMODE", ext ? "1" : "0", 1); fprintf(stderr, "hearth: console mode Auto: %s\n", ext ? "Docked (external display)" : "Handheld");
+    }
     // DM_CLEAR_SHADER_CACHE=1: start with the empty Metal shader cache of a fresh install (Library/Caches/<bundle id>/com.apple.metal and its siblings), to measure first-launch pipeline compiles
     // without reinstalling (a reinstall also drops Documents: game files, saves). Pair it with a fresh DM_PSO_USER file so no learned warm-up list hides the compiles either
     if (getenv("DM_CLEAR_SHADER_CACHE") && atoi(getenv("DM_CLEAR_SHADER_CACHE"))) {

@@ -80,26 +80,29 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 
 ### The built-in entries
 
-| Category | Setting | Key | Values | Default | Applies |
-| --- | --- | --- | --- | --- | --- |
-| Display | Bars around the picture | `DM_LETTERBOX` | ambient, black | ambient | at once |
-| Display | Ambient brightness | `DM_AMBIENT_LEVEL` | 20 to 100 percent | 50 percent | at once |
-| Display | Upscaling | `DM_UPSCALE` | bilinear, sharp | sharp at 30 fps, bilinear at 60 fps (see below) | at once |
-| Display | Sharpening (only under Sharp) | `DM_UPSCALE_SHARPNESS` | 0 to 100 percent | 80 percent | at once |
-| Display | Render scale (`fstep`) | `DM_RENDER_SCALE` | 50 to 100 percent | 100 percent | restart |
-| Display | Internal resolution (`internalres`) | `DM_INTERNAL_RES` | 1x (Switch), 1.5x, 2x | 1x | restart |
-| Controls | Touch controls | `DM_CONTROLS_LAYOUT` | auto, overlay | auto | at once |
-| Controls | Controls size | `DM_CONTROLS_SCALE` | 0.75 to 2.5 | 1 | at once |
-| Controls | Controls opacity | `DM_CONTROLS_OPACITY` | 30 to 100 percent | 100 percent | at once |
-| Controls | Shake sensitivity | `DM_SHAKE_G` | 0.5 to 4.0 G, a lower number reacts to a gentler shake | 1.5 G | at once |
-| Controls | Vibration (`haptics`) | `DM_VIBRATION` | on, off | on | at once |
-| Controls | Vibration strength (`haptics`) | `DM_VIBRATION_STRENGTH` | 0 to 100 percent | 100 percent | at once |
-| Audio | Volume | `DM_VOLUME` | 0 to 100 percent | 100 percent | at once |
-| Performance | Frame rate cap (`fpscap`) | `DM_FPS_TARGET` | game decides, 30, 60 | game decides | restart |
-| Performance | Flexible pipelines (`nvn`) | `DM_PSO_FLEX` | on, off | on | restart |
-| Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once |
-| System | Game language | `DM_LANG` | the Switch languages | en-US | restart |
-| System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart |
+| Category | Setting | Key | Values | Default | Applies | Scope |
+| --- | --- | --- | --- | --- | --- | --- |
+| Display | Bars around the picture | `DM_LETTERBOX` | ambient, black | ambient | at once | both |
+| Display | Ambient brightness | `DM_AMBIENT_LEVEL` | 20 to 100 percent | 50 percent | at once | system |
+| Display | Upscaling | `DM_UPSCALE` | bilinear, sharp | sharp at 30 fps, bilinear at 60 fps (see below) | at once | both |
+| Display | Sharpening (only under Sharp) | `DM_UPSCALE_SHARPNESS` | 0 to 100 percent | 80 percent | at once | both |
+| Display | Render scale (`fstep`) | `DM_RENDER_SCALE` | 50 to 100 percent | 100 percent | restart | game |
+| Display | Internal resolution (`internalres`) | `DM_INTERNAL_RES` | 1x (original), 1.5x, 2x | 1x | restart | game |
+| Display | Console mode | `DM_OPMODE` | auto, handheld (0), docked (1) | docked (a game that needs Handheld sets it in its pack defaults) | restart | both |
+| Controls | Touch controls | `DM_CONTROLS_LAYOUT` | auto, overlay | auto | at once | both |
+| Controls | Controls size | `DM_CONTROLS_SCALE` | 0.75 to 2.5 | 1 | at once | system |
+| Controls | Controls opacity | `DM_CONTROLS_OPACITY` | 30 to 100 percent | 100 percent | at once | system |
+| Controls | Fade when idle | `DM_CONTROLS_IDLE_FADE` | on, off | on | at once | system |
+| Controls | Touch layout | `DM_PAD_LAYOUT` | game's choice, 2D, 3D | game's choice | at once | game |
+| Controls | Shake sensitivity | `DM_SHAKE_G` | 0.5 to 4.0 G, a lower number reacts to a gentler shake | 1.5 G | at once | system |
+| Controls | Vibration (`haptics`) | `DM_VIBRATION` | on, off | on | at once | both |
+| Controls | Vibration strength (`haptics`) | `DM_VIBRATION_STRENGTH` | 0 to 100 percent | 100 percent | at once | system |
+| Audio | Volume | `DM_VOLUME` | 0 to 100 percent | 100 percent | at once | system |
+| Performance | Frame rate cap (`fpscap`) | `DM_FPS_TARGET` | game decides, 30, 60 | game decides | restart | game |
+| Performance | Flexible pipelines (`nvn`) | `DM_PSO_FLEX` | on, off | on | restart | game |
+| Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once | system |
+| System | Game language | `DM_LANG` | the Switch languages | en-US | restart | both |
+| System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart | system |
 
 Everything else that the host reads from a `DM_*` variable stays environment-only: logging, traces and dumps, test hooks, file paths, and the per-game compatibility switches that a game profile sets.
 
@@ -171,14 +174,28 @@ From highest to lowest priority:
 
 1. The environment: `Documents/env.txt` (turned into environment variables by `main.m`), or a real environment variable.
    This is the developer's override, so the screen shows the row dimmed with "Set in env.txt" and refuses changes.
-2. The player's choice in `Documents/settings.json` (not the save folder, so a save restore never touches it).
+2. The player's choice for this game (entries of scope game or both), then the player's system choice, both in `Documents/settings.json` (not the save folder, so a save restore never touches it).
 3. The Info.plist default (`plistKey`, written by `project.yml` and `build_ipa.sh`).
 4. The game's own default (`"defaults"` in `pack/profile/settings.json`).
 5. The default for the game's frame rate target (`defaultAtFps`, only the entries that have one).
 6. The registry default.
 
-The file holds only what the player changed: `{"version": 1, "values": {"DM_CONTROLS_SCALE": "1.4"}}`.
-The format has not changed; files written by earlier versions load as they are.
+The file holds only what the player changed: `{"version": 2, "system": {"DM_CONTROLS_SCALE": "1.4"}, "games": {"<title id>": {"DM_LETTERBOX": "black"}}}`.
+A version 1 file (`{"version": 1, "values": {...}}`) is read as the system layer, so the single game's old choices still apply, and it is written as version 2 on the first change.
+Every change merges into the file on disk key by key, so a store of the system settings and a store of a game over the same file do not undo each other's changes.
+
+## Scopes
+
+Each entry names where the player's choice lives with `"scope"`.
+`system` (the default) is one value for every game: Volume, Controls size, Player name.
+`game` is per game only and is not shown in the system settings: Render scale, Frame rate cap, Touch layout.
+`both` is a system value that a game may override: Bars around the picture, Upscaling, Console mode, Game language.
+A pack's own entries (`profile/settings.json`) are `game` unless they name a scope.
+The Scope column of the table above is the built-in list (`DmSettings.builtinScopes`), and `t_settings.m` checks it.
+In a game's settings, a `both` row says "System setting" until the player changes it for that game; the row then says it is for this game only, and holding it (Use system setting) drops the game's choice.
+Choosing the system value again also drops it, so a later system change still reaches the game.
+"Restore defaults" in a game's settings drops that game's choices and the system-only values of the page; the system values of `both` rows stay.
+Console mode Auto is resolved when the game starts: Docked while an external display is connected, else Handheld.
 An unknown key or a value that does not parse is ignored and logged.
 `dm_settings_boot()` (called from `main.m`, after `env.txt` is loaded) exports the player's, the Info.plist's and the game's default values as environment variables for the code that reads them itself; a registry default is the code's own default and is not exported (unless the entry has `exportDefault`), and neither is a frame rate dependent default (the front end hands that one to the graphics layer itself).
 "Restore defaults" on a page removes the player's values for that page.

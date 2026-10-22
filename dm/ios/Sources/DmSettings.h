@@ -1,13 +1,15 @@
 // In-app settings: a data-driven registry (key, label, type, range or options, default, live / restart) and the store behind the settings screen (DmSettingsVC.m).
 // Foundation only, so the registry and the precedence order run in a plain Mac test (dm/ios/tests/t_settings.m).
 // Precedence, highest first: the environment (Documents/env.txt, which main.m turns into environment variables, or a real one: the developer's override, shown locked in the screen),
-// then the user's choice (Documents/settings.json, not the save folder), then the Info.plist default (the key named by the entry's plistKey),
+// then the player's choice for this game (a game store; entries of scope game or both), then the player's system choice (Documents/settings.json, not the save folder), then the Info.plist default (the key named by the entry's plistKey),
 // then the game's own default (the "defaults" of the bundled pack's profile/settings.json), then the default the game's frame rate target gives it (`defaultAtFps`), then the entry's own default.
 // An entry with `requires` is shown only when the build has that capability (DmSettings.capabilities, set by the app from what the loaded game provides).
 #import <Foundation/Foundation.h>
 
 typedef NS_ENUM(NSInteger, DmSettingType) { DmSettingToggle, DmSettingChoice, DmSettingSlider, DmSettingText };
-typedef NS_ENUM(NSInteger, DmSettingSource) { DmSourceDefault, DmSourcePlist, DmSourceUser, DmSourceEnv };
+typedef NS_ENUM(NSInteger, DmSettingSource) { DmSourceDefault, DmSourcePlist, DmSourceUser, DmSourceEnv, DmSourceGame };   // User: the player's system choice; Game: the player's choice for this game
+// Where a player's choice lives (`"scope"`, default system; a pack's own entries default to game): system = one value for every game, game = per game only, both = a system value a game may override
+typedef NS_ENUM(NSInteger, DmSettingScope) { DmScopeSystem, DmScopeGame, DmScopeBoth };
 
 extern NSNotificationName const DmSettingDidChangeNotification;   // object: the key; userInfo @"value": the new effective value
 
@@ -27,6 +29,7 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *defaultAtFps;   // `defaultAtFps`: {"30": "sharp"}: the default while the game's frame rate target (DmSettings.frameTarget) is that many fps; any other target uses `def`. Live entries only. Nil when the default does not depend on it
 @property (nonatomic, readonly) BOOL exportDefault;                 // `exportDefault`: the default is exported to the environment like a player's value, because the code that reads the key has another default of its own (off)
 @property (nonatomic, readonly) BOOL restart;                       // applies on the next launch (the screen offers a restart), else live
+@property (nonatomic, readonly) DmSettingScope scope;
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err;
 - (NSString *)normalized:(id)raw;      // a raw value (env, plist, file) as this setting stores it: toggles "0" / "1", choices one of the options, sliders clamped to the range and the step, text trimmed and cut to its limits; nil when it does not parse
 - (BOOL)textFits:(NSString *)text;      // text: within the length and byte limits (the editor refuses typing past them)
@@ -47,10 +50,17 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 @end
 
 @interface DmSettings : NSObject
-+ (instancetype)shared;   // the app's store: Documents/settings.json, the process environment, the main bundle's Info.plist and pack/profile/settings.json (per-game entries and defaults)
++ (instancetype)shared;   // the app's store: the running game's store (dm_settings_set_game), else the system store; over the process environment and the main bundle's Info.plist
++ (instancetype)systemStore;   // the system layer only (no game rows); the shared store when no game runs
++ (instancetype)storeForGame:(NSString *)titleId packRoot:(NSString *)root;   // a game's store (its pack's profile/settings.json rows and defaults): the shared store for the running game, else one that neither exports nor announces
+// Documents/settings.json is {"version": 2, "system": {key: value}, "games": {title id: {key: value}}}; a version 1 file ({"values": ...}) is read as the system layer and written as version 2 on the first change.
+// Each change merges into the file on disk key by key, so a system store and a game store over the same file do not undo each other's changes
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
 // gameDefaults: {key: value} replacing the registry default for this game; caps: whether the build has a capability (nil: every row is shown)
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *capability))caps storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
+// gameId: nil = the system store (game-scope rows hidden and refused), else that game's store: changes of game and both entries go to its layer, of system entries to the system layer
+- (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *capability))caps gameId:(NSString *)gameId storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
+@property (nonatomic, readonly) NSString *gameId;
 @property (nonatomic) int frameTarget;   // the game's frame rate target (30 or 60; 0 = not known), set by the app as the host reports it (it can change while the game runs). Moves the default of every `defaultAtFps` entry, and announces (DmSettingDidChangeNotification) each one whose effective value changes with it
 @property (nonatomic, copy) BOOL (^capabilities)(NSString *capability);   // the app sets it once it can tell what the game provides; read each time the screen is built
 @property (nonatomic, readonly) NSArray<DmSection *> *sections;           // every page of the registry; sections with the same id are merged (a game's entries join the built-in page)
@@ -65,16 +75,20 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 - (BOOL)boolForKey:(NSString *)key;
 - (double)doubleForKey:(NSString *)key;
 - (DmSettingSource)sourceForKey:(NSString *)key;
-- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse. A value equal to the default is not stored (the user's choice is dropped), so a later change of the default still applies (a `defaultAtFps` entry keeps every choice: its default moves with the frame rate target)
-- (void)resetSection:(DmSection *)s;                       // drops the user's choices of the section
+- (NSString *)systemValueForKey:(NSString *)key;          // what a game store falls back to without its own choice: the system choice, else the default (the environment aside)
+- (BOOL)followsSystem:(DmSetting *)s;                     // a game store's entry of scope both with no choice of this game's own (the row says "System setting")
+- (void)useSystemForKey:(NSString *)key;                  // drops this game's own choice of the key
+- (BOOL)setValue:(NSString *)value forKey:(NSString *)key;   // into the layer the entry's scope names (NO for a game entry in the system store; a game's value equal to its system value drops the game's choice). Live: stores, exports to the environment, posts the notification; NO when locked by the environment or the value does not parse. A value equal to the default is not stored (the user's choice is dropped), so a later change of the default still applies (a `defaultAtFps` entry keeps every choice: its default moves with the frame rate target)
+- (void)resetSection:(DmSection *)s;                       // drops the user's choices of the section, each from the layer this store writes it to (a game store: the game's own choices and the system-only entries)
 - (void)resetAll;                                          // drops every choice of every section; each changed key is announced once, keys the environment sets are left alone
 - (BOOL)restartPending;                                    // a restart-only setting differs from what this launch started with
 - (void)applyToEnvironment;                                // exports user, plist and game-default values for the keys the environment does not set (code that reads DM_* itself sees the effective value)
 + (NSArray<NSDictionary *> *)builtinSections;
++ (NSDictionary<NSString *, NSString *> *)builtinScopes;   // key: "game" or "both" for the built-in entries that are not system-only
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes;      // the Internal resolution row's detail: with a memory note on devices with 8 GB or less (NSProcessInfo.physicalMemory)
-+ (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // profile/settings.json of the bundled pack: {"sections": [...]} in the same form; empty when absent or invalid (logged)
++ (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // a pack's profile/settings.json: {"sections": [...]} in the same form, entries without a scope get scope game; empty when absent or invalid (logged)
 + (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {"DM_KEY": "value"}}; empty when absent or invalid (logged)
 @end
 
-void dm_settings_set_pack(NSString *root);   // before the first +shared: the launched game's pack supplies profile/settings.json (game rows and defaults); unset = the pack inside the app
+void dm_settings_set_game(NSString *titleId, NSString *root);   // before the first +shared: the launched game, whose pack supplies profile/settings.json (game rows and defaults) and whose layer the shared store uses
 void dm_settings_boot(void);   // main.m, after env.txt is in the environment and before UIApplicationMain: loads the user's file and exports it
