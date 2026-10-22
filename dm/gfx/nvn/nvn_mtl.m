@@ -1226,6 +1226,7 @@ static int alias_has(id o) { return g_alias_set && o && CFSetContainsValue(g_ali
 // and the counters of the memory line. All under g_rs_lk; at g_rs == 1 nothing is ever added and rs_of returns 1 without looking
 static CFMutableSetRef g_scaled; static nvn_hmap g_rs_never = {.klen = sizeof(alias_key)}; static os_unfair_lock g_rs_lk = OS_UNFAIR_LOCK_INIT;
 static uint64_t g_rs_n, g_rs_bytes, g_rs_bytes1, g_rs_skip[NVN_RS_NWHY], g_rs_dem[NVN_RS_NWHY];   // live scaled textures, their bytes and the same at 1x; textures created at 1x and textures demoted, by reason
+static uint64_t g_rs_wgen = 1;   // bumped by every GPU write that can land in a scaled texture (a scaled pass begins, a texture copy, a texture clear): rs_lo_prepare's copies are current while it stays put
 static id<MTLTexture> rs_base(id<MTLTexture> t) { id<MTLTexture> b = t; while (b.parentTexture) b = b.parentTexture; return b; }
 static float rs_of(id<MTLTexture> t) {
     if (g_rs == 1.0f || !t) return 1.0f;
@@ -2771,7 +2772,8 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
             if (g_pass.rs != 1.0f) { NSUInteger w = 0, h = 0;
                 for (int i = 0; i < R.rt.n + 1 && i < 9; i++) { const tex_t *t = i < R.rt.n ? R.rt.color[i] : R.rt.depth; MTLRenderPassAttachmentDescriptor *a = i < R.rt.n ? pd.colorAttachments[i] : pd.depthAttachment.texture ? pd.depthAttachment : pd.stencilAttachment;
                     if (!t || !a.texture) continue; NSUInteger aw = mip_extent(t->d.width, a.level), ah = mip_extent(t->d.height, a.level); w = w ? MIN(w, aw) : aw; h = h ? MIN(h, ah) : ah; }
-                if (w) { g_pass.gw = w; g_pass.gh = h; } }
+                if (w) { g_pass.gw = w; g_pass.gh = h; }
+                g_rs_wgen++; }
         }
         if (flexpso_on()) { uint64_t ts[9]; int nt = 0, nwin = 0;
             for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) { uint64_t s = R.rt.color[i]->serial; if (xv_present(s)) nwin++; else ts[nt++] = s; }
@@ -4539,6 +4541,9 @@ static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy
 // Snapshot substitution for same-pass feedback sampling (registered by fb_prepare, used by encode_args; see the notes before draw)
 static uint64_t g_draw_seq, g_fb_seq, g_fb_count; static int g_fb_n, g_fb_rebind;
 static __unsafe_unretained id<MTLTexture> g_fb_src[4]; static __strong id<MTLTexture> g_fb_use[4]; static uint64_t g_fb_rid[4];
+// The same for internal resolution: a scaled texture sampled in a 1x pass reads its 1x copy (registered by rs_lo_prepare, see there)
+static uint64_t g_lo_seq; static int g_lo_n, g_lo_rebind;
+static __unsafe_unretained id<MTLTexture> g_lo_src[8]; static __unsafe_unretained id<MTLTexture> g_lo_use[8]; static uint64_t g_lo_rid[8];
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen;
 static inline void args_dirty_all(void) { memset(g_args_dirty, 1, sizeof g_args_dirty); }
@@ -4666,6 +4671,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(nvn_stage, reg, b->off) & 0xfffff) : reg < NTEX ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (t && tid < (1 << 20)) snw_check(tid, atomic_load_explicit(&g_tser[tid], memory_order_relaxed), t);   // see snw_check
+            if (t && g_lo_n && g_lo_seq == g_draw_seq) for (int q = 0; q < g_lo_n; q++) if (t == g_lo_src[q]) { t = g_lo_use[q]; trid = g_lo_rid[q]; break; }   // a scaled texture in a 1x pass: its 1x copy, at scale 1 (rs_lo_prepare)
             if (rk_on && t && b->sidx != NVN_RS_NONE && (b->sfl & NVN_RSF_NEEDS_SCALE) && rs_of(t) != 1.0f && tid < g_ntreg)   // before the feedback snapshot swap below: the snapshot has the scale of what it copies
                 nvn_rs_key_set(&rk, 1u + b->sidx, nvn_stage == 1 && nvn_rs_same_aspect(g_treg[tid].t.d.width, g_treg[tid].t.d.height, (uint32_t)g_pass.gw, (uint32_t)g_pass.gh) ? NVN_RS_V_NEG : NVN_RS_V_S);
             if (t && g_fb_n && g_fb_seq == g_draw_seq && nvn_stage == 1) for (int q = 0; q < g_fb_n; q++) if (t == g_fb_src[q]) { t = g_fb_use[q]; trid = g_fb_rid[q]; break; }   // same-pass feedback sampling: read the snapshot instead (see fb_prepare)
@@ -6355,6 +6361,72 @@ static void fb_prepare(NvProg *pr) {
         } }
     if (g_fb_n) { g_fb_seq = g_draw_seq; args_dirty_all(); g_fb_rebind = 1; }
 }
+// Internal resolution, the footprint at a scale boundary: a draw in a 1x pass that samples a scaled texture reads a 1x copy of it, downsampled with one bilinear tap per destination texel
+// (copy_t2t_draw; a box filter at 2x). Shaders size their kernels in guest texels: a 2:1 downsample takes one bilinear tap at the corner of four guest texels, which on a texture S times
+// larger averages only 1/S² of that footprint. Small bright features then alias where the chain drops to 1x (the bloom chain below 360 lines stays 1x, nvn_rs_eligible): the glow of a
+// stadium light came out up to 16 levels brighter or darker at 2x, depending on where the light fell on the host grid. With the copy the 1x pass sees what it sees at 1x, supersampled.
+// A copy is kept per scaled texture and stays current until a scaled texture may have been written again (g_rs_wgen), so a chain of 1x passes reading one texture pays one downsample.
+// Not done for compute dispatches and dynamic texture arrays (no case seen); a texture copy_t2t_draw cannot draw (multisample, some depth formats) is sampled as it is
+enum { RS_LO_N = 8 };
+static __strong id<MTLTexture> g_lo_base[RS_LO_N], g_lo_tex[RS_LO_N], g_lo_view[RS_LO_N]; static __unsafe_unretained id<MTLTexture> g_lo_vsrc[RS_LO_N]; static uint64_t g_lo_gen[RS_LO_N], g_lo_count; static int g_lo_next;
+static id<MTLTexture> rs_lo(const tex_t *tt, id<MTLTexture> t, int may_copy) {   // the 1x copy standing in for t (a scaled texture or a view of one), made or refreshed when may_copy; nil when none
+    id<MTLTexture> base = t.parentTexture ?: t; int e = -1;
+    if (base.parentTexture) return nil;   // a view of a view: not handled
+    for (int i = 0; i < RS_LO_N; i++) if (g_lo_base[i] == base) { e = i; break; }
+    if (e < 0 || g_lo_gen[e] != g_rs_wgen) {
+        if (!may_copy) return nil;
+        if (e < 0) { MTLTextureDescriptor *d = tex_desc(tt, 0); if (!d) return nil; d.usage |= base.usage;
+            id<MTLTexture> lo = [g_dev newTextureWithDescriptor:d];
+            if (!lo || lo.pixelFormat != base.pixelFormat || lo.mipmapLevelCount != base.mipmapLevelCount || lo.arrayLength != base.arrayLength || lo.textureType != base.textureType) return nil;
+            e = g_lo_next; g_lo_next = (g_lo_next + 1) % RS_LO_N; res_add(lo);
+            if (g_lo_tex[e]) defer_obj_release(g_lo_tex[e]);
+            if (g_lo_view[e]) defer_obj_unref(g_lo_view[e]);
+            g_lo_base[e] = base; g_lo_tex[e] = lo; g_lo_view[e] = nil; g_lo_vsrc[e] = nil; }
+        id<MTLTexture> lo = g_lo_tex[e]; NSUInteger slices = base.textureType == MTLTextureType2DArray ? base.arrayLength : 1;
+        for (NSUInteger l = 0; l < lo.mipmapLevelCount; l++) for (NSUInteger z = 0; z < slices; z++) {
+            NVNcopyRegion sr = {0, 0, 0, (int)MAX(base.width >> l, 1u), (int)MAX(base.height >> l, 1u), 1}, dr = {0, 0, 0, (int)MAX(lo.width >> l, 1u), (int)MAX(lo.height >> l, 1u), 1};
+            if (!copy_t2t_draw(base, lo, (unsigned)l, (unsigned)z, (unsigned)l, (unsigned)z, &sr, &dr, 1, 0)) { g_lo_base[e] = nil; return nil; }
+        }
+        g_lo_gen[e] = g_rs_wgen; g_lo_count++;
+        if (g_lo_count == 1 || g_lo_count == 10 || g_lo_count == 1000 || g_lo_count % 100000 == 0)
+            MLOG("internal resolution: 1x copy #%llu of a scaled texture sampled in a 1x pass (ser=%llu %ux%u format %#x, frame %llu)", (unsigned long long)g_lo_count, (unsigned long long)tt->serial, tt->d.width, tt->d.height, tt->d.format,
+                 (unsigned long long)atomic_load(&g_cur_frame));
+    }
+    if (t == base) return g_lo_tex[e];
+    if (g_lo_vsrc[e] != t) {   // the same view parameters on the copy (format, swizzle, levels, layers)
+        id<MTLTexture> v = [g_lo_tex[e] newTextureViewWithPixelFormat:t.pixelFormat textureType:t.textureType levels:NSMakeRange(t.parentRelativeLevel, t.mipmapLevelCount)
+                                                           slices:NSMakeRange(t.parentRelativeSlice, t.textureType == MTLTextureType2DArray ? t.arrayLength : 1) swizzle:t.swizzle];
+        if (!v) return nil;
+        if (g_lo_view[e]) defer_obj_unref(g_lo_view[e]);
+        g_lo_view[e] = v; g_lo_vsrc[e] = t; }
+    return g_lo_view[e];
+}
+// Called before the draw opens its render pass, after fb_prepare (the same draw sequence number): registers the 1x copies the draw's vertex and fragment textures need
+static void rs_lo_prepare(NvProg *pr) {
+    g_lo_n = 0;
+    if (g_lo_rebind) { args_dirty_all(); g_lo_rebind = 0; }   // the previous draw read copies: encode the original bindings again
+    if (g_rs == 1.0f || !pr || !R.has_rt) return;
+    if (g_enc ? g_pass.rs != 1.0f : 0) return;
+    if (!g_enc) { int one = 0;   // before the pass opens: it runs at 1x when any attachment is 1x (rs_pass_consensus demotes the others)
+        for (int i = 0; i < R.rt.n && i < 8 && !one; i++) if (R.rt.color[i]) one = rs_of(tex_mtl(R.rt.color[i])) == 1.0f;
+        if (!one && R.rt.depth) one = rs_of(tex_mtl(R.rt.depth)) == 1.0f;
+        if (!one) return; }
+    int may_copy = !g_fz.active && !g_defer_replaying;   // inside a merged or deferred pass only copies that are already current are used
+    for (int st = 0; st < 2; st++) { NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb && g_lo_n < 8; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind != NVN_RB_TEX && b->kind != NVN_RB_TEXU) continue;
+            pthread_mutex_lock(&g_rmu);
+            int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(st, b->reg, b->off) & 0xfffff) : b->reg < NTEX ? (int)(S.tex[st][b->reg] & 0xfffff) : 0;
+            void *tv = NULL; if (tid) tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            int ok = t && tid < g_ntreg && g_treg[tid].ok && rs_of(t) != 1.0f; tex_t tt; if (ok) tt = g_treg[tid].t;
+            pthread_mutex_unlock(&g_rmu);
+            if (!ok) continue;
+            int dup = 0; for (int q = 0; q < g_lo_n; q++) dup |= g_lo_src[q] == t; if (dup) continue;
+            id<MTLTexture> use = rs_lo(&tt, t, may_copy); if (!use) continue;
+            g_lo_src[g_lo_n] = t; g_lo_use[g_lo_n] = use; g_lo_rid[g_lo_n] = use.gpuResourceID._impl; g_lo_n++;
+            PD("N %llu internal resolution: stage %d slot %d samples scaled ser=%llu in a 1x pass; reads its 1x copy", g_stat_pass + !g_enc, st, b->reg, (unsigned long long)tt.serial);
+        } }
+    if (g_lo_n) { g_lo_seq = g_draw_seq; args_dirty_all(); g_lo_rebind = 1; }
+}
 // ---------- Indirect draws Metal cannot take as they are ----------
 // Quads and triangle fans (DrawArraysIndirect), and indexed quads / fans / 8-bit indices (DrawElementsIndirect). The {count, instances, first, ...} record is usually written by the GPU earlier
 // in the frame (Hyrule Warriors: Age of Calamity draws GPU-driven effects as indirect quads in its first battle), so the CPU cannot expand it at replay. A compute pass converts each record into
@@ -6847,6 +6919,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int once3; if (!once3++) MLOG("readable-tile pass merge: a draw of the later pass is not provable; back to separate passes (first case pass %llu)", g_stat_pass);
         g_fz_fallback++; rp_end(); }
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
+    rs_lo_prepare(pr);   // internal resolution: scaled textures sampled in a 1x pass read 1x copies
     if (R.has_sc && !g_enc) {
         NSUInteger tw0 = 0, th0 = 0; float s0 = 1.0f; rt_dims_s(&tw0, &th0, &s0);
         long x0, y0, x1, y1;
@@ -7250,6 +7323,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 }
 static void copy_b2t(const p_copy_b2t *c) {
     if (c->tex) zskip_del(c->tex->serial);
+    g_rs_wgen++;   // the texture may be scaled (rs_lo_prepare)
     id<MTLTexture> t = tex_mtl(c->tex); pkg_gpu_wrote(c->tex);
     PD("C ser=%llu", c->tex->serial);
     if (!t) return;
@@ -7404,6 +7478,7 @@ static void copy_t2t(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "texture copy source");
     rp_flush();   // Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
     if (c->dst) zskip_del(c->dst->serial);
+    g_rs_wgen++;   // the destination may be scaled (rs_lo_prepare)
     if (c->src && c->dst && c->sr.xoffset == 0 && c->sr.yoffset == 0 && c->dr.xoffset == 0 && c->dr.yoffset == 0
         && c->sr.width == (int)c->src->d.width && c->sr.height == (int)c->src->d.height && c->dr.width == (int)c->dst->d.width && c->dr.height == (int)c->dst->d.height) {
         int sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
@@ -7494,6 +7569,7 @@ static unsigned mtl_pf_chmask(MTLPixelFormat pf) {
 // view with changed format: clear on a view of that format; partial region, partial channels, compressed / packaged textures (no render target usage): report a failure, to be implemented
 static void clear_tex(const p_clear_tex *c) {
     if (c->tex) zskip_del(c->tex->serial);
+    g_rs_wgen++;   // the texture may be scaled (rs_lo_prepare)
     id<MTLTexture> t = tex_mtl(c->tex); pkg_gpu_wrote(c->tex);
     PD("X ser=%llu view format %#x region %d,%d,%d %dx%dx%d mask %#x %s %g,%g,%g,%g", c->tex->serial, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
        c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);
