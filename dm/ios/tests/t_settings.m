@@ -266,6 +266,12 @@ int main(void) { @autoreleasepool {
       DmSettings *vp = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{@"DMLetterbox": @"black"}); CHECK(![vp isEnabled:find(vp, @"DM_AMBIENT_LEVEL")], "the Info.plist's black bars count");
       DmSettings *ev = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"black"} mutableCopy], @{}); CHECK(![ev isEnabled:find(ev, @"DM_AMBIENT_LEVEL")], "so does the environment");
       DmSettings *al = make(builtin, tmpFile(), [@{@"DM_LETTERBOX": @"0"} mutableCopy], @{}); CHECK(![al isEnabled:find(al, @"DM_AMBIENT_LEVEL")], "an alias of the option counts as the option");
+      DmSetting *vib = find(s, @"DM_VIBRATION"), *vs = find(s, @"DM_VIBRATION_STRENGTH");
+      EQ(vs.enabledWhenKey, @"DM_VIBRATION"); EQ(vs.enabledEquals, @"1"); EQ(vs.enabledNotEquals, nil); CHECK(vib.enabledWhenKey == nil, "the toggle itself is always live");
+      CHECK([s isEnabled:vs] && [s disabledNote:vs] == nil, "vibration on (default): strength is live");
+      [s setValue:@"0" forKey:@"DM_VIBRATION"]; CHECK(![s isEnabled:vs], "vibration off: strength does nothing"); EQ([s disabledNote:vs], @"Has no effect unless Vibration is On"); CHECK([s isEnabled:vib], "the toggle stays live");
+      [s setValue:@"0.4" forKey:@"DM_VIBRATION_STRENGTH"]; [s setValue:@"1" forKey:@"DM_VIBRATION"]; CHECK([s isEnabled:vs], "vibration on again"); EQ([s valueForKey:@"DM_VIBRATION_STRENGTH"], @"0.4");
+      DmSettings *ve = make(builtin, tmpFile(), [@{@"DM_VIBRATION": @"off"} mutableCopy], @{}); CHECK(![ve isEnabled:find(ve, @"DM_VIBRATION_STRENGTH")], "vibration turned off in env.txt disables it too");
       // equals form, a game's own entry, and the ways an entry can be wrong
       NSDictionary *game = @{@"id": @"game", @"title": @"G", @"settings": @[
           @{@"key": @"DM_G_ON", @"label": @"On", @"type": @"toggle", @"default": @"1"},

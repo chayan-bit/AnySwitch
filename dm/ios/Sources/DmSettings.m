@@ -167,7 +167,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"detail": @"How hard the device has to be shaken to shake the controller. A lower number reacts to a gentler shake."},
             @{@"key": @"DM_VIBRATION", @"label": @"Vibration", @"type": @"toggle", @"default": @"1", @"requires": @"haptics",
               @"detail": @"Plays the game's rumble on the controller, or on the device when no controller is connected."},
-            @{@"key": @"DM_VIBRATION_STRENGTH", @"label": @"Vibration strength", @"type": @"slider", @"min": @0, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"requires": @"haptics",
+            @{@"key": @"DM_VIBRATION_STRENGTH", @"label": @"Vibration strength", @"type": @"slider", @"min": @0, @"max": @1.0, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"1", @"requires": @"haptics", @"enabledWhen": @{@"key": @"DM_VIBRATION", @"equals": @"1"},   // no rumble, nothing to scale
               @"detail": @"How strong the rumble feels. 100% is the game's own level."}]},
         @{@"id": @"audio", @"title": @"Audio", @"icon": @"speaker.wave.2", @"settings": @[
             slider(@"DM_VOLUME", @"DMVolume", @"Volume", @"The game's sound level. The device's own volume still applies on top.", 0, 1.0, 0.05, @"1")]},
