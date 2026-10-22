@@ -229,11 +229,13 @@ static NSDictionary *gameFile(NSString *path) {
     if (![j[@"defaults"] isKindOfClass:NSDictionary.class]) { say([NSString stringWithFormat:@"%@: \"defaults\" is not an object", path.lastPathComponent]); return @{}; }
     return j[@"defaults"];
 }
+static NSString *g_pack_root;   // the launched game's pack (Hearth); nil = the pack inside the app
+void dm_settings_set_pack(NSString *root) { g_pack_root = root.copy; }
 + (instancetype)shared {
     static DmSettings *s; static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        NSString *game = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"pack/profile/settings.json"];
+        NSString *game = [g_pack_root ?: [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"pack"] stringByAppendingPathComponent:@"profile/settings.json"];
         NSMutableArray *secs = [[DmSettings builtinSections] mutableCopy];
         [secs addObjectsFromArray:[DmSettings gameSectionsFromFile:game]];
         s = [[DmSettings alloc] initWithSections:secs gameDefaults:[DmSettings gameDefaultsFromFile:game] caps:nil storePath:[doc stringByAppendingPathComponent:@"settings.json"]

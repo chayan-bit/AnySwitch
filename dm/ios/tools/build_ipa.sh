@@ -17,7 +17,7 @@
 #   PACK=<new folder> writes a game pack there instead of an IPA (docs/development.md "Game packs"): the same tables, pipeline archives and fonts, the code dylibs for iOS and the Mac
 #   (gen_embed.py --dylib), the iOS shader libraries and the Mac ones (MSL_MAC), the add-on content, the RomFS chunk store, icon and control data, then manifest.json
 #   (dm/tools/pack_manifest.py); big files enter as APFS clones (cp -c: no extra disk on the same volume), and nothing is built with Xcode
-#   CODE_DYLIB=1 links the rewritten modules into DmIOS.app/Frameworks/code.dylib (gen_embed.py --dylib --target ios) instead of the executable; main.m points DM_CODE at it,
+#   CODE_DYLIB=1 links the rewritten modules into DmIOS.app/Frameworks/<title id>.dylib (gen_embed.py --dylib --target ios) instead of the executable; Hearth (HearthLibrary.m) points DM_CODE at it,
 #   so the app maps its code the way a pack's code/ios.dylib is mapped (the install tool signs the dylib with the app)
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -67,8 +67,8 @@ else
   python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
   F=; rm -rf "$O/fw"
   if [ "${CODE_DYLIB:-0}" = 1 ]; then
-    mkdir -p "$O/fw" && python3 tools/gen_embed.py "$PATCHED" "$O/fw/embed.S" $MODS --title "$GAME" --dylib "$O/fw/code.dylib" --target ios > /dev/null || die "code dylib"
-    rm -f "$O/fw/embed.S"; echo '// CODE_DYLIB=1: the rewritten modules are in Frameworks/code.dylib' > Gen/embed.S; t "code: Frameworks/code.dylib (CODE_DYLIB=1)"
+    mkdir -p "$O/fw" && python3 tools/gen_embed.py "$PATCHED" "$O/fw/embed.S" $MODS --title "$GAME" --dylib "$O/fw/$GAME.dylib" --target ios > /dev/null || die "code dylib"
+    rm -f "$O/fw/embed.S"; echo '// CODE_DYLIB=1: the rewritten modules are in Frameworks/<title id>.dylib' > Gen/embed.S; t "code: Frameworks/<title id>.dylib (CODE_DYLIB=1)"
   else F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS --title "$GAME") || die "gen_embed"; fi
   echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
   DMO=Gen/pack/profile; PSO_O=Gen/pack/pso/ios; FONT_O=Gen/pack/font

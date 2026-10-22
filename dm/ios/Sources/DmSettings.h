@@ -76,4 +76,5 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 + (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {"DM_KEY": "value"}}; empty when absent or invalid (logged)
 @end
 
+void dm_settings_set_pack(NSString *root);   // before the first +shared: the launched game's pack supplies profile/settings.json (game rows and defaults); unset = the pack inside the app
 void dm_settings_boot(void);   // main.m, after env.txt is in the environment and before UIApplicationMain: loads the user's file and exports it

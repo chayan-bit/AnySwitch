@@ -3,11 +3,14 @@ t_settings: t_settings.m ../Sources/DmSettings.m ../Sources/DmSettings.h ../Sour
 	clang -O1 -g -Wall -fobjc-arc -I../Sources -o $@ t_settings.m ../Sources/DmSettings.m -framework Foundation
 t_haptics: t_haptics.c ../Sources/DmHapticMap.h ../../host/dm_input.h
 	clang -O1 -g -Wall -I../Sources -I../../host -o $@ t_haptics.c -lm
-run: t_settings t_haptics
+t_library: t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthLibrary.h ../../host/boot.m ../../host/boot.h ../../host/profile.m
+	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_library.m ../Hearth/HearthLibrary.m ../../host/boot.m ../../host/profile.m -framework Foundation
+run: t_settings t_haptics t_library
 	./t_settings
+	./t_library
 	./t_haptics
 	python3 -I test_device_gpu.py   # tools/device_gpu.py chip IDs -> GPU architectures and the fallback
 	python3 -I test_build_defaults.py   # tools/build_ipa.sh: chunk store by default, flexible pipeline archive on by default
 clean:
-	rm -rf t_settings t_settings.dSYM t_haptics t_haptics.dSYM
+	rm -rf t_settings t_settings.dSYM t_haptics t_haptics.dSYM t_library t_library.dSYM
 .PHONY: run clean

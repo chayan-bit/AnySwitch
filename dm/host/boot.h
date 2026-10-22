@@ -3,7 +3,8 @@
 #include <stddef.h>
 #include <sysexits.h>
 #define DM_EXIT_PACK EX_CONFIG   // 78: the exit code of a pack this engine refuses
-// 0 = bootable. Otherwise 1 and why holds one line naming the mismatch and what to rebuild. No side effects: the menu may call it for every pack before launching one
+// 0 = bootable. Otherwise a reason code (below) and why holds one line naming the mismatch and what to rebuild. No side effects: the menu may call it for every pack before launching one
+enum { DM_PACK_NOT_PACK = 1, DM_PACK_REBUILD = 2, DM_PACK_MISSING = 3 };   // no readable manifest / built for another engine version or another title / a part this platform needs is absent
 int dm_pack_check(const char *root, char *why, size_t n);
 // dm_pack_check, and on refusal log "[RED] <why>" and exit with DM_EXIT_PACK
 void dm_pack_require(const char *root);
