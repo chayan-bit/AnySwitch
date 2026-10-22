@@ -186,19 +186,20 @@ A connected game controller hides the touch controls and keeps every button.
 
 **Settings.**
 The gear button at the top (or + and - held together on a controller, or Cmd and comma on a keyboard) opens the settings screen.
-It changes the bars around the picture, the size and opacity of the touch controls, and the frame-rate counter: [docs/settings.md](docs/settings.md).
+It changes the bars around the picture, the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
 
 **Shaking.**
 Shake the device (iPhone or iPad) to shake the controller, in games that read its motion.
 A light bump does not count; a sharp flick does.
-The threshold is `DM_SHAKE_G` in `Documents/env.txt`, 1.5 G by default.
-A lower value, for example `DM_SHAKE_G=1.0`, suits the heavier iPad.
+The threshold is the Shake sensitivity slider in Settings under Controls, 1.5 G by default.
+A lower value, for example 1.0 G, suits the heavier iPad.
+A `DM_SHAKE_G` line in `Documents/env.txt` overrides the slider.
 
-- **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
+- **Game language** is English by default. Change it in Settings under System; a `DM_LANG` line in `Documents/env.txt` overrides it.
 - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, attach the relevant lines of `log.txt` to an issue (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
 - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
-- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps the games that run at 60 fps on their original 30 fps, which saves battery. `DM_SHOW_FPS=1` shows the frame rate at the top left.
+- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps the games that run at 60 fps on their original 30 fps, which saves battery (also the Frame rate cap row in Settings). `DM_SHOW_FPS=1` shows the frame rate at the top left.
 
 ## Legal
 
