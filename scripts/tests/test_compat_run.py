@@ -176,5 +176,54 @@ class Bookkeeping(unittest.TestCase):
             self.assertIn('0100AAAAAAAAA000', (sd / 'summary.md').read_text())
 
 
+class Artifacts(unittest.TestCase):
+    """What the host could not write (the screenshots, the save mount) is a label of its own, and such a run is not ingame"""
+    FAIL = f'{M}screenshot 1280x720 format 80 \u2192 shots/300.png failed'
+    SAVE = f'{M}[RED] save transaction: cloning the work directory failed (save.work, errno=2) -- mounting the committed directory save read-only instead: saves cannot be written this session'
+
+    def status(self, text, **kw):
+        s = cr.parse_log(text); s.update(kw)
+        return cr.detect(s, None, True, True, False)
+
+    def test_failed_screenshot_write_is_shots_missing_and_not_ingame(self):
+        st, labels = self.status(log(*playing(), self.FAIL))
+        self.assertIn('shots-missing', labels)
+        self.assertEqual(st, 'renders')
+
+    def test_fewer_files_than_shots_taken_is_shots_missing(self):
+        st, labels = self.status(log(*playing(12)), shot_files=7)
+        self.assertEqual((st, 'shots-missing' in labels), ('renders', True))
+        self.assertEqual(self.status(log(*playing(12)), shot_files=12), ('ingame', []))
+
+    def test_save_mount_failure_is_labelled_and_not_ingame(self):
+        st, labels = self.status(log(*playing(), self.SAVE))
+        self.assertIn('save-mount-failed', labels)
+        self.assertEqual(st, 'renders')
+
+    def test_a_checkpoint_that_did_not_import_is_save_mount_failed(self):
+        self.assertIn('save-mount-failed', self.status(log(*playing()), save_failed=True)[1])
+
+    def test_report_counts_the_files_the_run_wrote(self):
+        with tempfile.TemporaryDirectory() as d:
+            rd = Path(d); (rd / 'shots').mkdir()
+            (rd / 'host.log').write_text(log(*playing(4)))
+            for i in (1, 2): (rd / 'shots' / f'{i}.png').write_bytes(b'x')
+            r = cr.report_boot(rd, None, True, True, False)
+            self.assertIn('shots-missing', r['labels'])
+            self.assertEqual(r['status'], 'renders')
+            self.assertEqual(cr.report_boot(rd, None, True, True, False, save_failed=True)['labels'].count('save-mount-failed'), 1)
+
+
+class Paths(unittest.TestCase):
+    """The host runs with cwd = the run directory: a relative path handed to it would resolve there, so every path option is absolute from the start"""
+    def test_relative_paths_become_absolute(self):
+        a = cr.parse_args(['games', '-k', 'prod.keys', '--out', 'runs/here', '--routes', 'routes'])
+        for p in (a.root, a.keys, a.out, Path(a.routes)): self.assertTrue(Path(p).is_absolute(), p)
+        self.assertEqual(a.out, Path.cwd() / 'runs/here')
+
+    def test_default_out_is_absolute(self):
+        self.assertTrue(cr.parse_args(['g', '-k', 'k']).out.is_absolute())
+
+
 if __name__ == '__main__':
     unittest.main()

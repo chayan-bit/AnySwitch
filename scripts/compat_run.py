@@ -11,7 +11,7 @@
   report   data/compat/<stamp>/<id>/: report.json (status, labels, signals, suggestions, the [auto] counters), host.log, shots/;
            data/compat/<stamp>/summary.md, and data/compat/results.tsv with the latest row per title (scripts/compat_table.py --results)
 Status ladder: build-failed, no-boot, boots (nnMain, no picture), renders (a picture), ingame (a picture that keeps changing under input for the whole budget, no crash or hang);
-playable is never set here. Suggestions (profile keys, shader facts rows, host work items) go into the report only; profiles are never changed.
+playable is never set here. A run whose host could not write its screenshots (`shots-missing`) or mount its save (`save-mount-failed`) is not graded ingame. Suggestions (profile keys, shader facts rows, host work items) go into the report only; profiles are never changed.
 A game whose report in the same --stamp has the same key (NSP files, repository state, route, options) is skipped, so an interrupted batch resumes with the same --stamp.
 Everything a run writes is game-derived and stays under data/ (gitignored). Detectors are pure functions of the log text: scripts/tests/test_compat_run.py."""
 import argparse, hashlib, importlib.util, json, os, re, shutil, signal, socket, subprocess, sys, time, traceback
@@ -61,7 +61,8 @@ def parse_log(text):
     """Signals from a host log: boot, first present, [shot] and [auto] lines, crash / watchdog lines, red lines, stubs, shader and pipeline failures, timings"""
     s = {'boot': '>>> nnMain' in text, 'first_present': None, 'shots': [], 'auto': {}, 'crash': [], 'watchdog': [], 'unimpl': {}, 'red': {}, 'fout_rows': [],
          'shader_fail': 0, 'shmap_miss': 0, 'pso_fail': 0, 'zb': 0, 'longframes': 0, 'frame_p50': [], 'cpu_pct': [], 'fb_c_keys': [], 'snw_lines': 0,
-         'rc_draws_anyway': False, 'heap_oom': 'SetHeapSize OOM' in text or '> app pool' in text, 'devctl': False}
+         'rc_draws_anyway': False, 'heap_oom': 'SetHeapSize OOM' in text or '> app pool' in text, 'devctl': False,
+         'shot_fail': 0, 'shot_files': None, 'save_failed': False}   # the last three: what the host could not write (shot_files: PNGs on disk, set by report_boot from the run directory)
     for line in text.splitlines():
         if '[auto] event=first_present' in line: s['first_present'] = float(kv(line.split('[auto]', 1)[1])['t'])
         elif '[auto] frame=' in line: s['auto'] = {k: num(v) for k, v in kv(line.split('[auto]', 1)[1]).items()}
@@ -75,6 +76,8 @@ def parse_log(text):
         elif line.lstrip('[dm] ').startswith('UNIMPL ') or ' UNIMPL ' in line:
             m = re.search(r'UNIMPL (\S+)', line); n = m.group(1) if m else '?'; s['unimpl'][n] = s['unimpl'].get(n, 0) + 1
         elif '[zb]' in line: s['zb'] += 1
+        elif re.search(r'screenshot .* \u2192 \S+ failed$', line.strip()): s['shot_fail'] += 1
+        elif 'save transaction:' in line and 'read-only instead' in line: s['save_failed'] = True   # hle_fs.c mount_ex: the save could not be cloned, the game plays on a read-only save
         elif '[longframe]' in line: s['longframes'] += 1
         elif 'devctl: dev input channel listening' in line: s['devctl'] = True
         if '[RED]' in line:
@@ -104,7 +107,8 @@ def frozen_runs(shots):   # runs of identical consecutive shot hashes: [(first i
 
 def detect(s, rc, ran_full, input_sent, liveness_hang=False):
     """(status, labels) from parse_log's signals, the host's exit (None = still running when stopped, negative = a signal), whether the budget ran out
-    (rather than the host stopping or no first present), whether input was sent, and whether devctl saw the frame counter stand still for 60 s"""
+    (rather than the host stopping or no first present), whether input was sent, and whether devctl saw the frame counter stand still for 60 s.
+    Missing screenshots and a failed save mount are labels of their own and keep the status below ingame"""
     labels = []
     crashed = bool(s['crash']) or (rc is not None and rc not in (0, -signal.SIGTERM, 128 + signal.SIGTERM, 128 + signal.SIGALRM) and not s['watchdog'])
     hung = bool(s['watchdog']) or rc == 128 + signal.SIGALRM or liveness_hang
@@ -119,11 +123,14 @@ def detect(s, rc, ran_full, input_sent, liveness_hang=False):
     if any(x.get('magenta_blocks16', 0) for x in shots) or s['zb'] or s['auto'].get('snw', 0): labels.append('missing-textures')
     if s['pso_fail'] or s['shader_fail'] or s['shmap_miss'] or s['fout_rows']: labels.append('pipelines')
     if s['unimpl']: labels.append('unimplemented')
+    shots_lost = bool(s['shot_fail']) or (s['shot_files'] is not None and s['shot_files'] < len(shots))   # fewer images than the host's [shot] lines: its writes failed
+    if shots_lost: labels.append('shots-missing')
+    if s['save_failed']: labels.append('save-mount-failed')
     if s['frame_p50'] and sorted(s['frame_p50'])[len(s['frame_p50']) // 2] > 50: labels.append('slow')
     if not s['boot']: return 'no-boot', labels
     if not lit: return 'boots', labels
     end_frozen = bool(runs) and runs[-1][0] + runs[-1][1] == len(shots)
-    if ran_full and input_sent and not crashed and not hung and 'black' not in labels and not end_frozen: return 'ingame', labels
+    if ran_full and input_sent and not crashed and not hung and 'black' not in labels and not end_frozen and not shots_lost and not s['save_failed']: return 'ingame', labels   # a run that lost its evidence or its save is not a clean ingame
     return 'renders', labels
 
 
@@ -228,7 +235,7 @@ def wait_for(pred, secs, proc, step=0.5):
 
 
 def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
-    """One boot in rd (host.log, shots/, save/): returns (exit code or None, ran the full budget, input sent, devctl liveness hang)"""
+    """One boot in rd (host.log, shots/, save/): returns (exit code or None, ran the full budget, input sent, devctl liveness hang, the route's checkpoint failed to import)"""
     dmctl = _load('dmctl', SCRIPTS / 'dmctl')
     ck, rsecs, seq = route
     secs = secs or rsecs or 300   # --secs, else the route's, else 300
@@ -237,10 +244,11 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
         prev = rd / f'prev-{time.strftime("%Y%m%d-%H%M%S")}'; prev.mkdir()
         for p in old: p.rename(prev / p.name)
     (rd / 'shots').mkdir(parents=True); (rd / 'temp').mkdir()
+    ck_failed = False
     if ck:
         import checkpoint
         try: checkpoint.import_mac(info['title_id'], ck, rd / 'save')
-        except (Exception, SystemExit) as e: log(f'  [RED] checkpoint {ck}: {e}; a fresh save instead'); (rd / 'save').mkdir(exist_ok=True)
+        except (Exception, SystemExit) as e: log(f'  [RED] checkpoint {ck}: {e}; a fresh save instead'); ck_failed = True; (rd / 'save').mkdir(exist_ok=True)
     else: (rd / 'save').mkdir()
     frames = ','.join(str(f) for f in range(shot_every, int((secs + boot_timeout) * 60) + shot_every, shot_every))   # enough for the budget at up to 60 fps
     env = dict(os.environ, DM_ROMFS=info['romfs'], DM_SAVE=str(rd / 'save'), DM_TEMP=str(rd / 'temp'), DM_MSL_DIR=info['msl_dir'], DM_NVN_SHMAP=info['shader_map'],
@@ -255,7 +263,7 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
     txt = lambda: hl.read_text(errors='replace')
     sent, full, hang = False, False, False
     try:
-        if not wait_for(lambda: '[auto] event=first_present' in txt(), boot_timeout, p): return p.poll(), False, False, False
+        if not wait_for(lambda: '[auto] event=first_present' in txt(), boot_timeout, p): return p.poll(), False, False, False, ck_failed
         t0 = time.time(); deadline = t0 + secs
         tok = dmctl.token_from_log(hl)
         if not tok: log('  [RED] no devctl token in the log: is the host a dev build?')
@@ -277,7 +285,7 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
                 elif time.time() - last_move >= 60: hang = True; break
         while time.time() < deadline and p.poll() is None: time.sleep(1)
         full = p.poll() is None and not hang
-        return p.poll(), full, sent, hang
+        return p.poll(), full, sent, hang, ck_failed
     finally:
         if p.poll() is None:
             p.terminate()
@@ -286,8 +294,10 @@ def boot(info, rd, secs, route, extra_env, boot_timeout, shot_every, log=print):
         f.close()
 
 
-def report_boot(rd, rc, full, sent, hang):
+def report_boot(rd, rc, full, sent, hang, save_failed=False):   # save_failed: the route's checkpoint did not import (boot's last value)
     s = parse_log((rd / 'host.log').read_text(errors='replace'))
+    s['shot_files'] = len(list((rd / 'shots').glob('*.png')))
+    s['save_failed'] = s['save_failed'] or save_failed
     status, labels = detect(s, rc, full, sent, hang)
     tail = (rd / 'host.log').read_text(errors='replace').splitlines()[-40:] if ('crash' in labels or 'hang' in labels or status == 'no-boot') else []
     return {'status': status, 'labels': labels, 'rc': rc, 'ran_full': full, 'input_sent': sent, 'signals': s, 'tail': tail}
@@ -371,11 +381,14 @@ def summary(stamp_dir, reps, baseline):
     (stamp_dir / 'summary.md').write_text('\n'.join(L) + '\n')
 
 
+def absolute(s): return Path(s).resolve()   # the host runs with cwd = the run directory: a relative path given to it would resolve there (writes into a directory that does not exist)
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0], epilog=__doc__.split('\n\n', 1)[1], formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('root', type=Path, help='a folder of game folders, or one game folder')
-    ap.add_argument('-k', '--keys', type=Path, required=True, help='prod.keys (passed to the NSP script, never read here)')
-    ap.add_argument('--out', type=Path, default=REPO / 'data/compat', help='where runs go (default data/compat)')
+    ap.add_argument('root', type=absolute, help='a folder of game folders, or one game folder')
+    ap.add_argument('-k', '--keys', type=absolute, required=True, help='prod.keys (passed to the NSP script, never read here)')
+    ap.add_argument('--out', type=absolute, default=REPO / 'data/compat', help='where runs go (default data/compat)')
     ap.add_argument('--stamp', default=time.strftime('%Y%m%d-%H%M%S'), help='run name; the same name resumes a run')
     ap.add_argument('--only', type=lambda s: {x.upper() for x in s.split(',')}, help='title IDs to run')
     ap.add_argument('--secs', type=float, help='seconds of play after the first present (default: the route\'s secs, else 300)')
@@ -385,7 +398,7 @@ def parse_args(argv):
     ap.add_argument('--repeat', type=int, default=1, help='boots per game; disagreeing boots are labelled flaky')
     ap.add_argument('--ab', action='append', default=[], help='KEY=VALUE[ KEY=VALUE]: one more boot with these environment switches, compared with the first')
     ap.add_argument('--env', action='append', default=[], help='KEY=VALUE switches for every boot')
-    ap.add_argument('--routes', help='folder of <title id>.txt routes, ahead of the profiles\' compat_route.txt')
+    ap.add_argument('--routes', type=absolute, help='folder of <title id>.txt routes, ahead of the profiles\' compat_route.txt')
     ap.add_argument('--baseline', help='an earlier stamp to compare with in summary.md')
     ap.add_argument('--jobs', type=int, default=1, help='workers of the build stages (J, default 1: a batch runs for hours, keep the machine usable)')
     ap.add_argument('--no-build', action='store_true', help='boot each game from its existing <id>_build/mac_run.json instead of building (a re-run, or a build made elsewhere)')
