@@ -20,6 +20,7 @@ void dm_audio_suspend(int on) { dm_audio_suspend_for(0, on); }
 void guest_clock_freeze_for(int reason, int on) { note(&r_clock, 'c', reason, on); }
 void dm_gfx_suspend_for(int reason, int on) { note(&r_gfx, 'g', reason, on); }
 void dm_gfx_suspend(int on) { dm_gfx_suspend_for(0, on); }
+void dm_err_show_result(Result r) { (void)r; }   // hle_err.c: the err item of DM_OE_SCRIPT
 static _Atomic int delivered;
 static void deliver(void) { delivered++; }
 // The notification event (hle_thread.c binds a kernel event): the unit test only tracks whether it is signalled

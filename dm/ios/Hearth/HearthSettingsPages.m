@@ -4,6 +4,7 @@
 #import "HearthHomeViews.h"
 #import "HearthSound.h"
 #import "HearthDialog.h"
+#import "HearthErrors.h"
 #import "DmSettings.h"
 #import "DmSettingsViews.h"
 #import "DmHaptics.h"
@@ -177,6 +178,17 @@ static NSArray<DmPageItem *> *signing_items(void) {
     [out addObject:info(@"Signing on the iPad", @"Comes in a later version. Until then the Mac signs each game when it is imported.")];
     return out;
 }
+// The errors games showed (HearthErrors.h), newest first, in a text page
+static DmPageItem *error_history_item(DmSettingsVC *(^vc)(void)) {
+    NSArray<NSDictionary *> *h = hearth_error_history(hearth_library().documentsDir, 100);
+    if (!h.count) return info(@"Error history", @"No game has reported an error.");
+    return action(@"Error history", [NSString stringWithFormat:@"%lu %@ reported by games, newest first.", (unsigned long)h.count, h.count == 1 ? @"error" : @"errors"], ^{
+        NSMutableArray *lines = [NSMutableArray array];
+        for (NSDictionary *e in h) [lines addObject:[NSString stringWithFormat:@"%@  %@  %@%@", when([e[@"when"] timeIntervalSince1970]), [e[@"name"] length] ? e[@"name"] : e[@"titleId"],
+                                                    [e[@"code"] length] ? e[@"code"] : @"no code", [e[@"network"] boolValue] ? @" (online)" : @""]];
+        [HearthTextVC show:@"Error history" text:[lines componentsJoinedByString:@"\n"] mono:NO over:vc()];
+    });
+}
 static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void));
 static void reload(DmSettingsVC *v) { __weak DmSettingsVC *w = v; v.pages = system_pages(^{ return w; }); [v reloadPages]; }   // the Developer page came or went
 static NSArray<DmPageItem *> *about_items(DmSettingsVC *(^vc)(void)) {
@@ -196,6 +208,7 @@ static NSArray<DmPageItem *> *about_items(DmSettingsVC *(^vc)(void)) {
             NSString *t = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"licenses" ofType:@"txt"] encoding:NSUTF8StringEncoding error:nil];
             [HearthTextVC show:@"Licences" text:t ?: @"The licences file is missing from this build." mono:NO over:vc()];
         }),
+        error_history_item(vc),
         action(@"Share log", @"Hearth's log and the games' logs, to send with a problem report.", ^{
             HearthLibrary *lib = hearth_library(); NSMutableArray *urls = [NSMutableArray array]; NSFileManager *fm = NSFileManager.defaultManager;
             NSString *h = [lib.documentsDir stringByAppendingPathComponent:@"Logs/hearth.txt"]; if ([fm fileExistsAtPath:h]) [urls addObject:[NSURL fileURLWithPath:h]];

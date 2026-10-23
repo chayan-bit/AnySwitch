@@ -155,7 +155,7 @@ HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "set
 }
 
 // Scripted state changes (verify lifecycle / overheat downgrade without a window): DM_OE_SCRIPT="focus=3@10,focus=1@20,opmode=0@30" (second N); bg=1 / bg=0 run the whole background round trip (see script_bg),
-// home=1 / home=0 Hearth's Home over the game (dm_home_suspend)
+// home=1 / home=0 Hearth's Home over the game (dm_home_suspend), err=<Result, decimal> the error dialog as if the game asked for it (hle_err.c; 622 = 2110-0001, an online error)
 // Time counts from the game's first notification fetch. Coexists with front end calls.
 #include <unistd.h>
 // bg=1 / bg=0: the whole "to background / back to foreground" sequence, in the same order as the scene lifecycle in front_ios.m (resign active -> enter background; enter foreground -> become active), minus the audio session reset iOS does on returning.
@@ -186,7 +186,8 @@ static void *oe_script(void *arg) {
         else if (!strcmp(key, "opmode")) dm_set_opmode(v);
         else if (!strcmp(key, "bg")) script_bg(v);
         else if (!strcmp(key, "home")) dm_home_suspend(v);
-        else die("DM_OE_SCRIPT unknown key '%s' (focus / opmode / bg / home)", key);
+        else if (!strcmp(key, "err")) { void dm_err_show_result(Result r); dm_err_show_result((Result)v); }
+        else die("DM_OE_SCRIPT unknown key '%s' (focus / opmode / bg / home / err)", key);
     }
     return NULL;
 }

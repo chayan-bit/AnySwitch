@@ -11,6 +11,9 @@
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmHaptics.h"
+#import "HearthDialog.h"
+#import "HearthErrors.h"
+#import "HearthLaunch.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -287,6 +290,34 @@ void front_notice(const char *title, const char *msg) {
     LOG("front end: telling the player: %s: %s", title, msg);
     NSString *t = @(title), *m = @(msg);
     dispatch_async(dispatch_get_main_queue(), ^{ notice_show(t, m, 20); });
+}
+
+// The game's error applet (front.h, hle_err.c): Hearth's dialog over the game, recorded in the error history (About); the game thread waits for the answer, as it waits for the applet on the console.
+// HOME is ignored meanwhile (a presented dialog, HearthLaunch.m). Copy log puts the end of the game's log on the clipboard
+#define ERROR_LOG_TAIL (64 * 1024)
+static NSString *front_log_tail(HearthGame *g) {
+    fflush(stderr);
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:[[hearth_library() logDirFor:g] stringByAppendingPathComponent:@"log.txt"]]; if (!h) return nil;
+    unsigned long long n = [h seekToEndOfFile]; [h seekToFileOffset:n > ERROR_LOG_TAIL ? n - ERROR_LOG_TAIL : 0];
+    NSString *s = [[NSString alloc] initWithData:[h readDataToEndOfFile] encoding:NSUTF8StringEncoding]; [h closeFile];
+    return s;
+}
+void front_error(const char *code, int network) {
+    if (!g_layer) { LOG("front end: error %s not shown: no window", code); return; }
+    NSString *c = @(code); dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        HearthGame *g = hearth_running_game();
+        hearth_error_record(hearth_library().documentsDir, g.titleId ?: @"", g.name ?: @"", c, network, NSDate.date);
+        UIViewController *vc = nil;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+        if (!vc) { LOG("[RED] front end: no window for error %s", c.UTF8String); dispatch_semaphore_signal(done); return; }
+        hearth_dialog(vc, network ? @"Offline only" : @"Something went wrong", hearth_error_message(c, network), @[@"Copy log", @"OK"], -1, 1, 1, ^(NSInteger i) {
+            if (i == 0) { NSString *t = front_log_tail(g); if (t) UIPasteboard.generalPasteboard.string = t; LOG("front end: log copied (%lu characters)", (unsigned long)t.length); }
+            dispatch_semaphore_signal(done);
+        });
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    LOG("front end: error %s dismissed", code);
 }
 
 // Save write failed (most likely the phone's storage is full). hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;

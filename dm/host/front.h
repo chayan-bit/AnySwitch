@@ -31,3 +31,7 @@ void front_save_failed(int err);
 // A notice the player has to see, such as the shader libraries missing from the app (nvn_mtl.m). The iOS front end shows an alert on the main thread; the default weak implementation (nvn_mtl.m) logs it in red.
 // May be called from any thread, including before the first window exists, and does not block
 void front_notice(const char *title, const char *msg);
+
+// The game's error display applet (hle_err.c): code is the error in its 2xxx-yyyy form, or "" when the game gave none; network = an online error (Hearth has no online play).
+// The iOS front end shows Hearth's dialog and adds it to the error history; the default weak implementation logs it. Called on a game thread, which waits until the player dismisses it
+void front_error(const char *code, int network);

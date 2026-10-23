@@ -2,6 +2,7 @@
 // Foundation only, runs on the Mac: make -C dm/ios/tests run
 #import <Foundation/Foundation.h>
 #import "HearthLibrary.h"
+#import "HearthErrors.h"
 #import "HearthSound.h"
 #include "boot.h"
 #include "dm_abi.h"
@@ -179,6 +180,20 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
       const float *os = o.bytes, *cs = c.bytes; size_t on = o.length / sizeof(float), cn = c.length / sizeof(float);
       double o1 = pitch(os, w), o2 = pitch(os + on - w * 3, w), c1 = pitch(cs, w), c2 = pitch(cs + cn - w * 3, w);
       CHECK(o2 > o1 * 1.3 && c2 < c1 / 1.3, "open %.0f -> %.0f Hz, close %.0f -> %.0f Hz", o1, o2, c1, c2); }
+
+    // error history (HearthErrors.m): our sentences, a line per error, newest first, damaged lines skipped, tabs and line breaks in a name cannot split a line
+    { NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID UUID].UUIDString];
+      CHECK([hearth_error_message(@"2110-0001", YES) containsString:@"Online features are not available"] && [hearth_error_message(@"2110-0001", YES) hasSuffix:@"Error code 2110-0001"], "online sentence with its code");
+      CHECK(![hearth_error_message(@"", NO) containsString:@"Error code"] && [hearth_error_message(@"", NO) containsString:@"reported a problem"], "no code: the generic sentence alone");
+      CHECK(hearth_error_history(d, 10).count == 0, "no history yet");
+      hearth_error_record(d, @"0100000000030000", @"Old\tGame\nName", @"2002-0000", NO, [NSDate dateWithTimeIntervalSince1970:1000]);
+      put([d stringByAppendingPathComponent:@"Logs/errors.txt"], [[NSString stringWithContentsOfFile:[d stringByAppendingPathComponent:@"Logs/errors.txt"] encoding:NSUTF8StringEncoding error:nil] stringByAppendingString:@"garbage line\n"]);
+      hearth_error_record(d, @"0100000000030000", @"New", @"2110-0001", YES, [NSDate dateWithTimeIntervalSince1970:2000]);
+      NSArray<NSDictionary *> *h = hearth_error_history(d, 10);
+      CHECK(h.count == 2 && [h[0][@"code"] isEqual:@"2110-0001"] && [h[0][@"network"] boolValue] && [h[0][@"when"] timeIntervalSince1970] == 2000, "newest first: %s", h.description.UTF8String);
+      CHECK(h.count == 2 && [h[1][@"name"] isEqual:@"Old Game Name"] && ![h[1][@"network"] boolValue], "the name kept on one line: %s", h.count > 1 ? [h[1][@"name"] UTF8String] : "-");
+      CHECK(hearth_error_history(d, 1).count == 1, "limit");
+      [fm removeItemAtPath:d error:nil]; }
 
     printf("t_library: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;

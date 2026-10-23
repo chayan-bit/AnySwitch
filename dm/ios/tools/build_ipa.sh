@@ -126,7 +126,7 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
   if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cpc "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else
-    [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
+    [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" "$GAME" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
     PL=(); for p in "$PAIRS_TSV" "$GD/shader_pairs.tsv"; do [ -f "$p" ] && PL+=("$p"); done
     t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"

@@ -9,7 +9,8 @@ Checkpoints are the game's own save data: they live only under `data/checkpoints
 
 The Mac host and the iOS app keep a save the same way, in `dm/host/hle_fs.c`.
 `DM_SAVE` is the committed save directory; a mount clones it to `<dir>.work`, and every Commit swaps the whole work tree back in atomically.
-On iOS the app sets `DM_SAVE` to `Documents/save` (`dm/ios/Sources/main.m`).
+On iOS Hearth sets `DM_SAVE` to `Documents/Users/<uid>/saves/<title id>/save` (`dm/ios/Hearth/HearthLibrary.m`); the device commands use the first user, `78626c000000000153574e4154495645`, unless `--uid` names another.
+Hearth's other paths: each game's log is `Documents/Logs/<title id>/log.txt` (Hearth's own is `Documents/Logs/hearth.txt`), the pipeline log `pso_user.tsv` sits beside the save folder, and an imported pack lives in `Library/Application Support/Hearth/Games/<title id>/`.
 So a checkpoint is that committed directory, byte for byte, plus a manifest with the size and SHA-256 of every file.
 A checkpoint lives at `data/checkpoints/<title id>/<name>/` with `save/` and `checkpoint.json`; anything else there (proof screenshots) is ignored by the tool.
 
@@ -19,7 +20,7 @@ python3 scripts/checkpoint.py export <id> start-of-act-2 --mac data/run/save --n
 python3 scripts/checkpoint.py import <id> start-of-act-2 --mac data/run/save
 DM_SAVE=data/run/save ... dm/host/dmhost <patched dir>
 
-# iOS: copy Documents/save out of the app, or install a checkpoint (stops the app first) and launch it
+# iOS: copy the title's save out of Hearth, or install a checkpoint (stops the app first) and launch it; --uid <32 hex digits> for another user
 python3 scripts/checkpoint.py export <id> from-device --device <udid> --bundle <bundle id>
 python3 scripts/checkpoint.py import <id> start-of-act-2 --device <udid> --bundle <bundle id> --launch
 
@@ -28,10 +29,10 @@ python3 scripts/checkpoint.py verify <id> start-of-act-2
 ```
 
 Import on the Mac deletes the target directory and its `.work` and `.new` leftovers, then copies the checkpoint in.
-Import on a device first lists `Documents/save` and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
-It then finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies each checkpoint file to `Documents/save/<file>`.
-It lists `Documents/save` again and fails, without launching, unless every file is on the device with the checkpoint's size.
-Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to `Documents/save` with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches).
+Import on a device first lists the save folder and refuses when the device save holds a file the checkpoint lacks, because `devicectl` cannot delete a single file (`--keep-extra` leaves such files in place).
+It then finds the app's running process through `devicectl device info apps` and `info processes`, terminates it, and copies each checkpoint file into the save folder.
+It lists the folder again and fails, without launching, unless every file is on the device with the checkpoint's size.
+Never pass `--remove-existing-content true` to `devicectl device copy to` on an app container: a copy to the save folder with it wiped all of `Documents` (the RomFS, `env.txt`, the pipeline caches).
 A running app is stopped first because it would commit its own save over the checkpoint.
 Export refuses `.work` directories, empty saves and an existing name without `--force`, and checks the copy against the source manifest.
 Import refuses a checkpoint whose files no longer match its manifest.
@@ -56,7 +57,7 @@ A connection that comes through that tunnel arrives on the tunnel address, not o
 The app finds the tunnel as the one `utun` interface with a unique local IPv6 address (`fd00::/8`), a /64 prefix and MTU 16000; VPN interfaces such as Tailscale's (`fd7a:115c:a1e0::/48`, MTU 1280) do not match, and two matches (a device paired to two Macs) turn the channel off.
 `DM_DEVCTL_ADDR` names another numeric local address or `tunnel`, and `DM_DEVCTL_PORT` another port; the wildcard addresses `0.0.0.0` and `::` are refused.
 At start the host draws a random 128-bit token and prints it in the log: `devctl: dev input channel listening on 127.0.0.1 port 47800, token <32 hex digits>`.
-On iOS that log is `Documents/log.txt`.
+On iOS that log is the game's log in Hearth, `Documents/Logs/<title id>/log.txt`.
 The first line of every connection must be `auth <token>` within 10 seconds; anything else gets `err auth`, a one-second delay and a closed connection.
 One client at a time.
 The only commands are `frame`, `run` and `quit`: no file access, no memory access, nothing else.
@@ -115,13 +116,13 @@ scripts/dmctl --log data/run/host.log frame
 scripts/dmctl --log data/run/host.log run 'f1200:A wait(240) L(0,1)~3 A'
 scripts/dmctl --log data/run/host.log run -f route.txt      # one step list per file, # starts a comment
 scripts/dmctl --token <hex> --port 47800 frame             # or DMCTL_TOKEN=<hex>
-scripts/dmctl --device <udid> --bundle <bundle id> frame   # iOS dev build: tunnel address and token through devicectl
+scripts/dmctl --device <udid> --bundle <bundle id> --title <title id> frame   # iOS dev build: tunnel address and token through devicectl
 ```
 
-`--log` takes the token from the last token line of a host log or a copied `Documents/log.txt`.
+`--log` takes the token from the last token line of a host log or a copied game log.
 It prints the host's reply and exits 0 for `ok`, `frame` and `done`, 1 for `err`, and 2 when it cannot connect or is refused.
 `--timeout` (default 600 s) bounds the wait for a `run` reply.
-`--device` connects to the device's `connectionProperties.tunnelIPAddress` from `devicectl device info details`, and `--bundle` reads the token from the app's `Documents/log.txt` with `devicectl device copy from`.
+`--device` connects to the device's `connectionProperties.tunnelIPAddress` from `devicectl device info details`, and `--bundle` with `--title` reads the token from that game's log in Hearth, `Documents/Logs/<title id>/log.txt`, with `devicectl device copy from`.
 
 ## Mac recipe
 
