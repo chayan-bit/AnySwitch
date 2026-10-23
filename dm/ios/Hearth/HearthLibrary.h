@@ -18,6 +18,7 @@
 @property (nonatomic) int reason;                   // boot.h DM_PACK_* or HEARTH_NEEDS_SIGNING: 0 = bootable
 @property (nonatomic) double lastPlayed;            // seconds since 1970 of the last launch (State/<id>.json), 0 = never
 @property (nonatomic, copy) NSString *why;          // dm_pack_check's sentence when reason != 0
+@property (nonatomic) BOOL screenshotDenied;        // the NACP's Screenshot (0x3034) is Deny: the game asks not to be captured (its own album calls still work, as on the console)
 @property (nonatomic) int startupUser;              // the NACP's StartupUserAccount (0x3025): 0 none, 1 required, 2 required with an online account; non-zero = the game starts as a chosen user
 @end
 

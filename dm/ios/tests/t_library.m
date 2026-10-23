@@ -25,6 +25,7 @@ static void nacp(NSString *root, int lang, NSString *name, NSString *pub) {
     NSMutableData *d = [NSMutableData dataWithLength:0x4000];
     if (lang == 0) memcpy((char *)d.mutableBytes + 0x3060, "1.3.2", 5);   // the display version (the pack with the American English entry has one)
     if (lang == 0) ((char *)d.mutableBytes)[0x3025] = 1;   // StartupUserAccount: required (the pack with the American English entry)
+    if (lang == 1) ((char *)d.mutableBytes)[0x3034] = 1;   // Screenshot: Deny (the pack with the second language entry)
     memcpy((char *)d.mutableBytes + lang * 0x300, name.UTF8String, strlen(name.UTF8String));
     memcpy((char *)d.mutableBytes + lang * 0x300 + 0x200, pub.UTF8String, strlen(pub.UTF8String));
     [NSFileManager.defaultManager createDirectoryAtPath:[root stringByAppendingPathComponent:@"meta"] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -60,6 +61,7 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
     CHECK([all[0].version isEqual:@"1.3.2"] && all[1].version == nil, "NACP display version: %s / %s", all[0].version.UTF8String, all[1].version.UTF8String);
     CHECK([all[1].name isEqual:@"Second Language Name"], "NACP first set language: %s", all[1].name.UTF8String);
     CHECK(all[0].startupUser == 1 && all[1].startupUser == 0 && all[2].startupUser == 0, "NACP StartupUserAccount: %d %d %d", all[0].startupUser, all[1].startupUser, all[2].startupUser);
+    CHECK(!all[0].screenshotDenied && all[1].screenshotDenied && !all[2].screenshotDenied, "NACP Screenshot: %d %d %d", all[0].screenshotDenied, all[1].screenshotDenied, all[2].screenshotDenied);
     CHECK([all[2].name isEqual:@"0100000000020000"], "no NACP: the title id");
 
     // 3. reason codes: a newer pack format is a rebuild; a pack missing its profile and code is a missing part or a rebuild, never bootable

@@ -2,5 +2,7 @@
 // (cropped away), written as a JPEG into the Gallery. The grab runs on the main thread from the render server's copy of the screen, so dm/gfx is not involved; the encode runs on a background queue.
 #import <UIKit/UIKit.h>
 
-// Grab content (in view's coordinates) of view now and write it as a JPEG into dir (created when missing). done runs on the main thread with the file (nil on failure) and the times in ms
-void hearth_capture(UIView *view, CGRect content, NSString *dir, void (^done)(NSString *path, double grabMs, double encodeMs));
+// Grab content (in view's coordinates) of view now and write it as a JPEG at path (its folder created when missing; HearthGallery.h names it). done runs on the main thread with the file (nil on failure) and the times in ms
+void hearth_capture(UIView *view, CGRect content, NSString *path, void (^done)(NSString *path, double grabMs, double encodeMs));
+// A game's own picture (the album's SaveScreenshot, hle_album.c): w x h RGBA8 pixels, alpha ignored, written as a JPEG at path on a background queue; done on the main thread (nil on failure)
+void hearth_capture_rgba(NSData *rgba, int w, int h, NSString *path, void (^done)(NSString *path));

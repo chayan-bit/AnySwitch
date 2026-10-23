@@ -16,6 +16,7 @@ static void nacp_read(NSString *path, HearthGame *g) {
     if (d.length < 16 * 0x300) return;
     const char *b = d.bytes;
     if (d.length > 0x3025) g.startupUser = (uint8_t)b[0x3025];   // StartupUserAccount (switchbrew's NACP layout)
+    if (d.length > 0x3034) g.screenshotDenied = b[0x3034] == 1;   // Screenshot: 0 Allow, 1 Deny (Ryujinx ApplicationControlProperty)
     if (d.length >= 0x3060 + 16 && b[0x3060]) g.version = [[NSString alloc] initWithBytes:b + 0x3060 length:strnlen(b + 0x3060, 16) encoding:NSUTF8StringEncoding];
     for (int i = 0; i < 16; i++) {
         const char *e = b + i * 0x300;

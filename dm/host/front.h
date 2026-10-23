@@ -38,3 +38,7 @@ void front_error(const char *code, int network);
 // The game's own user selector (nn::account::ShowUserSelector, hle_account.c), on a game thread: blocks until the player picks; writes the Uid as 32 lowercase hex digits.
 // 1 picked, 0 cancelled, -1 no picker (the preselected user is used). Weak default in hle_account.c returns -1; the iOS front end shows Hearth's picker
 int front_user_select(char out[33]);
+// The capture album (hle_album.c), on a game thread; both return 0 when saved, -1 when there is no album (the weak defaults in hle_album.c; the Mac has none).
+// front_album_save: the game's own w x h RGBA8 picture (read before it returns: the game reuses the buffer). front_capture: a screenshot of the current frame, taken asynchronously
+int front_album_save(const void *rgba, int w, int h);
+int front_capture(void);
