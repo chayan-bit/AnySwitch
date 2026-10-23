@@ -1,7 +1,8 @@
 // Render-target heaps (nvn_mtl.m, rh_*; usage: t_rtheap <scale>, run at 1 and 2): GPU-owned textures whose storage overlaps in one pool share a Metal placement heap, laid out like the
 // guest pool: textures whose guest ranges overlap share host bytes, textures whose guest ranges are disjoint never do (checked on the host ranges and on the GPU: two targets cleared one
 // after the other keep their own colours), a texture created on bytes another one used is not zeroed over them, a texture with no overlapping neighbour stays standalone, and the
-// heaps go with their pool. Odyssey's layout: 1600x900 targets 0.4 MB apart in a virtual compressible pool, and one storage used as R11G11B10F and as R32F
+// heaps go with their pool. A heap is made only once a second texture on overlapping storage is used (the first stays standalone; a storage whose other descriptions are only
+// initialized, as in Sword, gets none). Odyssey's layout: 1600x900 targets 0.4 MB apart in a virtual compressible pool, and one storage used as R11G11B10F and as R32F
 #define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
@@ -50,6 +51,19 @@ int main(int argc, char **argv) { @autoreleasepool {
     int64_t step = L - 0x61600 > L / 2 ? L / 2 + 0x1000 : L - 0x61600;   // B overlaps A and C, C does not overlap A
     tex_t A = tex(0, NVN_FORMAT_R11G11B10F), B = tex(step, NVN_FORMAT_RGBA8), C = tex(2 * step, NVN_FORMAT_R11G11B10F), E = tex(0, NVN_FORMAT_R32F), D = tex(0x4000000, NVN_FORMAT_RGBA8);
     EXPECT("C's guest range is disjoint from A's", 1, C.off >= A.off + (int64_t)A.L.size);
+    // A storage with descriptions the game initializes but uses only one of (Sword): no heap, the used texture stays standalone; a heap comes once a second texture there is used
+    {
+        pool_t q = t_virt; tex_t X0 = tex_in(&q, 0, NVN_FORMAT_RGBA8, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE), X1 = tex_in(&q, 0, NVN_FORMAT_R32F, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        uint32_t qn; uint64_t qb, qp, qs;
+        mtl_sub_begin(); id<MTLTexture> x0 = tex_mtl(&X0); mtl_wait(mtl_sub_commit(), 5000000000ull); rh_stats(&qn, &qb, &qp, &qs);
+        EXPECT("one texture used on a storage with two descriptions: standalone, no heap", 1, x0 && !x0.heap && qn == 0);
+        mtl_sub_begin(); id<MTLTexture> x1 = tex_mtl(&X1); mtl_wait(mtl_sub_commit(), 5000000000ull); rh_stats(&qn, &qb, &qp, &qs);
+        EXPECT("the second texture used there is placed in a new heap", 1, x1 && x1.heap && qn == 1 && qp == 1);
+        mtl_alias_drop_pool(&q); g_rh_placed = 0;
+    }
+    tex_t P = tex(0, NVN_FORMAT_RGBA8);   // the first texture the game uses on A's storage: standalone
+    mtl_sub_begin(); id<MTLTexture> p = tex_mtl(&P); mtl_wait(mtl_sub_commit(), 5000000000ull);
+    EXPECT("the first texture used on a storage stays standalone", 1, p && !p.heap);
     chain c1 = chain_new(); clear_rt(&c1, &A, 1, 0, 0); clear_rt(&c1, &C, 0, 0, 1); clear_rt(&c1, &D, 0, 1, 0); run(&c1);
     id<MTLTexture> a = tex_get(A.serial), cc = tex_get(C.serial), d = tex_get(D.serial);
     EXPECT("A is placed in a render-target heap", 1, a.heap != nil);
@@ -79,6 +93,9 @@ int main(int argc, char **argv) { @autoreleasepool {
         pool_t rt = t_virt; rt.size = (uint64_t)(2 * step) + (uint64_t)L;
         tex_t F0 = tex_in(&rt, 0, NVN_FORMAT_R11G11B10F, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE), F1 = tex_in(&rt, step, NVN_FORMAT_RGBA8, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE),
               F2 = tex_in(&rt, 2 * step, NVN_FORMAT_R11G11B10F, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE), F3 = tex_in(&rt, 0, NVN_FORMAT_R32F, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        tex_t FP = tex_in(&rt, 0, NVN_FORMAT_RGBA8, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE);   // the first one used in the pool: standalone
+        mtl_sub_begin(); id<MTLTexture> fp = tex_mtl(&FP); mtl_wait(mtl_sub_commit(), 5000000000ull);
+        EXPECT("the pool's first used texture stays standalone", 1, fp && !fp.heap);
         chain c3 = chain_new(); clear_rt(&c3, &F0, 1, 0, 0); clear_rt(&c3, &F2, 0, 0, 1); run(&c3);
         id<MTLTexture> f0 = tex_get(F0.serial), f2 = tex_get(F2.serial);
         EXPECT("the pool's first target is in a heap", 1, f0.heap != nil);
