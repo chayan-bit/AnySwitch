@@ -42,6 +42,7 @@ static int entry_count(void) {
 static void *create_race(void *p) { return (void *)(uintptr_t)h_fs_CreateFile(p, 0); }
 module_t g_mod[MAX_MOD]; int g_nmod;   // Module table (MountSave picks save fixes by main build ID): this unit test loads no modules
 struct dm_profile g_profile;   // no game profile: every value is 0
+int dm_account_is_preselected(const void *uid) { return !uid || ((const unsigned long long *)uid)[0] == 1; }   // hle_account.c: Uid {1, x} or none is the preselected user
 int main(void) {
     char root[1024], save[1024], p[1100];
     const char *tmp = getenv("TMPDIR");

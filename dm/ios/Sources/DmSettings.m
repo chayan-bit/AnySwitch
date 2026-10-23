@@ -221,7 +221,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
         @{@"id": @"system", @"title": @"System", @"icon": @"gearshape", @"settings": @[
             @{@"key": @"DM_LANG", @"label": @"Game language", @"type": @"choice", @"default": @"en-US", @"apply": @"restart", @"options": langOptions,
               @"detail": @"The language the game starts in, when it has it. The game reads it once at start."},
-            @{@"key": @"DM_NICK", @"label": @"Player name", @"type": @"text", @"default": @"Player", @"maxLength": @32, @"maxBytes": @32, @"apply": @"restart",
+            @{@"key": @"DM_NICK", @"label": @"Player name", @"type": @"text", @"default": @"Player", @"maxLength": @32, @"maxBytes": @32, @"apply": @"restart", @"requires": @"playername",   // Hearth hides it: each user has a name (HearthUsers.h); its value names the first user once
               @"detail": @"The name the game shows for the player, up to 32 characters."}]},
         @{@"id": @"appearance", @"title": @"Appearance", @"icon": @"circle.lefthalf.filled", @"settings": @[
             @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",

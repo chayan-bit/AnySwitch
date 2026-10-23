@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-# Passive learning (dm/gfx/README.md, pipeline coverage): copy the pipeline log (Documents/pso_user.tsv, always written by the app) from every reachable device that has this app installed to
+# Passive learning (dm/gfx/README.md, pipeline coverage): copy a game's pipeline log (always written by the app beside the save, so in Hearth
+# Documents/Users/<uid>/saves/<title id>/pso_user.tsv for the first user) from every reachable device that has this app installed to
 # <out dir>/pso_user_<device>.tsv, where build_ipa.sh folds its R records into the first tier of the flexible pipeline archive. The install tool may have changed the bundle ID
 # (AltStore / Sideloadly append the team), so an installed app matches when its ID starts with the build's.
-# Usage: pull_pso_user.py <bundle ID> <out dir>. Exit 0 with a note when no device is reachable: that is not an error. Uses xcrun devicectl (Xcode 15+), with timeouts
+# Usage: pull_pso_user.py <bundle ID> <out dir> <title id>. Exit 0 with a note when no device is reachable: that is not an error. Uses xcrun devicectl (Xcode 15+), with timeouts
 import json, os, subprocess, sys, tempfile
 
 TIMEOUT = 30
+HEARTH_UID = '78626c000000000153574e4154495645'   # Hearth's first user (dm/ios/Hearth/HearthLibrary.h)
+
+
+def device_log(title):
+    if len(title) != 16 or any(c not in '0123456789abcdefABCDEF' for c in title): raise SystemExit(f'pull_pso_user.py: title id must be 16 hex digits: {title}')
+    return f'Documents/Users/{HEARTH_UID}/saves/{title.upper()}/pso_user.tsv'
 
 
 def devicectl(*args):
@@ -16,7 +23,7 @@ def devicectl(*args):
 
 
 def main():
-    bid, out = sys.argv[1], sys.argv[2]
+    bid, out, src = sys.argv[1], sys.argv[2], device_log(sys.argv[3])
     try: devs = devicectl('list', 'devices').get('devices', [])
     except Exception as e: print(f'pipeline log: no device list ({e}): nothing pulled'); return
     up = [d for d in devs if d.get('connectionProperties', {}).get('tunnelState') == 'connected']
@@ -28,7 +35,7 @@ def main():
             app = next((a['bundleIdentifier'] for a in apps if a.get('bundleIdentifier', '').startswith(bid)), None)
             if not app: print(f'pipeline log: {name} has no {bid}*'); continue
             dst = os.path.join(out, f'pso_user_{did[:8]}.tsv')
-            devicectl('device', 'copy', 'from', '--device', did, '--domain-type', 'appDataContainer', '--domain-identifier', app, '--source', 'Documents/pso_user.tsv', '--destination', dst)
+            devicectl('device', 'copy', 'from', '--device', did, '--domain-type', 'appDataContainer', '--domain-identifier', app, '--source', src, '--destination', dst)
             print(f'pipeline log: {name} ({app}) -> {dst}, {sum(1 for l in open(dst) if l.startswith("R"))} pipeline records')
         except Exception as e: print(f'pipeline log: {name}: {e}')
 

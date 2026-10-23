@@ -5,7 +5,8 @@
 //   (3) transaction: the failure in (1) causes this transaction's Commit to be rejected and the working directory to return to the committed version; the next transaction writes in the working directory, the committed directory is still the old version before Commit and the new version after Commit;
 //   (4) DM_TEST_FS_FAIL=write:N:errno makes only the Nth save write fail, with writes before and after proceeding normally; that transaction's Commit is rejected, the committed version is unchanged, and the front end receives one notification;
 //      the next transaction commits normally, and the final save = the content of the next transaction;
-//   (5) remounting discards uncommitted content.
+//   (5) remounting discards uncommitted content;
+//   (7) another user's save mounts at DM_SAVE_ROOT/<uid>/saves/<program id>/save (created on first mount), commits land there and the preselected user's save is untouched; without DM_SAVE_ROOT the mount fails.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,6 +137,15 @@ int main(void) {
     CHECK(h_fs_MountSave("save", NULL) == RES_OK && write_save("save:/a", "ok3") == RES_OK && h_fs_Commit("save") == RES_OK, "remount without injection: transactional as usual, writing a=ok3 and committing succeed");
     snprintf(p, sizeof p, "%s/a", save); CHECK(same(p, "ok3"), "committed a = ok3");
 
+    // 7 Another user (the stub treats Uid {1, x} as preselected)
+    unsigned long long u2[2] = {0x0123456789abcdefull, 0x2ull}, u1[2] = {1, 7}; char oroot[1100], osave[1300]; g_nmnt = 0;
+    snprintf(oroot, sizeof oroot, "%s/Users", root); snprintf(osave, sizeof osave, "%s/0123456789abcdef0000000000000002/saves/0000000000000000/save", oroot);
+    unsetenv("DM_SAVE_ROOT"); CHECK(h_fs_MountSave("save", u2) != RES_OK, "another user without DM_SAVE_ROOT: the mount fails");
+    setenv("DM_SAVE_ROOT", oroot, 1);
+    CHECK(h_fs_MountSave("save", u2) == RES_OK && h_fs_CreateFile("save:/a", 0) == RES_OK && write_save("save:/a", "second") == RES_OK && h_fs_Commit("save") == RES_OK, "another user's save: created empty on first mount, then a file is created, written and committed");
+    snprintf(p, sizeof p, "%s/a", osave); CHECK(same(p, "second"), "committed under DM_SAVE_ROOT/<uid>/saves/<program id>/save");
+    snprintf(p, sizeof p, "%s/a", save); CHECK(same(p, "ok3"), "the preselected user's save is untouched (ok3)");
+    g_nmnt = 0; CHECK(h_fs_MountSave("save", u1) == RES_OK && read_fs("save:/a", got, sizeof got) && !strcmp(got, "ok3"), "the preselected uid mounts DM_SAVE (read %s)", got);
 
     char cmd[1200]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", root); system(cmd);
     printf("== %d checks, %d failed ==\n", checks, fails);

@@ -6,6 +6,7 @@
 #import "HearthLibrary.h"
 
 DmSettingsVC *hearth_system_settings(CGSize size);   // the caller sets onClose and onRestart and shows it
+void hearth_settings_show_user(DmSettingsVC *v, NSString *uid);   // after it is shown: the Users page at that user (Home's avatars)
 // A game's Options; gone runs after the game was deleted (the caller closes the sheet and reloads Home). The running game's rows use the live store, so a change reaches it at once
 DmSettingsVC *hearth_options(HearthGame *g, CGSize size, void (^gone)(void));
 // DM_APPEARANCE (the system store's value; env.txt still wins) on every window of the app: at scene start, and after a change in either settings screen

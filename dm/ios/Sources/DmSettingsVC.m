@@ -289,13 +289,23 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 // The controller and the key commands are paused while it is up, except B, which cancels
 - (void)editText:(DmRowView *)r {
     DmSetting *s = r.setting; if (r.inert) { [r shake]; return; }
-    DmEditorView *e = [[DmEditorView alloc] initWithSetting:s text:[_settings valueForKey:s.key] compact:_compact];
     __weak DmSettingsVC *w = self; __weak DmRowView *wr = r;
-    e.onSave = ^(NSString *text) {
-        DmSettingsVC *me = w; DmRowView *row = wr; if (!me) return;
-        if (![me->_settings setValue:text forKey:s.key]) [row shake]; else { [me refreshRows]; [me changed]; }
-        [me textEditorClosed];
-    };
+    [self editSetting:s text:[_settings valueForKey:s.key] save:^BOOL(NSString *text) {
+        DmSettingsVC *me = w; if (!me) return NO;
+        if (![me->_settings setValue:text forKey:s.key]) { [wr shake]; return NO; }
+        [me refreshRows]; [me changed]; return YES;
+    }];
+}
+- (void)editText:(NSString *)title value:(NSString *)value maxBytes:(NSUInteger)maxBytes save:(BOOL (^)(NSString *text))save {
+    NSString *why = nil;   // the default only has to parse (an empty text does not): the editor starts from value
+    DmSetting *s = [DmSetting settingFromDictionary:@{@"key": @"page.text", @"label": title, @"type": @"text", @"default": value.length ? value : title, @"maxLength": @(maxBytes), @"maxBytes": @(maxBytes)} error:&why];
+    if (!s) { NSLog(@"settings: [RED] no text editor for %@: %@", title, why); return; }
+    [self editSetting:s text:value save:save];
+}
+- (void)editSetting:(DmSetting *)s text:(NSString *)text save:(BOOL (^)(NSString *text))save {
+    DmEditorView *e = [[DmEditorView alloc] initWithSetting:s text:text compact:_compact];
+    __weak DmSettingsVC *w = self;
+    e.onSave = ^(NSString *t) { save(t); [w textEditorClosed]; };
     e.onCancel = ^{ [w textEditorClosed]; };
     e.frame = self.view.bounds; e.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _editor = e; _editing = YES; _editB = (_prev & 1ull << DMB_B) != 0;

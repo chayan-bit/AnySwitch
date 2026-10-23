@@ -34,6 +34,8 @@
 @property (nonatomic, copy) void (^onChange)(void);     // after the player changed a value (a quiet store announces nothing)
 - (void)resumeController;   // a screen over this one handed the controller back: what is held now does nothing until it is released
 - (void)reloadPages;   // the categories again (a page appeared or went), keeping the place when it can
+// The text editor panel for a page's own value (a user's name): save gets the trimmed text and returns whether it was taken
+- (void)editText:(NSString *)title value:(NSString *)value maxBytes:(NSUInteger)maxBytes save:(BOOL (^)(NSString *text))save;
 // The physical controller's state (DmPadBits.h buttons, left stick) as handed over by dm_gamepad_set_capture; the first call only records what is already held
 - (void)padState:(uint64_t)buttons lx:(int32_t)lx ly:(int32_t)ly;
 // Jump to a state (tests and screenshots): the category, whether the focus is in the pane, and the row there

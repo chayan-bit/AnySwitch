@@ -2,9 +2,12 @@
 // Foundation only, runs on the Mac: make -C dm/ios/tests run
 #import <Foundation/Foundation.h>
 #import "HearthLibrary.h"
+#import "HearthErrors.h"
 #import "HearthSound.h"
+#import "HearthSaves.h"
 #include "boot.h"
 #include "dm_abi.h"
+#include <sys/stat.h>
 
 static int g_fail, g_n;
 #define CHECK(c, ...) do { g_n++; if (!(c)) { g_fail++; printf("FAIL line %d: %s  ", __LINE__, #c); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -21,6 +24,8 @@ static void manifest(NSString *root, NSString *title, int format) {
 static void nacp(NSString *root, int lang, NSString *name, NSString *pub) {
     NSMutableData *d = [NSMutableData dataWithLength:0x4000];
     if (lang == 0) memcpy((char *)d.mutableBytes + 0x3060, "1.3.2", 5);   // the display version (the pack with the American English entry has one)
+    if (lang == 0) ((char *)d.mutableBytes)[0x3025] = 1;   // StartupUserAccount: required (the pack with the American English entry)
+    if (lang == 1) ((char *)d.mutableBytes)[0x3034] = 1;   // Screenshot: Deny (the pack with the second language entry)
     memcpy((char *)d.mutableBytes + lang * 0x300, name.UTF8String, strlen(name.UTF8String));
     memcpy((char *)d.mutableBytes + lang * 0x300 + 0x200, pub.UTF8String, strlen(pub.UTF8String));
     [NSFileManager.defaultManager createDirectoryAtPath:[root stringByAppendingPathComponent:@"meta"] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -55,6 +60,8 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
     CHECK([all[0].name isEqual:@"Bundled Game"] && [all[0].publisher isEqual:@"Maker"], "NACP American English: %s", all[0].name.UTF8String);
     CHECK([all[0].version isEqual:@"1.3.2"] && all[1].version == nil, "NACP display version: %s / %s", all[0].version.UTF8String, all[1].version.UTF8String);
     CHECK([all[1].name isEqual:@"Second Language Name"], "NACP first set language: %s", all[1].name.UTF8String);
+    CHECK(all[0].startupUser == 1 && all[1].startupUser == 0 && all[2].startupUser == 0, "NACP StartupUserAccount: %d %d %d", all[0].startupUser, all[1].startupUser, all[2].startupUser);
+    CHECK(!all[0].screenshotDenied && all[1].screenshotDenied && !all[2].screenshotDenied, "NACP Screenshot: %d %d %d", all[0].screenshotDenied, all[1].screenshotDenied, all[2].screenshotDenied);
     CHECK([all[2].name isEqual:@"0100000000020000"], "no NACP: the title id");
 
     // 3. reason codes: a newer pack format is a rebuild; a pack missing its profile and code is a missing part or a rebuild, never bootable
@@ -147,15 +154,20 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
       CHECK([sz[@"code"] isEqual:@1000] && [sz[@"shaders"] isEqual:@230] && [sz[@"pipelines"] isEqual:@400] && [sz[@"files"] isEqual:@5000] && [sz[@"addons"] isEqual:@700]
             && [sz[@"other"] isEqual:@35] && [sz[@"save"] isEqual:@64], "sizes by kind %s", sz.description.UTF8String);
       CHECK([lib capsOf:g] == nil, "no capabilities before the first start");
-      [lib rememberCaps:@{@"fstep": @YES, @"nvn": @NO} of:g]; [lib addPlayTime:90 to:g]; [lib addPlayTime:30.5 to:g]; [lib markPlayed:g];
+      [lib rememberCaps:@{@"fstep": @YES, @"nvn": @NO} of:g]; [lib addPlayTime:90 to:g user:@"0123456789abcdef0123456789abcdef"]; [lib addPlayTime:30.5 to:g user:nil]; [lib markPlayed:g];
       CHECK([[lib capsOf:g][@"fstep"] boolValue] && ![[lib capsOf:g][@"nvn"] boolValue], "capabilities kept %s", [lib capsOf:g].description.UTF8String);
       CHECK([lib playTimeOf:g] == 120.5 && g.lastPlayed > 0, "play time %.1f, and markPlayed keeps it", [lib playTimeOf:g]);
+      CHECK([lib playTimeOf:g user:@"0123456789abcdef0123456789abcdef"] == 90 && [lib playTimeOf:g user:HEARTH_UID] == 30.5, "per user: %.1f, and time that is no one's (before users existed) is the first user's", [lib playTimeOf:g user:@"0123456789abcdef0123456789abcdef"]);
+      NSString *other = [lib saveDirFor:g user:@"0123456789abcdef0123456789abcdef"];
+      CHECK(([other hasSuffix:[NSString stringWithFormat:@"Documents/Users/0123456789abcdef0123456789abcdef/saves/%@/save", g.titleId]] && [fm fileExistsAtPath:other.stringByDeletingLastPathComponent] && ![other isEqual:save]), "another user's save path %s", other.UTF8String);
+      CHECK([[lib saveDirFor:g user:HEARTH_UID] isEqual:save], "the first user's is the old path");
       NSString *why = nil;
       HearthGame *b = [HearthGame new]; b.titleId = @"0100000000030000"; b.root = [bundle stringByAppendingPathComponent:@"pack"]; b.bundled = YES;
       CHECK(![lib deleteGame:b error:&why] && why.length && [fm fileExistsAtPath:b.root], "the game built into the app is not deleted (%s)", why.UTF8String);
       CHECK([lib deleteGame:g error:&why] && ![fm fileExistsAtPath:g.root] && [fm fileExistsAtPath:[save stringByAppendingPathComponent:@"main"]], "deleted, its save kept (%s)", why.UTF8String);
       CHECK([lib capsOf:g] == nil && [lib playTimeOf:g] == 0, "its state goes with it");
       put([home stringByAppendingPathComponent:@"Documents/save/main"], @"old single-game save");
+      CHECK(![fm fileExistsAtPath:[[lib saveDirFor:b user:@"0123456789abcdef0123456789abcdef"] stringByAppendingPathComponent:@"main"]], "the old single-game save is never copied to another user");
       NSString *bs = [lib saveDirFor:b]; CHECK([fm fileExistsAtPath:[bs stringByAppendingPathComponent:@"main"]], "bundled game: the old save copied once");
       put([bs stringByAppendingString:@".work/main"], @"working copy");
       CHECK([lib deleteSavesOf:b error:&why] && ![fm fileExistsAtPath:[bs stringByAppendingString:@".work"]], "delete saves, the working copy too (%s)", why.UTF8String);
@@ -179,6 +191,45 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
       const float *os = o.bytes, *cs = c.bytes; size_t on = o.length / sizeof(float), cn = c.length / sizeof(float);
       double o1 = pitch(os, w), o2 = pitch(os + on - w * 3, w), c1 = pitch(cs, w), c2 = pitch(cs + cn - w * 3, w);
       CHECK(o2 > o1 * 1.3 && c2 < c1 / 1.3, "open %.0f -> %.0f Hz, close %.0f -> %.0f Hz", o1, o2, c1, c2); }
+
+    // a save through Files (HearthSaves.m): export copies it, import keeps the old save first, refuses while the game runs, and a failed copy changes nothing
+    { NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID UUID].UUIDString], *why = nil, *kept = nil;
+      NSString *save = [d stringByAppendingPathComponent:@"Users/u/saves/0100ABF008968000/save"], *pick = [d stringByAppendingPathComponent:@"picked"];
+      NSString *(^text)(NSString *) = ^NSString *(NSString *p) { return [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil]; };
+      CHECK(!hearth_save_export(save, [d stringByAppendingPathComponent:@"tmp"], @"x", &why) && why, "no save: nothing to export");
+      put([save stringByAppendingPathComponent:@"main"], @"old");
+      NSString *out = hearth_save_export(save, [d stringByAppendingPathComponent:@"tmp"], @"Sword/Player", nil);
+      CHECK([out.lastPathComponent isEqual:@"Sword-Player"] && [text([out stringByAppendingPathComponent:@"main"]) isEqual:@"old"], "export: %s", out.UTF8String);
+      put([pick stringByAppendingPathComponent:@"main"], @"new");
+      CHECK(!hearth_save_import(pick, save, @"0100ABF008968000", @"0100abf008968000", NSDate.date, &kept, &why) && [text([save stringByAppendingPathComponent:@"main"]) isEqual:@"old"], "refused while the game runs");
+      put([pick stringByAppendingPathComponent:@"locked"], @"x"); chmod([pick stringByAppendingPathComponent:@"locked"].fileSystemRepresentation, 0);
+      CHECK(!hearth_save_import(pick, save, @"0100ABF008968000", nil, NSDate.date, &kept, &why) && [text([save stringByAppendingPathComponent:@"main"]) isEqual:@"old"]
+            && ![fm fileExistsAtPath:[save stringByAppendingString:@".importing"]] && !kept, "a failed copy leaves the old save: %s", why.UTF8String);
+      [fm removeItemAtPath:[pick stringByAppendingPathComponent:@"locked"] error:nil];
+      put([save stringByAppendingString:@".work/main"], @"stale");
+      CHECK(hearth_save_import(pick, save, @"0100ABF008968000", @"0100000000010000", [NSDate dateWithTimeIntervalSince1970:0], &kept, &why), "import: %s", why.UTF8String);
+      CHECK([text([save stringByAppendingPathComponent:@"main"]) isEqual:@"new"] && [text([kept stringByAppendingPathComponent:@"main"]) isEqual:@"old"]
+            && [kept hasPrefix:[save stringByAppendingString:@".before-import-1970"]], "the old save kept: %s", kept.UTF8String);
+      CHECK(![fm fileExistsAtPath:[save stringByAppendingString:@".work"]] && ![fm fileExistsAtPath:[save stringByAppendingString:@".replaced"]], "the old working copies are gone");
+      CHECK(!hearth_save_import([d stringByAppendingPathComponent:@"none"], save, @"0100ABF008968000", nil, NSDate.date, &kept, &why), "an empty pick is refused");
+      CHECK(!hearth_save_import(d, save, @"0100ABF008968000", nil, NSDate.date, &kept, &why) && [text([save stringByAppendingPathComponent:@"main"]) isEqual:@"new"], "a folder holding the save (Documents) is refused: %s", why.UTF8String);
+      put([save stringByAppendingString:@"/sub/x"], @"x");
+      CHECK(!hearth_save_import([save stringByAppendingPathComponent:@"sub"], save, @"0100ABF008968000", nil, NSDate.date, &kept, &why), "a folder inside the save is refused");
+      [fm removeItemAtPath:d error:nil]; }
+
+    // error history (HearthErrors.m): our sentences, a line per error, newest first, damaged lines skipped, tabs and line breaks in a name cannot split a line
+    { NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID UUID].UUIDString];
+      CHECK([hearth_error_message(@"2110-0001", YES) containsString:@"Online features are not available"] && [hearth_error_message(@"2110-0001", YES) hasSuffix:@"Error code 2110-0001"], "online sentence with its code");
+      CHECK(![hearth_error_message(@"", NO) containsString:@"Error code"] && [hearth_error_message(@"", NO) containsString:@"reported a problem"], "no code: the generic sentence alone");
+      CHECK(hearth_error_history(d, 10).count == 0, "no history yet");
+      hearth_error_record(d, @"0100000000030000", @"Old\tGame\nName", @"2002-0000", NO, [NSDate dateWithTimeIntervalSince1970:1000]);
+      put([d stringByAppendingPathComponent:@"Logs/errors.txt"], [[NSString stringWithContentsOfFile:[d stringByAppendingPathComponent:@"Logs/errors.txt"] encoding:NSUTF8StringEncoding error:nil] stringByAppendingString:@"garbage line\n"]);
+      hearth_error_record(d, @"0100000000030000", @"New", @"2110-0001", YES, [NSDate dateWithTimeIntervalSince1970:2000]);
+      NSArray<NSDictionary *> *h = hearth_error_history(d, 10);
+      CHECK(h.count == 2 && [h[0][@"code"] isEqual:@"2110-0001"] && [h[0][@"network"] boolValue] && [h[0][@"when"] timeIntervalSince1970] == 2000, "newest first: %s", h.description.UTF8String);
+      CHECK(h.count == 2 && [h[1][@"name"] isEqual:@"Old Game Name"] && ![h[1][@"network"] boolValue], "the name kept on one line: %s", h.count > 1 ? [h[1][@"name"] UTF8String] : "-");
+      CHECK(hearth_error_history(d, 1).count == 1, "limit");
+      [fm removeItemAtPath:d error:nil]; }
 
     printf("t_library: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;

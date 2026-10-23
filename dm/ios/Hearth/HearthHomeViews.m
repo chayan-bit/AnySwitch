@@ -89,17 +89,16 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 @end
 
 @implementation HearthTopBar {
-    UILabel *_player, *_clock, *_battery; UIImageView *_avatar, *_cell; NSDateFormatter *_fmt; NSTimer *_tick;
+    UILabel *_player, *_clock, *_battery; UIImageView *_cell; NSMutableArray<UIButton *> *_avatars; NSDateFormatter *_fmt; NSTimer *_tick;
 }
 - (instancetype)initWithFrame:(CGRect)f {
     if (!(self = [super initWithFrame:f])) return nil;
-    UIImageSymbolConfiguration *big = [UIImageSymbolConfiguration configurationWithPointSize:30 weight:UIImageSymbolWeightRegular];
-    _avatar = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:big]]; _avatar.tintColor = DmUI.accentText;
+    _avatars = [NSMutableArray array];
     _player = [UILabel new]; _player.font = [DmUI font:20 weight:UIFontWeightSemibold]; _player.textColor = DmUI.text;
     _clock = [UILabel new]; _clock.font = tabular([DmUI font:22 weight:UIFontWeightSemibold]); _clock.textColor = DmUI.text; _clock.textAlignment = NSTextAlignmentRight;
     _battery = [UILabel new]; _battery.font = tabular([DmUI font:17 weight:UIFontWeightMedium]); _battery.textColor = DmUI.sub; _battery.textAlignment = NSTextAlignmentRight;
     _cell = [UIImageView new]; _cell.tintColor = DmUI.sub;
-    for (UIView *v in @[_avatar, _player, _clock, _battery, _cell]) [self addSubview:v];
+    for (UIView *v in @[_player, _clock, _battery, _cell]) [self addSubview:v];
     _fmt = [NSDateFormatter new]; _fmt.locale = NSLocale.currentLocale; [_fmt setLocalizedDateFormatFromTemplate:@"jmm"];
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     for (NSNotificationName n in @[UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification])
@@ -110,7 +109,20 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     return self;
 }
 - (void)dealloc { [_tick invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
-- (void)setPlayer:(NSString *)name { _player.text = name; [self setNeedsLayout]; }
+- (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names {
+    for (UIButton *b in _avatars) [b removeFromSuperview];
+    [_avatars removeAllObjects];
+    for (NSUInteger i = 0; i < pictures.count; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom]; [b setImage:pictures[i] forState:UIControlStateNormal];
+        b.imageView.contentMode = UIViewContentModeScaleAspectFill; b.clipsToBounds = YES; b.layer.cornerRadius = 18; b.tag = (NSInteger)i;
+        b.accessibilityLabel = i < names.count ? names[i] : nil;
+        [b addTarget:self action:@selector(avatarTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:b]; [_avatars addObject:b];
+    }
+    _player.text = names.count == 1 ? names[0] : nil;   // several users: their pictures say who is here
+    [self setNeedsLayout];
+}
+- (void)avatarTapped:(UIButton *)b { if (self.onUser) self.onUser(b.tag); }
 - (void)refresh {
     _clock.text = [_fmt stringFromDate:NSDate.date];
     float level = UIDevice.currentDevice.batteryLevel; UIDeviceBatteryState st = UIDevice.currentDevice.batteryState;
@@ -125,8 +137,8 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat h = self.bounds.size.height, w = self.bounds.size.width;
-    _avatar.frame = CGRectMake(0, (h - 36) / 2, 36, 36);
-    _player.frame = CGRectMake(48, 0, w / 2 - 48, h);
+    CGFloat ax = 0; for (UIButton *b in _avatars) { b.frame = CGRectMake(ax, (h - 36) / 2, 36, 36); ax += 44; }
+    _player.frame = CGRectMake(ax + 4, 0, MAX(0, w / 2 - ax - 4), h);
     [_battery sizeToFit]; [_clock sizeToFit];
     CGFloat x = w;
     if (!_cell.hidden) { x -= 34; _cell.frame = CGRectMake(x, (h - 22) / 2, 34, 22); _cell.contentMode = UIViewContentModeScaleAspectFit; }
