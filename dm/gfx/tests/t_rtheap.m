@@ -80,6 +80,9 @@ int main(int argc, char **argv) { @autoreleasepool {
     uint32_t red = texel(&A, W / 2, H / 2), blue = texel(&C, W / 2, H / 2);
     EXPECT("A still red after B and E were created (not zeroed)", 0x3c0, red);   // R11G11B10F 1, 0, 0
     EXPECT("C still blue after B and E were created", 0x1e0u << 22, blue);
+    // Another description reads the shared bytes as plain texels, as on the Switch: heap members have no lossless compression (a compressed A kept its own encoding there, and E read garbage)
+    EXPECT("heap members are not losslessly compressed", 0, a.allowGPUOptimizedContents || e.allowGPUOptimizedContents);
+    EXPECT("E (A's storage as R32F) reads A's red texel bits", 0x3c0, texel(&E, W / 2, H / 2));
     // Disjoint guest ranges keep their content through writes to each other: clear C green, A stays red
     chain c2 = chain_new(); clear_rt(&c2, &C, 0, 1, 0); run(&c2);
     EXPECT("A unchanged by a clear of C", red, texel(&A, W / 2, H / 2));

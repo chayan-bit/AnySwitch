@@ -103,7 +103,7 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once | system |
 | System | Game language | `DM_LANG` | the Switch languages | en-US | restart | both |
 | System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart | system |
-| Appearance | Appearance | `DM_APPEARANCE` | system, light, dark | system (the iPad's own) | at once | system |
+| Appearance | Appearance | `DM_APPEARANCE` | system, light, dark | system (the device's own) | at once | system |
 
 Everything else that the host reads from a `DM_*` variable stays environment-only: logging, traces and dumps, test hooks, file paths, and the per-game compatibility switches that a game profile sets.
 

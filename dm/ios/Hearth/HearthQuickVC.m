@@ -12,7 +12,7 @@
 enum { RowVolume, RowBrightness, RowMode, RowOutput, RowSleep, RowCount };
 
 @implementation HearthQuickVC {
-    UIView *_dim, *_panel; UILabel *_head, *_battery; NSArray<DmRowView *> *_rows; DmFocusView *_ring; AVRoutePickerView *_route;
+    UIView *_dim, *_panel; UIScrollView *_scroll; UILabel *_head, *_battery; NSArray<DmRowView *> *_rows; DmFocusView *_ring; AVRoutePickerView *_route;
     DmSetting *_bright; NSInteger _row; BOOL _closing, _baselined, _ringShown; uint64_t _prev; DmRepeat *_repeat;
 }
 
@@ -26,27 +26,28 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
     [_dim addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(close)]];
     _panel = [UIView new]; _panel.layer.cornerRadius = 26; _panel.layer.cornerCurve = kCACornerCurveContinuous;
     _panel.layer.shadowOpacity = 0.28; _panel.layer.shadowRadius = 26; _panel.layer.shadowOffset = CGSizeMake(-4, 8);   // a card floating at an even distance from the screen's edges, its four corners rounded
-    _head = [UILabel new]; _head.text = @"Quick Settings"; _head.font = [DmUI font:28 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
-    _battery = [UILabel new]; _battery.font = [DmUI font:16 weight:UIFontWeightMedium]; _battery.textColor = DmUI.sub;
+    _head = [UILabel new]; _head.text = @"Quick Settings"; _head.font = [DmUI font:_compact ? 22 : 28 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
+    _battery = [UILabel new]; _battery.font = [DmUI font:_compact ? 13 : 16 weight:UIFontWeightMedium]; _battery.textColor = DmUI.sub;
     _bright = [DmSetting settingFromDictionary:@{@"key": @"HEARTH_BRIGHTNESS", @"label": @"Brightness", @"detail": @"The screen's brightness.", @"type": @"slider",
                                                  @"min": @0, @"max": @1, @"step": @0.05, @"scale": @100, @"suffix": @"%", @"default": @"0.5"} error:nil];
-    DmRowView *vol = [[DmRowView alloc] initWithSetting:[st settingForKey:@"DM_VOLUME"] kind:DmItemSetting compact:NO];
-    DmRowView *bri = [[DmRowView alloc] initWithSetting:_bright kind:DmItemSetting compact:NO];
-    DmRowView *mode = [[DmRowView alloc] initWithSetting:[st settingForKey:@"DM_OPMODE"] kind:DmItemSetting compact:NO];
-    DmRowView *out = [[DmRowView alloc] initWithAction:@"Audio output" detail:@"Speaker, headphones or AirPlay." compact:NO];
-    DmRowView *slp = [[DmRowView alloc] initWithAction:@"Sleep" detail:@"Turns the screen black. A touch, a key or a button wakes it." compact:NO];
+    DmRowView *vol = [[DmRowView alloc] initWithSetting:[st settingForKey:@"DM_VOLUME"] kind:DmItemSetting compact:_compact];
+    DmRowView *bri = [[DmRowView alloc] initWithSetting:_bright kind:DmItemSetting compact:_compact];
+    DmRowView *mode = [[DmRowView alloc] initWithSetting:[st settingForKey:@"DM_OPMODE"] kind:DmItemSetting compact:_compact];
+    DmRowView *out = [[DmRowView alloc] initWithAction:@"Audio output" detail:@"Speaker, headphones or AirPlay." compact:_compact];
+    DmRowView *slp = [[DmRowView alloc] initWithAction:@"Sleep" detail:@"Turns the screen black. A touch, a key or a button wakes it." compact:_compact];
     _rows = @[vol, bri, mode, out, slp];
     _route = [AVRoutePickerView new]; _route.activeTintColor = DmUI.accentText; _route.tintColor = DmUI.sub; _route.prioritizesVideoDevices = NO;
     [out addSubview:_route];
-    _ring = [DmFocusView new]; _ring.radius = 19;
+    _ring = [DmFocusView new]; _ring.radius = _compact ? 14 : 19;
+    _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO; _scroll.alwaysBounceVertical = NO; _scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;   // the rows scroll where a short screen cannot hold them all
     [self.view addSubview:_dim]; [self.view addSubview:_panel];
-    for (UIView *v in @[_head, _battery]) [_panel addSubview:v];
+    for (UIView *v in @[_head, _battery, _scroll]) [_panel addSubview:v];
     for (DmRowView *r in _rows) {
         [r addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(rowTapped:)]];
         if (r.slider) [r.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-        [_panel addSubview:r];
+        [_scroll addSubview:r];
     }
-    [_panel addSubview:_ring];
+    [_scroll addSubview:_ring];
     __weak HearthQuickVC *w = self; dm_on_style(_panel, ^{ HearthQuickVC *s = w; if (s) s->_panel.backgroundColor = DmUI.panel; });
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:UIDeviceBatteryLevelDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:UIScreenBrightnessDidChangeNotification object:nil];
@@ -76,24 +77,30 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; UIEdgeInsets si = self.view.safeAreaInsets;
-    CGFloat pw = MIN(480, MAX(380, b.size.width * 0.38)), pad = 28, m = QUICK_INSET;
+    CGFloat pw = _compact ? MIN(340, b.size.width * 0.45) : MIN(480, MAX(380, b.size.width * 0.38)), pad = _compact ? 16 : 28, m = _compact ? 12 : QUICK_INSET, rowGap = _compact ? 8 : 12, glow = 8;
     _dim.frame = b;
     CGAffineTransform t = _panel.transform; _panel.transform = CGAffineTransformIdentity;
     _panel.frame = CGRectMake(b.size.width - MAX(si.right, 0) - m - pw, MAX(si.top, 0) + m, pw, b.size.height - MAX(si.top, 0) - MAX(si.bottom, 0) - 2 * m);   // the same gap above, below and at the right
-    _panel.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_panel.bounds cornerRadius:26].CGPath;
+    _panel.layer.cornerRadius = _compact ? 20 : 26;
+    _panel.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_panel.bounds cornerRadius:_panel.layer.cornerRadius].CGPath;
     _panel.transform = t;
-    CGFloat w = pw - pad * 2, y = pad;
-    _head.frame = CGRectMake(pad, y, w, 40); y += 42;
-    _battery.frame = CGRectMake(pad, y, w, 22); y += 34;
-    for (DmRowView *r in _rows) { CGFloat h = [r heightForWidth:w]; r.frame = CGRectMake(pad, y, w, h); y += h + 12; }
+    CGFloat w = pw - pad * 2, y = _compact ? pad - 4 : pad, hh = _compact ? 30 : 40, bh = _compact ? 18 : 22;
+    _head.frame = CGRectMake(pad, y, w, hh); y += hh + 2;
+    _battery.frame = CGRectMake(pad, y, w, bh); y += bh + (_compact ? 8 : 12);
+    _scroll.frame = CGRectMake(0, y - glow, pw, _panel.bounds.size.height - y + glow);   // starts a glow's width above the first row, which the focus ring needs
+    CGFloat ry = glow;
+    for (DmRowView *r in _rows) { CGFloat rh = [r heightForWidth:w]; r.frame = CGRectMake(pad, ry, w, rh); ry += rh + rowGap; }
+    _scroll.contentSize = CGSizeMake(pw, ry - rowGap + glow + pad);
     DmRowView *out = _rows[RowOutput]; _route.frame = CGRectMake(out.bounds.size.width - 64, (out.bounds.size.height - 44) / 2, 44, 44);
     [self placeRing:NO];
 }
 - (void)placeRing:(BOOL)animated {
+    static const CGFloat glow_ = 8;
     CGRect f = CGRectInset(_rows[(NSUInteger)_row].frame, -3, -3);
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) [UIView animateWithDuration:0.13 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:^{ self->_ring.frame = f; } completion:nil];
     else _ring.frame = f;
     _ring.active = _ringShown;
+    [_scroll scrollRectToVisible:CGRectInset(f, 0, -glow_) animated:animated];   // the focused row stays on screen
 }
 
 #pragma mark - Changes

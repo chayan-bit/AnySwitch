@@ -1,6 +1,7 @@
 // The pieces of Hearth's Home screen (HearthHomeVC.m): a game tile, a round system button, the top bar with the users, the clock and the battery
 #import <UIKit/UIKit.h>
 #import "HearthLibrary.h"
+#import "HearthTheme.h"
 
 // A full-screen layer (Home over the game, a sheet over Home) hides the views it covers from VoiceOver and the UI tree (accessibilityViewIsModal alone
 // leaves them in the tree); covered NO before the layer goes gives them back
@@ -9,9 +10,7 @@ void hearth_ax_cover(UIView *layer, BOOL covered);
 NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows when its game cannot start ("Rebuild needed", "Needs signing"), nil when it can
 
 @interface HearthTile : UIControl
-- (instancetype)initWithGame:(HearthGame *)g size:(CGFloat)size;   // size: the art's edge (hearth_tile_size of the screen's height)
-+ (CGFloat)nameHeight;    // room above the art for the focused game's name
-+ (CGFloat)stateHeight;   // room below it for the state line
+- (instancetype)initWithGame:(HearthGame *)g metrics:(HearthMetrics)m;   // m.tile: the art's edge; m.nameH and m.stateH: room above the art for the focused game's name and below it for the state line
 @property (nonatomic, readonly) HearthGame *game;
 @property (nonatomic, readonly) CGFloat size;
 @property (nonatomic, readonly) UIView *art;   // the rounded icon (the launch zoom starts from it)
@@ -23,10 +22,12 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 
 @interface HearthRoundButton : UIControl
 - (instancetype)initWithSymbol:(NSString *)symbol label:(NSString *)label;
+- (void)setMetrics:(HearthMetrics)m;   // the size, the symbol's size and the corner radius of this screen
 @end
 
 @interface HearthTopBar : UIView
 - (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names;   // the users' pictures as circles at the left (one user: with the name)
 @property (nonatomic, copy) void (^onUser)(NSInteger index);   // a picture was tapped
 - (void)setNotice:(NSString *)notice;   // an amber line left of the clock (Hearth's signing ends soon), nil for none
+- (void)setMetrics:(HearthMetrics)m;   // avatar size and fonts of this screen
 @end

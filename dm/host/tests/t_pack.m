@@ -3,6 +3,7 @@
 // The parts a caller may supply itself (DM_ROMFS, DM_CODE) and, built with EMBED_TITLE (t_pack_embedded), a pack without a code dylib booted from the code this executable embeds.
 // Run: make -C dm/host/tests pack-check (t_pack <folder with a valid game.json> <its title id>)
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #include <sys/wait.h>
 #include "dm.h"
 #include "dm_abi.h"
@@ -78,6 +79,18 @@ static void boot_cases(void) {
     sh("mkdir -p '%s/aoc/1' '%s/font' '%s/pso/macos' && : > '%s/pso/macos/pso_archive.metallib'", root, root, root, root);
     missing = dm_boot_env(root);
     check("defaults: present optional parts", missing == 1 && env_is("DM_ROMFS", "romfs.dmstore") && env_is("DM_AOC_DIR", "aoc") && env_is("DM_FONT_DIR", "font") && env_is("DM_PSO_ARCHIVE", "pso/macos/pso_archive.metallib") && env_is("DM_PSO_FLEX_ARCHIVE", NULL), NULL);
+    // One file per GPU architecture: this GPU's own file wins over the plain one, another GPU's file is never taken
+    NSString *arch = MTLCreateSystemDefaultDevice().architecture.name; char rel[300];
+    sh("mkdir -p '%s/pso/macos' && : > '%s/pso/macos/pso_flex.metallib' && : > '%s/pso/macos/pso_flex_applegpu_other.metallib'", root, root, root);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    dm_boot_env(root);
+    check("per-GPU part: another GPU's file is not taken", env_is("DM_PSO_FLEX_ARCHIVE", "pso/macos/pso_flex.metallib"), getenv("DM_PSO_FLEX_ARCHIVE"));
+    snprintf(rel, sizeof rel, "pso/macos/pso_flex_%s.metallib", arch.UTF8String);
+    sh("[ -z '%s' ] || : > '%s/%s'", arch.UTF8String, root, rel);
+    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
+    dm_boot_env(root);
+    check("per-GPU part: this GPU's file wins over the plain one", arch.length && env_is("DM_PSO_FLEX_ARCHIVE", rel), getenv("DM_PSO_FLEX_ARCHIVE"));
+    sh("rm -f '%s/pso/macos/pso_flex'*.metallib", root);
     for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
     manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI + 1, DM_SHADER_ABI, title);
     check("dm_boot_game refuses a stale pack and boots nothing", dm_boot_game(root) == 1 && !preload_argc && env_is("DM_CODE", NULL), NULL);

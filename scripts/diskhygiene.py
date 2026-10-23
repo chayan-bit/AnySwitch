@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Keep AnySwitch builds and device installs from filling the Mac's disk (docs/development.md "Disk hygiene").
 
-  diskhygiene.py install --device <udid> <app> [--bundle <id>]   devicectl install, then drop that bundle's CoreDevice delta cache (only after a success)
+  diskhygiene.py install --device <udid> <app> [--bundle <id>]   devicectl install, then drop that bundle's CoreDevice delta cache (only after a success),
+                                                                 and record which .app the device has now (~/.config/anyswitch/installed.json, read by resign.py)
   diskhygiene.py clean-delta <bundle id>                         drop one bundle's CoreDevice delta cache (com.chayan.* only; a rebuildable cache)
   diskhygiene.py prune <parent> [--keep 2] [--sub build] [-n]    keep the newest N per-step build folders under <parent>, the rest go to ~/.Trash
   diskhygiene.py retire-ipa <build dir>                          after sign/ is signed and verifies, the unsigned app.ipa (same bytes) goes to ~/.Trash
   diskhygiene.py clone <src> <dst>                               APFS clone (cp -c) of a file or folder, a plain copy on another volume
   diskhygiene.py gpu-snapshot <file> / gpu-clean <file>          Metal's gpuarchiver temp: remove only the entries made since the snapshot
 Tests: scripts/tests/test_diskhygiene.py"""
-import argparse, os, plistlib, shutil, subprocess, sys, time
+import argparse, json, os, plistlib, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 DELTA_ROOT = Path.home() / 'Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas'
 TRASH = Path(os.environ.get('DM_TRASH') or Path.home() / '.Trash')   # DM_TRASH: another trash folder (tests, demos)
 OWN_BUNDLE_PREFIX = 'com.chayan.'
 PROTECTED = {'backups', 'dump', 'extracted'}   # never pruned, whatever the caller passes
+LEDGER = Path(os.environ.get('ANYSWITCH_CONF') or Path.home() / '.config/anyswitch') / 'installed.json'   # per machine, never in the repo
 GPU_QUIET_SECS = 30   # a new gpuarchiver entry touched more recently than this may belong to a build still running
 
 
@@ -76,13 +78,42 @@ def app_bundle_id(app):
     with open(Path(app) / 'Info.plist', 'rb') as f: return plistlib.load(f)['CFBundleIdentifier']
 
 
-def install_app(device, app, bundle_id=None, run=subprocess.run, delta_root=DELTA_ROOT, out=print):
-    """devicectl install of the .app, then the bundle's delta cache is deleted. A failed install keeps the cache and returns devicectl's exit code."""
+def install_app(device, app, bundle_id=None, run=subprocess.run, delta_root=DELTA_ROOT, out=print, ledger=None):
+    """devicectl install of the .app, then the bundle's delta cache is deleted. A failed install keeps the cache and returns devicectl's exit code.
+    With a ledger file, a success also records which .app the device has now (resign.py re-signs that same build)."""
     bundle_id = bundle_id or app_bundle_id(app)
-    r = run(['xcrun', 'devicectl', 'device', 'install', 'app', '--device', device, str(app)])
-    if r.returncode: return r.returncode
+    with tempfile.TemporaryDirectory() as t:
+        js = Path(t) / 'install.json'
+        r = run(['xcrun', 'devicectl', 'device', 'install', 'app', '--device', device, str(app), '--json-output', str(js)])
+        if r.returncode: return r.returncode
+        url = installed_url(js, bundle_id)
     out(f'diskhygiene: installed {bundle_id}; CoreDevice delta cache freed {clean_delta(bundle_id, delta_root) / 2**20:.0f} MB')
+    if ledger: record_install(device, bundle_id, app, url, ledger)
     return 0
+
+
+def installed_url(js, bundle_id):
+    """The bundle path devicectl reports for the installed app (a new one with every install), or None"""
+    try: apps = json.loads(Path(js).read_text())['result']['installedApplications']
+    except (OSError, ValueError, KeyError, TypeError): return None
+    return next((a.get('installationURL') for a in apps if a.get('bundleID') == bundle_id), None)
+
+
+def profile_uuid(app):
+    """UUID of the .app's embedded provisioning profile, or None"""
+    r = subprocess.run(['security', 'cms', '-D', '-i', str(Path(app) / 'embedded.mobileprovision')], capture_output=True)
+    try: return plistlib.loads(r.stdout).get('UUID') if r.returncode == 0 else None
+    except plistlib.InvalidFileException: return None
+
+
+def record_install(device, bundle_id, app, url, ledger=LEDGER):
+    """<device>/<bundle id> -> the installed .app, its bundle path on the device and its profile UUID (written atomically); returns the record"""
+    ledger = Path(ledger); ledger.parent.mkdir(parents=True, exist_ok=True)
+    old = json.loads(ledger.read_text()) if ledger.is_file() else {}
+    rec = {'app': str(Path(app).resolve()), 'url': url, 'profile': profile_uuid(app), 'time': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+    tmp = ledger.with_suffix('.tmp')
+    tmp.write_text(json.dumps({**old, f'{device}/{bundle_id}': rec}, indent=1, sort_keys=True) + '\n'); os.replace(tmp, ledger)
+    return rec
 
 
 def retire_ipa(build, run=subprocess.run, trash=TRASH):
@@ -138,7 +169,7 @@ def main(argv=None):
     s = sub.add_parser('gpu-snapshot'); s.add_argument('file')
     s = sub.add_parser('gpu-clean'); s.add_argument('file'); s.add_argument('--quiet-secs', type=int, default=GPU_QUIET_SECS)
     a = ap.parse_args(argv)
-    if a.cmd == 'install': return install_app(a.device, a.app, a.bundle)
+    if a.cmd == 'install': return install_app(a.device, a.app, a.bundle, ledger=LEDGER)
     if a.cmd == 'clean-delta': print(f'diskhygiene: freed {clean_delta(a.bundle) / 2**20:.0f} MB')
     elif a.cmd == 'prune':
         for p in prune_steps(a.parent, a.keep, a.sub, dry_run=a.dry_run): print(f'diskhygiene: {"would move" if a.dry_run else "to ~/.Trash:"} {p}')
