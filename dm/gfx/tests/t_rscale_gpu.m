@@ -1,5 +1,5 @@
 // Internal resolution on the GPU (usage: t_rscale_gpu <scale>, run at 1, 1.5 and 2): real command chains through the production replay, each case drawn twice, into a texture
-// the session scales (a GPU-only pool) and into a reference that stays 1x (a CPU-visible pool, nvn_rs_eligible "cpu"), then both read back as the guest reads them (ReadTexels)
+// the session scales (a GPU-only pool) and into a reference kept at 1x (its storage listed in g_rs_never, as after a demotion), then both read back as the guest reads them (ReadTexels)
 // and compared: exactly where the result is scale-independent, within 2/255 where the scaled one samples a smooth gradient at other points (ReadTexels takes the host texel nearest
 // each guest texel's centre). The shaders do what Ryujinx's translated shaders do with support_buffer.render_scale: FragCoord / render_scale[0], TexelFetchScale, TextureSizeUnscale
 #define nvn_game_fps nvn_game_fps_mtl_default
@@ -20,9 +20,12 @@ static int fail, count;
 enum { W = 64, H = 48 };   // eligible at any scale: not square after 64-byte alignment, not 16:9 below 360 lines
 static float t_s;
 static pool_t t_gpu = {.flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED}, t_cpu = {.flags = NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+// scaled: 1 a GPU-only pool, 2 a CPU-visible pool (both created at the session scale), 0 the 1x reference (CPU-visible pool, kept 1x through g_rs_never)
 static tex_t tex(int scaled, int w, int h, int format, int flags) {
-    static uint64_t ser = 70000; static int64_t off; tex_t t = {.magic = MAGIC('T', 'E', 'X', 0), .serial = ser++, .pool = scaled ? &t_gpu : &t_cpu, .off = off += 0x100000};
-    t.d.width = w; t.d.height = h; t.d.depth = t.d.samples = t.d.levels = 1; t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = format; t.d.flags = flags; return t;
+    static uint64_t ser = 70000; static int64_t off; tex_t t = {.magic = MAGIC('T', 'E', 'X', 0), .serial = ser++, .pool = scaled == 1 ? &t_gpu : &t_cpu, .off = off += 0x100000};
+    t.d.width = w; t.d.height = h; t.d.depth = t.d.samples = t.d.levels = 1; t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = format; t.d.flags = flags;
+    if (!scaled) { alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t.pool; ak.off = t.off; ak.d = t.d; nvn_hm_put(&g_rs_never, &ak, (void *)(uintptr_t)NVN_RS_CPU); }
+    return t;
 }
 static int reg(const tex_t *t) { static int id = 1500; mtl_reg_tex(id, t, NULL); return id++; }
 // Command chain helpers (as t_xv.m)
@@ -104,8 +107,19 @@ int main(int argc, char **argv) { @autoreleasepool {
     tex_t a = tex(1, W, H, NVN_FORMAT_RGBA8, 0), r = tex(0, W, H, NVN_FORMAT_RGBA8, 0);
     both(b_grad, &a, 0, &r, 0);
     EXPECT("scaled target: host width ceil(64 S)", nvn_rs_host(W, t_s), tex_mtl(&a).width); EXPECT("scaled target: host height ceil(48 S)", nvn_rs_host(H, t_s), tex_mtl(&a).height);
-    EXPECT("reference in a CPU-visible pool stays 1x", W, tex_mtl(&r).width);
+    EXPECT("reference kept at 1x", W, tex_mtl(&r).width);
     EXPECT("FragCoord gradient: ReadTexels within 2/255 of 1x", 1, maxdiff(&a, &r, 0, 0, W, H) <= 2);
+    // A render target in a pool the CPU can access (Super Mario Odyssey keeps its 1600x900 frame and 150 more there): the CPU reaches its texels only through ReadTexels, copies
+    // and the CPU-write tracking, all scale-aware, so it is scaled like one in a GPU-only pool. Guest bytes copied in from a buffer (copy_b2t) then demote it to 1x, exactly
+    { tex_t cv = tex(2, W, H, NVN_FORMAT_RGBA8, 0); chain c = chain_new(); b_grad(&c, &cv, 0); run(&c);
+      EXPECT("CPU-visible pool target: host width ceil(64 S)", nvn_rs_host(W, t_s), tex_mtl(&cv).width);
+      EXPECT("CPU-visible pool target: ReadTexels within 2/255 of 1x", 1, maxdiff(&cv, &r, 0, 0, W, H) <= 2);
+      uint32_t *src = NULL; if (posix_memalign((void **)&src, getpagesize(), (size_t)W * H * 4)) abort(); for (int i = 0; i < W * H; i++) src[i] = 0xff000000u | (uint32_t)i * 2654435761u >> 8;
+      mtl_pool_add(src, (size_t)W * H * 4);
+      chain d = chain_new(); p_copy_b2t x = {.src = (uint64_t)(uintptr_t)src, .tex = &cv, .r = {0, 0, 0, W, H, 1}}; emit(&d, OP_COPY_B2T, &x, sizeof x); run(&d);
+      uint32_t *p = (uint32_t *)rd(&cv, 0, 0, W, H, 4); int bad = 0; for (int i = 0; i < W * H; i++) bad += p[i] != src[i]; free(p);
+      EXPECT("CPU-visible pool target, guest bytes copied in: 1x after the copy", 1, rs_of(tex_mtl(&cv)) == 1.0f);
+      EXPECT("CPU-visible pool target, guest bytes copied in: texels off", 0, bad); }
     // Full-screen texel fetch of a same-size target (the -t_s path): one host texel per host pixel, so the copy equals its source
     tex_t b = tex(1, W, H, NVN_FORMAT_RGBA8, 0), rb = tex(0, W, H, NVN_FORMAT_RGBA8, 0);
     both(b_fetch, &b, reg(&a), &rb, reg(&r));
