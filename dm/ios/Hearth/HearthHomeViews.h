@@ -1,4 +1,4 @@
-// The pieces of Hearth's Home screen (HearthHomeVC.m): a game tile, a round system button, the top bar with the player, the clock and the battery
+// The pieces of Hearth's Home screen (HearthHomeVC.m): a game tile, a round system button, the top bar with the users, the clock and the battery
 #import <UIKit/UIKit.h>
 #import "HearthLibrary.h"
 #import "HearthTheme.h"
@@ -21,6 +21,7 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @end
 
 @interface HearthTopBar : UIView
-- (void)setPlayer:(NSString *)name;
+- (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names;   // the users' pictures as circles at the left (one user: with the name)
+@property (nonatomic, copy) void (^onUser)(NSInteger index);   // a picture was tapped
 - (void)setMetrics:(HearthMetrics)m;   // avatar size and fonts of this screen
 @end

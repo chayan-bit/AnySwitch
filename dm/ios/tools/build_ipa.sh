@@ -25,7 +25,7 @@ DM=$(cd .. && pwd)
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
 cpc() { cp -c "$@" 2> /dev/null || cp "$@"; }   # copy as an APFS clone (no extra disk on the same volume), a plain copy where cloning is refused
 # Metal's pipeline compiler (metal-tt) leaves temp entries in the per-user gpuarchiver cache (13 GB once): when this build ends, remove the ones it made, never the others (scripts/diskhygiene.py)
-HYG=$DM/../scripts/diskhygiene.py; GPU_SNAP=$(mktemp -t dm_gpusnap) && python3 "$HYG" gpu-snapshot "$GPU_SNAP" && trap 'python3 "$HYG" gpu-clean "$GPU_SNAP"; rm -f "$GPU_SNAP"' EXIT
+HYG=$DM/../scripts/diskhygiene.py; GPU_SNAP=$(mktemp -t dm_gpusnap.XXXXXX) && python3 "$HYG" gpu-snapshot "$GPU_SNAP" && trap 'python3 "$HYG" gpu-clean "$GPU_SNAP"; rm -f "$GPU_SNAP"' EXIT
 ROMFS_MODE=${IPA_ROMFS:-store}   # store (default): a chunk store beside the IPA; 1: loose files in the IPA; 0: none
 case $ROMFS_MODE in store|1|0) ;; *) die "IPA_ROMFS must be store, 1 or 0, not $ROMFS_MODE" ;; esac
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
@@ -126,7 +126,7 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
   if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cpc "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else
-    [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
+    [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" "$GAME" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
     PL=(); for p in "$PAIRS_TSV" "$GD/shader_pairs.tsv"; do [ -f "$p" ] && PL+=("$p"); done
     t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"

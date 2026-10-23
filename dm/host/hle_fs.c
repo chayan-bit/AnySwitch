@@ -1,6 +1,7 @@
 // nn::fs: on the real device it goes through the fsp-srv service; the host connects directly to the Mac file system. Mount name → host directory:
 //   rom   → $DM_ROMFS (default $DM_ROOT/romfs, read-only; the game parses the storage blocks in it itself); when $DM_ROMFS names a file, it is a chunk store (romstore.h) read through romstore.c
-//   save  → $DM_SAVE (must be set, pointing to this run's copy of the standard save save_ref; if unset, report a failure and abort)
+//   save  → $DM_SAVE (must be set, pointing to this run's copy of the standard save save_ref; if unset, report a failure and abort): the preselected user's save;
+//           another user's (the game's own user selector, hle_account.c) → $DM_SAVE_ROOT/<uid, 32 lowercase hex>/saves/<program id, 16 uppercase hex>/save, Hearth's layout (no DM_SAVE_ROOT: the mount fails)
 //   temp  → $DM_TEMP (default $DM_ROOT/run/platform/temp)
 // Paths look like "rom:/data/x". FileHandle / DirectoryHandle are 8 bytes passed by value, here they store the host fd / DIR*.
 // Struct layout follows the public Horizon ABI: DirectoryEntry = {char name[0x301], pad[3], s8 type, pad[3], s64 size} (0x310 bytes).
@@ -434,10 +435,20 @@ HLE_FORCE("_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE",
 HLE_FORCE("_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", "fsp-srv; another program's save data: none", Result, h_fs_MountSaveRO, const char *name, uint64_t app, const void *uid) {
     (void)uid; LOG("[RED] fs read-only mount of another program's save data %s: program %016llx, the host has none", name, (unsigned long long)app); return 0x7d402u;   // fs ResultTargetNotFound
 }
-HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv; save data → host directory (single user)", Result, h_fs_MountSave, const char *name, const void *uid) {
-    (void)uid;
+int dm_account_is_preselected(const void *uid);   // hle_account.c
+// Another user's save directory (created with its parents; the save itself is created at mount, as for the first user): 0 and a logged reason when it cannot be
+static int other_user_save(const uint64_t *uid, char *out, size_t n) {
+    const char *root = getenv("DM_SAVE_ROOT");
+    if (!root || !*root) { LOG("[RED] fs: save data of another user %016llx%016llx, but DM_SAVE_ROOT is not set", (unsigned long long)uid[0], (unsigned long long)uid[1]); return 0; }
+    snprintf(out, n, "%s/%016llx%016llx/saves/%016llX", root, (unsigned long long)uid[0], (unsigned long long)uid[1], (unsigned long long)g_profile.program_id);
+    for (char *s = out + 1; (s = strchr(s, '/')); s++) { *s = 0; mkdir(out, 0755); *s = '/'; }
+    if (mkdir(out, 0755) && errno != EEXIST) { LOG("[RED] fs: cannot create %s (errno=%d)", out, errno); return 0; }
+    strlcat(out, "/save", n); LOG("fs: save data of another user: %s", out); return 1;
+}
+HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv; save data → host directory: DM_SAVE for the preselected user, DM_SAVE_ROOT/<uid>/... for another", Result, h_fs_MountSave, const char *name, const void *uid) {
     // No default directory: silently landing on a directory with no characters distorts the "character select" measurement (this once caused a misjudgment). Runs always use a fresh copy of save_ref
-    const char *d = getenv("DM_SAVE");
+    const char *d = getenv("DM_SAVE"); char other[1024];
+    if (!dm_account_is_preselected(uid)) { if (!other_user_save(uid, other, sizeof other)) return 0x7d402u; d = other; }   // fs ResultTargetNotFound
     if (!d) die("DM_SAVE is not set: point it at a writable copy of a save directory");
     char dd[1024]; strlcpy(dd, d, sizeof dd); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;   // strip trailing slashes (.work / .new are appended at the same level)
     return mount_ex(name, dd, 0, 1, NULL);

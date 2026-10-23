@@ -3,13 +3,14 @@
 Usage and examples: docs/dev-control.md. A checkpoint is the game's own save (user data derived from the game): it lives only under data/, never in git.
 
   checkpoint.py export <title> <name> --mac <DM_SAVE dir>                     the committed save of a Mac run (not <dir>.work)
-  checkpoint.py export <title> <name> --device <udid> --bundle <bundle id>    Documents/save of the app (quit the app first)
+  checkpoint.py export <title> <name> --device <udid> --bundle <bundle id> [--uid U]   the title's save in Hearth (quit the app first)
   checkpoint.py import <title> <name> --mac <DM_SAVE dir>                     replaces the directory; launch the host with DM_SAVE=<dir>
-  checkpoint.py import <title> <name> --device <udid> --bundle <bundle id> [--launch] [--keep-extra]
+  checkpoint.py import <title> <name> --device <udid> --bundle <bundle id> [--uid U] [--launch] [--keep-extra]
   checkpoint.py list [<title>] | verify <title> <name>
 
 The Mac host and the iOS app keep a save the same way (dm/host/hle_fs.c): DM_SAVE is the committed directory, swapped in whole on every Commit, and a
-mount clears the leftover <dir>.work / <dir>.new. The app's DM_SAVE is Documents/save (dm/ios/Sources/main.m). So a checkpoint is that directory, byte for byte.
+mount clears the leftover <dir>.work / <dir>.new. Hearth's DM_SAVE is Documents/Users/<uid>/saves/<title id>/save (dm/ios/Hearth/HearthLibrary.m), the uid being
+Hearth's first user unless --uid names another. So a checkpoint is that directory, byte for byte.
 One caveat: a guest name that collides on the case-insensitive host file system is kept in an extended attribute (org.d2rmobile.guest-name), and devicectl
 does not carry extended attributes; such a checkpoint is refused for the device rather than installed wrong."""
 import argparse
@@ -26,13 +27,21 @@ import tempfile
 
 ROOT = Path(os.environ.get('DM_CHECKPOINTS') or Path(__file__).resolve().parents[1] / 'data' / 'checkpoints')
 GUEST_NAME_XATTR = 'org.d2rmobile.guest-name'
-DEVICE_SAVE = 'Documents/save'
+HEARTH_UID = '78626c000000000153574e4154495645'   # Hearth's first user (dm/ios/Hearth/HearthLibrary.h), whose saves never move
+UID_RE = re.compile(r'^[0-9a-f]{32}$')
 TITLE_RE = re.compile(r'^[0-9A-Fa-f]{16}$')
 NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 
 
 class Fail(Exception):
     pass
+
+
+def device_save(title, uid=HEARTH_UID):
+    """The title's committed save inside Hearth's data container, for one user."""
+    if not TITLE_RE.match(title): raise Fail(f'title id must be 16 hex digits: {title}')
+    if not UID_RE.match(uid): raise Fail(f'user id must be 32 lowercase hex digits: {uid}')
+    return f'Documents/Users/{uid}/saves/{title.upper()}/save'
 
 
 def ckpt_dir(title, name, root=None):
@@ -126,11 +135,12 @@ def device_args(udid, bundle):
     return ['--device', udid, '--domain-type', 'appDataContainer', '--domain-identifier', bundle]
 
 
-def export_device(title, name, udid, bundle, note='', force=False, root=None, run=subprocess.run):
+def export_device(title, name, udid, bundle, note='', force=False, root=None, run=subprocess.run, uid=HEARTH_UID):
+    src = device_save(title, uid)
     with tempfile.TemporaryDirectory() as t:
         got = Path(t) / 'save'
-        devicectl('device', 'copy', 'from', *device_args(udid, bundle), '--source', DEVICE_SAVE, '--destination', str(got), run=run)
-        if not got.is_dir(): raise Fail(f'devicectl gave no {DEVICE_SAVE} directory (has the app saved yet?)')
+        devicectl('device', 'copy', 'from', *device_args(udid, bundle), '--source', src, '--destination', str(got), run=run)
+        if not got.is_dir(): raise Fail(f'devicectl gave no {src} directory (has the game saved yet?)')
         return store(got, ckpt_dir(title, name, root), f'device:{udid}:{bundle}', note, force)
 
 
@@ -146,29 +156,29 @@ def app_pids(udid, bundle, run=subprocess.run):
     return [p['processIdentifier'] for p in procs if p.get('executable', '').startswith(url)]
 
 
-def device_save_files(udid, bundle, run=subprocess.run):
-    """{relative path: size} of the files in the app's Documents/save ({} when it does not exist)."""
+def device_save_files(udid, bundle, save, run=subprocess.run):
+    """{relative path: size} of the files in the app's save directory save ({} when it does not exist)."""
     with tempfile.TemporaryDirectory() as t:
-        r = run(['xcrun', 'devicectl', 'device', 'info', 'files', *device_args(udid, bundle), '--subdirectory', DEVICE_SAVE, '--json-output', f'{t}/f.json'],
+        r = run(['xcrun', 'devicectl', 'device', 'info', 'files', *device_args(udid, bundle), '--subdirectory', save, '--json-output', f'{t}/f.json'],
                 capture_output=True, text=True)
         if r.returncode: return {}
         files = json.loads(Path(f'{t}/f.json').read_text())['result']['files']
     return {f['relativePath']: f['metadata']['size'] for f in files if not f['resources']['isDirectory']}
 
 
-def import_device(title, name, udid, bundle, launch=False, keep_extra=False, root=None, run=subprocess.run):
-    """Copies the checkpoint over Documents/save file by file. devicectl cannot delete one file, and its --remove-existing-content
+def import_device(title, name, udid, bundle, launch=False, keep_extra=False, root=None, run=subprocess.run, uid=HEARTH_UID):
+    """Copies the checkpoint over the title's save in Hearth file by file. devicectl cannot delete one file, and its --remove-existing-content
     clears the whole destination container directory (it wiped Documents once), so it is never used: a device save holding files the
     checkpoint lacks is refused unless keep_extra, and the result is checked against the manifest."""
-    d = ckpt_dir(title, name, root); meta = load(d)
+    d = ckpt_dir(title, name, root); meta = load(d); dst = device_save(title, uid)
     if meta.get('guest_name_xattrs'): raise Fail(f'checkpoint has case-collision names kept in extended attributes, which devicectl drops: {meta["guest_name_xattrs"]}')
-    extra = sorted(set(device_save_files(udid, bundle, run=run)) - set(meta['files']))
+    extra = sorted(set(device_save_files(udid, bundle, dst, run=run)) - set(meta['files']))
     if extra and not keep_extra: raise Fail(f'the device save has files this checkpoint lacks, which devicectl cannot delete: {extra} (--keep-extra leaves them in place)')
     for pid in app_pids(udid, bundle, run=run):   # a running app would commit its own save over the checkpoint
         devicectl('device', 'process', 'terminate', '--device', udid, '--pid', str(pid), run=run)
     for rel in meta['files']:
-        devicectl('device', 'copy', 'to', *device_args(udid, bundle), '--source', str(d / 'save' / rel), '--destination', f'{DEVICE_SAVE}/{rel}', run=run)
-    got = device_save_files(udid, bundle, run=run)
+        devicectl('device', 'copy', 'to', *device_args(udid, bundle), '--source', str(d / 'save' / rel), '--destination', f'{dst}/{rel}', run=run)
+    got = device_save_files(udid, bundle, dst, run=run)
     bad = sorted(rel for rel, f in meta['files'].items() if got.get(rel) != f['size'])
     if bad: raise Fail(f'after the copy these device files do not match the checkpoint: {bad}')
     if launch: devicectl('device', 'process', 'launch', '--device', udid, '--terminate-existing', bundle, run=run)
@@ -181,7 +191,7 @@ def main(argv=None):
     for c in ('export', 'import'):
         p = sub.add_parser(c); p.add_argument('title'); p.add_argument('name')
         w = p.add_mutually_exclusive_group(required=True); w.add_argument('--mac', metavar='DIR'); w.add_argument('--device', metavar='UDID')
-        p.add_argument('--bundle')
+        p.add_argument('--bundle'); p.add_argument('--uid', default=HEARTH_UID, help="with --device: the Hearth user whose save it is (default: the first user)")
         if c == 'export': p.add_argument('--note', default=''); p.add_argument('--force', action='store_true')
         else: p.add_argument('--launch', action='store_true'); p.add_argument('--keep-extra', action='store_true')
     p = sub.add_parser('list'); p.add_argument('title', nargs='?')
@@ -190,11 +200,11 @@ def main(argv=None):
     try:
         if a.cmd in ('export', 'import') and a.device and not a.bundle: raise Fail('--device needs --bundle')
         if a.cmd == 'export':
-            m = export_mac(a.title, a.name, a.mac, a.note, a.force) if a.mac else export_device(a.title, a.name, a.device, a.bundle, a.note, a.force)
+            m = export_mac(a.title, a.name, a.mac, a.note, a.force) if a.mac else export_device(a.title, a.name, a.device, a.bundle, a.note, a.force, uid=a.uid)
             print(f'exported {a.title.upper()}/{a.name}: {len(m["files"])} files, {sum(f["size"] for f in m["files"].values())} bytes')
         elif a.cmd == 'import':
-            m = import_mac(a.title, a.name, a.mac) if a.mac else import_device(a.title, a.name, a.device, a.bundle, a.launch, a.keep_extra)
-            print(f'installed {a.title.upper()}/{a.name} ({len(m["files"])} files) into {a.mac or a.device + ":" + DEVICE_SAVE}')
+            m = import_mac(a.title, a.name, a.mac) if a.mac else import_device(a.title, a.name, a.device, a.bundle, a.launch, a.keep_extra, uid=a.uid)
+            print(f'installed {a.title.upper()}/{a.name} ({len(m["files"])} files) into {a.mac or a.device + ":" + device_save(a.title, a.uid)}')
         elif a.cmd == 'verify':
             m = load(ckpt_dir(a.title, a.name)); print(f'ok: {len(m["files"])} files match')
         else:

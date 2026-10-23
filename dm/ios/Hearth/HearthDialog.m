@@ -13,20 +13,23 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
 
 #define BTN_H 56.0
 #define LABEL_TAG 100   // a button's own tag is its index
+#define IMAGE_TAG 101
+#define TILE_MAX 116.0   // a picture tile's edge (hearth_dialog_tiles), smaller when many do not fit
+#define TILE_LABEL 34.0
 
 @interface HearthDialogVC : UIViewController
 @end
 
 @implementation HearthDialogVC {
-    NSString *_title, *_message; NSArray<NSString *> *_names; NSInteger _destructive, _cancel; void (^_answer)(NSInteger);
+    NSString *_title, *_message; NSArray<NSString *> *_names; NSArray *_images; NSInteger _destructive, _cancel; void (^_answer)(NSInteger);   // _images: a picture per button (NSNull: none), nil for a plain dialog
     UIView *_dim, *_panel; UILabel *_titleLabel, *_messageLabel; NSMutableArray<UIControl *> *_buttons; DmFocusView *_ring; DmHintBar *_hints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _done; __weak UIViewController *_over;
     HearthPadHandler _pad, _before; BOOL _took;   // our controller handler; the one that held the controller before us
 }
 
-+ (void)show:(UIViewController *)over title:(NSString *)title message:(NSString *)message buttons:(NSArray<NSString *> *)names destructive:(NSInteger)destructive focus:(NSInteger)focus cancel:(NSInteger)cancel answer:(void (^)(NSInteger))answer {
++ (void)show:(UIViewController *)over title:(NSString *)title message:(NSString *)message buttons:(NSArray<NSString *> *)names images:(NSArray *)images destructive:(NSInteger)destructive focus:(NSInteger)focus cancel:(NSInteger)cancel answer:(void (^)(NSInteger))answer {
     while (over.presentedViewController) over = over.presentedViewController;
-    HearthDialogVC *d = [self new];
+    HearthDialogVC *d = [self new]; d->_images = images;
     d->_title = title; d->_message = message; d->_names = names; d->_destructive = destructive; d->_cancel = cancel; d->_answer = answer; d->_over = over;
     d->_focus = [[HearthFocus alloc] initWithZones:1]; [d->_focus setCount:(NSInteger)names.count forZone:0]; [d->_focus focusZone:0 index:MIN(MAX(focus, 0), (NSInteger)names.count - 1)];
     d.modalPresentationStyle = UIModalPresentationOverFullScreen; d.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
@@ -63,6 +66,10 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
         UIControl *b = [UIControl new]; b.layer.cornerRadius = 18; b.layer.cornerCurve = kCACornerCurveContinuous; b.tag = (NSInteger)i;
         UILabel *l = [UILabel new]; l.text = _names[i]; l.font = [DmUI font:20 weight:UIFontWeightSemibold]; l.textAlignment = NSTextAlignmentCenter; l.userInteractionEnabled = NO; l.tag = LABEL_TAG;
         l.textColor = (NSInteger)i == _destructive ? DmUI.warn : DmUI.text;
+        if (i < _images.count && [_images[i] isKindOfClass:UIImage.class]) {
+            UIImageView *iv = [[UIImageView alloc] initWithImage:_images[i]]; iv.tag = IMAGE_TAG; iv.contentMode = UIViewContentModeScaleAspectFill; iv.clipsToBounds = YES; iv.userInteractionEnabled = NO;
+            [b addSubview:iv]; l.font = [DmUI font:17 weight:UIFontWeightSemibold]; l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.7;
+        }
         [b addSubview:l]; [b addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
         b.isAccessibilityElement = YES; b.accessibilityLabel = _names[i]; b.accessibilityTraits = UIAccessibilityTraitButton;
         [_panel addSubview:b]; [_buttons addObject:b];
@@ -88,17 +95,21 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; _dim.frame = b;
-    CGFloat pad = 32, w = MIN(580, b.size.width - 80), iw = w - pad * 2, y = pad;
+    CGFloat pad = 32, n = (CGFloat)_buttons.count, gap = 14, tile = _images ? MIN(TILE_MAX, floor((b.size.width - 80 - pad * 2 - gap * (n - 1)) / n)) : 0;
+    CGFloat w = _images ? MIN(b.size.width - 80, MAX(580, n * tile + gap * (n - 1) + pad * 2)) : MIN(580, b.size.width - 80), iw = w - pad * 2, y = pad;
     CGAffineTransform t = _panel.transform; _panel.transform = CGAffineTransformIdentity;
     CGFloat th = ceil([_titleLabel sizeThatFits:CGSizeMake(iw, CGFLOAT_MAX)].height), mh = _message.length ? ceil([_messageLabel sizeThatFits:CGSizeMake(iw, CGFLOAT_MAX)].height) : 0;
     _titleLabel.frame = CGRectMake(pad, y, iw, th); y += th + (mh ? 10 : 0);
     _messageLabel.frame = CGRectMake(pad, y, iw, mh); y += mh + 28;
-    CGFloat n = (CGFloat)_buttons.count, gap = 14, bw = n > 1 ? (iw - gap * (n - 1)) / n : iw;
+    CGFloat bw = _images ? tile : n > 1 ? (iw - gap * (n - 1)) / n : iw, bh = _images ? tile + TILE_LABEL : BTN_H, x0 = _images ? pad + (iw - (n * tile + gap * (n - 1))) / 2 : pad;
     for (NSUInteger i = 0; i < _buttons.count; i++) {
-        UIControl *c = _buttons[i]; c.frame = CGRectMake(pad + i * (bw + gap), y, bw, BTN_H);
-        [c viewWithTag:LABEL_TAG].frame = c.bounds;
+        UIControl *c = _buttons[i]; c.frame = CGRectMake(x0 + i * (bw + gap), y, bw, bh);
+        UIView *iv = [c viewWithTag:IMAGE_TAG], *l = [c viewWithTag:LABEL_TAG];
+        if (!_images) { l.frame = c.bounds; continue; }
+        if (iv) { CGFloat e = tile - 20; iv.frame = CGRectMake(10, 10, e, e); iv.layer.cornerRadius = e / 2; l.frame = CGRectMake(6, tile - 2, tile - 12, TILE_LABEL - 4); }
+        else l.frame = c.bounds;   // a tile without a picture (Cancel): its name in the middle
     }
-    y += BTN_H + 16;
+    y += bh + 16;
     CGFloat hh = [_hints heightWithCompact:NO]; _hints.frame = CGRectMake(pad, y, iw, hh); y += hh + 22;
     _panel.frame = CGRectMake(0, 0, w, y); _panel.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); _panel.transform = t;
     _panel.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_panel.bounds cornerRadius:30].CGPath;
@@ -180,7 +191,10 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
 @end
 
 void hearth_dialog(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *buttons, NSInteger destructive, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index)) {
-    [HearthDialogVC show:over title:title message:message buttons:buttons destructive:destructive focus:focus cancel:cancel answer:answer];
+    [HearthDialogVC show:over title:title message:message buttons:buttons images:nil destructive:destructive focus:focus cancel:cancel answer:answer];
+}
+void hearth_dialog_tiles(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *names, NSArray *images, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index)) {
+    [HearthDialogVC show:over title:title message:message buttons:names images:images ?: @[] destructive:-1 focus:focus cancel:cancel answer:answer];
 }
 void hearth_dialog_info(UIViewController *over, NSString *title, NSString *message) {
     hearth_dialog(over, title, message, @[@"OK"], -1, 0, 0, nil);

@@ -84,7 +84,7 @@ class FakeDevice:
         def opt(k): return a[a.index(k) + 1]
         if a[:3] == ['device', 'copy', 'from']: save_dir(Path(opt('--destination')), self.save)
         elif a[:3] == ['device', 'copy', 'to']:
-            rel = opt('--destination').removeprefix(cp.DEVICE_SAVE + '/')
+            rel = opt('--destination').removeprefix(cp.device_save(T) + '/')
             if rel not in self.drop: self.save[rel] = Path(opt('--source')).read_bytes()
         elif a[:3] == ['device', 'info', 'files']:
             if not self.save: return subprocess.CompletedProcess(cmd, 1, '', 'not found')
@@ -103,13 +103,19 @@ class Device(unittest.TestCase):
 
     def tearDown(self): self.tmp.cleanup()
 
-    def test_export_copies_documents_save(self):
+    def test_export_copies_the_first_users_save_in_hearth(self):
         dev = FakeDevice(self.t, save={'main': b'\x02' * 64})
         meta = cp.export_device(T, 'ipad', 'UDID', 'com.x.y', root=self.root, run=dev.run)
         self.assertEqual(meta['source'], 'device:UDID:com.x.y')
         c = dev.cmds[0]
         self.assertEqual(c[:5], ['xcrun', 'devicectl', 'device', 'copy', 'from'])
-        self.assertIn('appDataContainer', c); self.assertEqual(c[c.index('--source') + 1], 'Documents/save')
+        self.assertIn('appDataContainer', c); self.assertEqual(c[c.index('--source') + 1], f'Documents/Users/{cp.HEARTH_UID}/saves/{T.upper()}/save')
+
+    def test_another_user_and_bad_ids(self):
+        self.assertEqual(cp.device_save(T, 'ab' * 16), f'Documents/Users/{"ab" * 16}/saves/{T.upper()}/save')
+        with self.assertRaises(cp.Fail): cp.device_save(T, 'AB' * 16)
+        with self.assertRaises(cp.Fail): cp.device_save(T, '../x')
+        with self.assertRaises(cp.Fail): cp.device_save('../0100', cp.HEARTH_UID)
 
     def test_import_stops_the_app_then_copies_each_file_and_checks_them(self):
         cp.export_mac(T, 'x', save_dir(self.t / 'save', {'main': b'a', 'backup': b'bb'}), root=self.root)
@@ -120,7 +126,7 @@ class Device(unittest.TestCase):
                                  'device copy to', 'device copy to', 'device info files', 'device process launch'])
         term = dev.cmds[3]; self.assertEqual(term[term.index('--pid') + 1], '812')
         dests = sorted(c[c.index('--destination') + 1] for c in dev.cmds if c[2:5] == ['device', 'copy', 'to'])
-        self.assertEqual(dests, ['Documents/save/backup', 'Documents/save/main'])
+        self.assertEqual(dests, [cp.device_save(T) + '/backup', cp.device_save(T) + '/main'])
         self.assertFalse(any('--remove-existing-content' in c for c in dev.cmds), 'that flag empties the whole destination container directory')
         self.assertEqual(dev.save, {'main': b'a', 'backup': b'bb'})
 

@@ -1,6 +1,7 @@
 // Hearth's Home screen (HearthHomeVC.h): the player and the time at the top, one row of game tiles (last played first), the system buttons under it, the button hints at the bottom right.
 // Focus (HearthFocus.h): zone 0 the tiles, zone 1 the buttons. A controller (captured while Home is up), a hardware keyboard and touch all drive it; a touch hides the ring until the next key or button.
 #import "HearthHomeVC.h"
+#import "HearthAvatar.h"
 #import "HearthHomeViews.h"
 #import "HearthFocus.h"
 #import "HearthLaunch.h"
@@ -40,6 +41,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     dm_on_style(self.view, ^{ w.view.backgroundColor = DmUI.bg; });   // opaque over the game too: a see-through Home showed the game's touch controls and, back from the background, its paused frame
     _focus = [[HearthFocus alloc] initWithZones:ZoneCount]; _repeat = [DmRepeat new]; _tiles = [NSMutableArray array];
     _bar = [HearthTopBar new];
+    _bar.onUser = ^(NSInteger i) { HearthHomeVC *s = w; NSArray *us = hearth_users().users; if (s && i < (NSInteger)us.count) [s openUser:us[(NSUInteger)i]]; };
     _row = [UIScrollView new]; _row.showsHorizontalScrollIndicator = NO; _row.showsVerticalScrollIndicator = NO; _row.alwaysBounceVertical = NO; _row.clipsToBounds = NO; _row.delegate = self;
     _row.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     _tileRing = [DmFocusView new]; _tileRing.radius = HEARTH_TILE_RADIUS + 6; [_row addSubview:_tileRing];
@@ -98,7 +100,9 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _empty.hidden = _tiles.count > 0;
     [_focus setCount:(NSInteger)_tiles.count forZone:ZoneTiles];
     for (NSUInteger i = 0; i < _tiles.count; i++) if ([_tiles[i].game.titleId isEqual:was]) [_focus focusZone:ZoneTiles index:(NSInteger)i];
-    [_bar setPlayer:[DmSettings.systemStore valueForKey:@"DM_NICK"]];
+    NSMutableArray *pics = [NSMutableArray array], *names = [NSMutableArray array];
+    for (HearthUser *u in hearth_users().users) { [pics addObject:hearth_avatar_image(u)]; [names addObject:u.name]; }
+    [_bar setUsers:pics names:names];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     [self showFocus:NO];
 }
@@ -252,6 +256,10 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     } completion:^(BOOL f) { (void)f; t.art.hidden = NO; done(); }];
 }
 - (void)openSettings { [self showSheet:hearth_system_settings(self.view.bounds.size)]; }
+- (void)openUser:(HearthUser *)u {   // a picture in the top bar: that user on the Users page
+    if (_settings || _quick) return;
+    DmSettingsVC *v = hearth_system_settings(self.view.bounds.size); [self showSheet:v]; hearth_settings_show_user(v, u.uid);
+}
 - (void)openOptions:(HearthGame *)g {
     __weak HearthHomeVC *w = self;
     fprintf(stderr, "hearth: Options of %s\n", g.titleId.UTF8String);

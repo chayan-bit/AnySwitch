@@ -15,6 +15,8 @@ static void nacp_read(NSString *path, HearthGame *g) {
     NSData *d = [NSData dataWithContentsOfFile:path];
     if (d.length < 16 * 0x300) return;
     const char *b = d.bytes;
+    if (d.length > 0x3025) g.startupUser = (uint8_t)b[0x3025];   // StartupUserAccount (switchbrew's NACP layout)
+    if (d.length > 0x3034) g.screenshotDenied = b[0x3034] == 1;   // Screenshot: 0 Allow, 1 Deny (Ryujinx ApplicationControlProperty)
     if (d.length >= 0x3060 + 16 && b[0x3060]) g.version = [[NSString alloc] initWithBytes:b + 0x3060 length:strnlen(b + 0x3060, 16) encoding:NSUTF8StringEncoding];
     for (int i = 0; i < 16; i++) {
         const char *e = b + i * 0x300;
@@ -115,11 +117,26 @@ static NSString *stamp(NSString *p) {
     double now = NSDate.date.timeIntervalSince1970; g.lastPlayed = now;
     [self updateState:g with:^(NSMutableDictionary *st) { st[@"lastPlayed"] = @(now); }];
 }
-- (void)addPlayTime:(double)s to:(HearthGame *)g {
+- (void)addPlayTime:(double)s to:(HearthGame *)g user:(NSString *)uid {
     if (!(s > 0)) return;
-    [self updateState:g with:^(NSMutableDictionary *st) { st[@"playSeconds"] = @([st[@"playSeconds"] doubleValue] + s); }];
+    [self updateState:g with:^(NSMutableDictionary *st) {
+        st[@"playSeconds"] = @([st[@"playSeconds"] doubleValue] + s);
+        if (!uid) return;
+        NSMutableDictionary *us = [st[@"users"] isKindOfClass:NSDictionary.class] ? [st[@"users"] mutableCopy] : [NSMutableDictionary dictionary];
+        NSMutableDictionary *u = [us[uid] isKindOfClass:NSDictionary.class] ? [us[uid] mutableCopy] : [NSMutableDictionary dictionary];
+        u[@"playSeconds"] = @([u[@"playSeconds"] doubleValue] + s); u[@"lastPlayed"] = @(NSDate.date.timeIntervalSince1970);
+        us[uid] = u; st[@"users"] = us;
+    }];
 }
 - (double)playTimeOf:(HearthGame *)g { id v = [self stateOf:g][@"playSeconds"]; return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0; }
+static double seconds_of(id u) { id v = [u isKindOfClass:NSDictionary.class] ? u[@"playSeconds"] : nil; return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0; }
+- (double)playTimeOf:(HearthGame *)g user:(NSString *)uid {
+    NSDictionary *st = [self stateOf:g]; id us = st[@"users"]; if (![us isKindOfClass:NSDictionary.class]) us = @{};
+    double own = uid ? seconds_of(us[uid]) : 0;
+    if (![uid isEqualToString:HEARTH_UID]) return own;
+    double named = 0; for (NSString *k in us) named += seconds_of(us[k]);
+    return own + fmax(0, [self playTimeOf:g] - named);   // time no user was recorded for was played before users existed, by the only player then: the first user
+}
 - (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g { [self updateState:g with:^(NSMutableDictionary *st) { st[@"caps"] = caps; }]; }
 - (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g { id c = [self stateOf:g][@"caps"]; return [c isKindOfClass:NSDictionary.class] ? c : nil; }
 
@@ -156,13 +173,21 @@ static unsigned long long tree_size(NSString *path) {   // a file's size, or the
     return YES;
 }
 - (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why {
-    NSString *save = [self saveDirFor:g]; NSError *e = nil; NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableSet *uids = [NSMutableSet setWithObject:HEARTH_UID];
+    for (NSString *u in [NSFileManager.defaultManager contentsOfDirectoryAtPath:[_documentsDir stringByAppendingPathComponent:@"Users"] error:nil])
+        if ([NSFileManager.defaultManager fileExistsAtPath:[_documentsDir stringByAppendingFormat:@"/Users/%@/saves/%@", u, g.titleId]]) [uids addObject:u];
+    for (NSString *u in uids) if (![self deleteSavesOf:g user:u error:why]) return NO;
+    return YES;
+}
+- (unsigned long long)saveSizeOf:(HearthGame *)g user:(NSString *)uid { return tree_size([[self saveDirFor:g user:uid] stringByDeletingLastPathComponent]); }
+- (BOOL)deleteSavesOf:(HearthGame *)g user:(NSString *)uid error:(NSString **)why {
+    NSString *save = [self saveDirFor:g user:uid]; NSError *e = nil; NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *suffix in @[@"", @".work", @".new"]) {   // the committed save and the host's working and pending copies beside it (hle_fs.c)
         NSString *p = [save stringByAppendingString:suffix];
         if ([fm fileExistsAtPath:p] && ![fm removeItemAtPath:p error:&e]) { if (why) *why = e.localizedDescription; return NO; }
     }
     [fm createDirectoryAtPath:save withIntermediateDirectories:YES attributes:nil error:nil];   // present and empty: saveDirFor does not copy the old single-game save again
-    NSLog(@"hearth: deleted the saves of %@", g.titleId);
+    NSLog(@"hearth: deleted %@'s saves of %@", uid, g.titleId);
     return YES;
 }
 
@@ -189,10 +214,12 @@ static unsigned long long tree_size(NSString *path) {   // a file's size, or the
     return nil;
 }
 
-- (NSString *)saveDirFor:(HearthGame *)g {
+- (NSString *)saveDirFor:(HearthGame *)g { return [self saveDirFor:g user:HEARTH_UID]; }
+- (NSString *)saveDirFor:(HearthGame *)g user:(NSString *)uid {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *dir = [_documentsDir stringByAppendingFormat:@"/Users/%@/saves/%@", HEARTH_UID, g.titleId], *save = [dir stringByAppendingPathComponent:@"save"];
+    NSString *dir = [_documentsDir stringByAppendingFormat:@"/Users/%@/saves/%@", uid ?: HEARTH_UID, g.titleId], *save = [dir stringByAppendingPathComponent:@"save"];
     [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    if (uid && ![uid isEqualToString:HEARTH_UID]) return save;
     NSString *legacy = [_documentsDir stringByAppendingPathComponent:@"save"];
     // The single-game app kept its one game's save in Documents/save: cloned (APFS copy) for the bundled game the first time, never moved, so the old file stays until the user removes it
     if (g.bundled && ![fm fileExistsAtPath:save] && [fm fileExistsAtPath:legacy]) {

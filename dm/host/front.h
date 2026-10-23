@@ -31,3 +31,14 @@ void front_save_failed(int err);
 // A notice the player has to see, such as the shader libraries missing from the app (nvn_mtl.m). The iOS front end shows an alert on the main thread; the default weak implementation (nvn_mtl.m) logs it in red.
 // May be called from any thread, including before the first window exists, and does not block
 void front_notice(const char *title, const char *msg);
+
+// The game's error display applet (hle_err.c): code is the error in its 2xxx-yyyy form, or "" when the game gave none; network = an online error (Hearth has no online play).
+// The iOS front end shows Hearth's dialog and adds it to the error history; the default weak implementation logs it. Called on a game thread, which waits until the player dismisses it
+void front_error(const char *code, int network);
+// The game's own user selector (nn::account::ShowUserSelector, hle_account.c), on a game thread: blocks until the player picks; writes the Uid as 32 lowercase hex digits.
+// 1 picked, 0 cancelled, -1 no picker (the preselected user is used). Weak default in hle_account.c returns -1; the iOS front end shows Hearth's picker
+int front_user_select(char out[33]);
+// The capture album (hle_album.c), on a game thread; both return 0 when saved, -1 when there is no album (the weak defaults in hle_album.c; the Mac has none).
+// front_album_save: the game's own w x h RGBA8 picture (read before it returns: the game reuses the buffer). front_capture: a screenshot of the current frame, taken asynchronously
+int front_album_save(const void *rgba, int w, int h);
+int front_capture(void);

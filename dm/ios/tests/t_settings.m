@@ -206,7 +206,7 @@ int main(void) { @autoreleasepool {
       DmSettings *h = makeEx(builtin, nil, ^BOOL(NSString *c) { (void)c; return NO; }, tmpFile(), env, @{}); CHECK([h setValue:@"30" forKey:@"DM_FPS_TARGET"], "stored anyway"); EQ([h valueForKey:@"DM_FPS_TARGET"], @"30"); }
 
     // 14. the registry's own consistency: every `requires` names a known capability, every entry has a label and a detail, every slider default is inside its range
-    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", @"internalres", @"nvn", nil];
+    { DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSSet *known = [NSSet setWithObjects:@"fstep", @"fpscap", @"haptics", @"internalres", @"nvn", @"playername", nil];   // playername: Hearth hides the old Player name row (users have names)
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) {
           if (st.requires) CHECK([known containsObject:st.requires], "%s requires unknown %s", st.key.UTF8String, st.requires.UTF8String);
           CHECK([st.label length] && [st.detail length], "%s needs a label and a detail", st.key.UTF8String);

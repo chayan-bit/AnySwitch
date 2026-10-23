@@ -11,11 +11,12 @@
 #import "HearthLaunch.h"
 #import "HearthHomeVC.h"
 #import "HearthSettingsPages.h"
+#import "HearthAvatar.h"
 
 int dm_main(int argc, char **argv);   // dm/host/main.c compiled in with -Dmain=dm_main
 UIViewController *front_ios_root(void);
 void front_ios_focus_event(int ev);
-void hearth_mark_running(HearthGame *g);
+void hearth_mark_running(HearthGame *g, NSString *uid);
 
 static char *g_argv[4]; static int g_argc; static int g_boot_ok;
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
@@ -31,8 +32,8 @@ static void log_to(NSString *dir, NSString *name) {   // stderr (the host's log)
 }
 
 // Boot prerequisites of one game (HearthLaunch.m calls it from Home; main() for a launch intent, before UIApplicationMain): log, environment, settings, then dm_boot_game
-// (the host's early load runs in the background from here). 1 = booting
-int hearth_boot_game(HearthGame *g) {
+// (the host's early load runs in the background from here). uid: who plays (HearthUsers.h; unknown or nil: the game's last user). 1 = booting
+int hearth_boot_game(HearthGame *g, NSString *uid) {
     HearthLibrary *lib = hearth_library();
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = lib.documentsDir, *pack = g.root;
@@ -55,6 +56,14 @@ int hearth_boot_game(HearthGame *g) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
+    // The user (plan-hearth-p3.md 3.2): their name before the settings (env.txt's DM_NICK still wins), the users list and pictures for the host's account calls
+    HearthUsers *us = hearth_users(); HearthUser *who = [us userWithUid:uid] ?: [us lastUserOf:g.titleId];
+    NSString *tsv = [lib.supportDir stringByAppendingPathComponent:@"State/users.tsv"];
+    hearth_avatar_ensure();
+    if ([us writeHostList:tsv]) setenv("DM_USERS", tsv.fileSystemRepresentation, 0); else fprintf(stderr, "hearth: [RED] %s could not be written: the host knows one user\n", tsv.fileSystemRepresentation);
+    setenv("DM_NICK", who.name.UTF8String, 0);
+    [us setLastUser:who of:g.titleId];
+    fprintf(stderr, "hearth: %s plays as %s (%lu users)\n", g.titleId.UTF8String, who.uid.UTF8String, (unsigned long)us.users.count);
     dm_settings_set_game(g.titleId, pack);
     dm_settings_boot();   // Documents/settings.json (the in-app settings screen: this game's choices, then the system ones) and the pack's defaults, for every key env.txt did not set: DmSettings.m
     // Console mode Auto: Docked while an external display is connected, else Handheld (the host reads DM_OPMODE once, as 0 or 1)
@@ -76,9 +85,10 @@ int hearth_boot_game(HearthGame *g) {
     // The caller's part of the environment contract (boot.h): game files the bundled pack keeps in Documents, the code inside the app bundle, the user's save, scratch space, the user
     if (g.romfsPath) setenv("DM_ROMFS", g.romfsPath.fileSystemRepresentation, 0);
     if (g.codePath) setenv("DM_CODE", g.codePath.fileSystemRepresentation, 0);
-    setenv("DM_SAVE", [lib saveDirFor:g].fileSystemRepresentation, 0);
+    setenv("DM_SAVE", [lib saveDirFor:g user:who.uid].fileSystemRepresentation, 0);
+    setenv("DM_SAVE_ROOT", [doc stringByAppendingPathComponent:@"Users"].fileSystemRepresentation, 0);   // another user's save, when the game's own selector picks one (hle_fs.c)
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
-    setenv("DM_USER_UID", HEARTH_UID.UTF8String, 0);
+    setenv("DM_USER_UID", who.uid.UTF8String, 0);
     chdir(doc.fileSystemRepresentation);
     if (dm_boot_game(pack.fileSystemRepresentation)) return 0;   // a refused pack: the reason is in the game's log, and Home stays
     g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(pack.fileSystemRepresentation); g_argc = 2;   // the same two arguments dm_boot_game gave the early start
@@ -155,7 +165,8 @@ int main(int argc, char **argv) {
         NSDictionary *next = [lib takeNext];   // what the previous process asked for when it closed a game: Home, or straight into another game
         fprintf(stderr, "hearth: start, next %s %s\n", [next[@"action"] description].UTF8String, [next[@"id"] description].UTF8String ?: "");
         HearthGame *g = [next[@"action"] isEqual:@"launch"] && [next[@"id"] isKindOfClass:NSString.class] ? [lib gameWithId:next[@"id"]] : nil;
-        if (g && !g.reason && hearth_boot_game(g)) hearth_mark_running(g);   // the host's early load overlaps UIKit start-up, as in the single-game app
+        NSString *uid = [next[@"uid"] isKindOfClass:NSString.class] ? next[@"uid"] : nil;
+        if (g && !g.reason && hearth_boot_game(g, uid)) hearth_mark_running(g, [hearth_users() lastUserOf:g.titleId].uid);   // the boot made its user the game's last   // the host's early load overlaps UIKit start-up, as in the single-game app
     }
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }

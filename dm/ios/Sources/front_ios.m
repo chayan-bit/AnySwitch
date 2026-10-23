@@ -11,6 +11,12 @@
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmHaptics.h"
+#import "HearthDialog.h"
+#import "HearthErrors.h"
+#import "HearthLaunch.h"
+#import "HearthCapture.h"
+#import "HearthGallery.h"
+#import "HearthAvatar.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -82,8 +88,11 @@ static UILabel *front_ios_fps_label(void);
 @property (nonatomic, strong) UILabel *fps;
 @property (nonatomic, strong) UIButton *gear;
 @property (nonatomic, strong) UIButton *home;   // HOME on the touch layer: Hearth's Home over the paused game (hearth_home)
+@property (nonatomic, strong) UIButton *shot;   // Capture on the touch layer: a screenshot into the Gallery
 @property (nonatomic, strong) DmSettingsVC *settings;
+@property (nonatomic) CGRect content;   // the 16:9 picture inside the screen (viewDidLayoutSubviews)
 @end
+static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a game thread
 @implementation DmGameVC
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -109,6 +118,8 @@ static UILabel *front_ios_fps_label(void);
     self.gear = [self makeGear]; [self.view addSubview:self.gear];
     self.home = [self makeRoundButton:@"house.fill" label:@"Home" action:@selector(homePressed)]; [self.view addSubview:self.home];
     UILongPressGestureRecognizer *lh = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(homeHeld:)]; lh.minimumPressDuration = 0.5; [self.home addGestureRecognizer:lh];   // long HOME: Quick Settings
+    self.shot = [self makeRoundButton:@"camera.fill" label:@"Capture" action:@selector(capturePressed)]; [self.view addSubview:self.shot];
+    g_game_vc = self;
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:UIKeyModifierCommand action:@selector(homePressed)]];   // HOME on a keyboard (Cmd+H belongs to the system)
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
@@ -179,7 +190,7 @@ static UILabel *front_ios_fps_label(void);
     CGRect b = self.view.bounds; if (!self.game) return;
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    CGRect content = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+    CGRect content = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h); self.content = content;
     self.game.frame = g_ambient ? b : content;   // ambient: the drawable is the whole screen and the present stage letterboxes the picture inside it (the same fit, so the rectangles agree)
     self.pad.frame = b;
     BOOL bars = dm_gamepad_layout(content, g_controls_auto);
@@ -190,13 +201,52 @@ static UILabel *front_ios_fps_label(void);
     }
     if (self.fps) self.fps.frame = hud;
     self.home.frame = CGRectMake(floor(b.size.width / 2 - 22), CGRectGetMaxY(UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets)) - 52, 44, 44);   // bottom centre, between the stick and the face buttons
+    self.shot.frame = CGRectOffset(self.home.frame, -52, 0);   // Capture left of HOME, as on the console's left and right controllers
     self.gear.frame = CGRectMake(CGRectGetMaxX(hud) + 4, CGRectGetMidY(hud) - 22, 44, 44);   // the counter's place stays reserved while it is off, so nothing moves when it is switched
 }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot();
     // DM_SETTINGS_AT_START=1 (env.txt diagnostics): the settings screen opens by itself once the game shows, for screenshots on a device that is driven without touching the top of the screen
     static int once; const char *e = getenv("DM_SETTINGS_AT_START");
+    if (!once) [self captureTest];
     if (!once++ && e && atoi(e)) { __weak DmGameVC *w = self; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [w openSettings]; }); }
+}
+// A screenshot of the game's picture into Documents/Gallery/<title id>/ (HearthCapture.h, HearthGallery.h). The Capture button honours the game's NACP Screenshot flag;
+// the game's own album calls do not ask it (front_album_save, front_capture), as on the console
+- (void)capturePressed {
+    if (hearth_running_game().screenshotDenied) { LOG("capture: refused, the game does not allow screenshots (NACP)"); [self toast:@"This game does not allow screenshots"]; return; }
+    [self capture];
+}
+- (void)capture {
+    HearthGame *g = hearth_running_game(); if (!self.game || !g) return;
+    NSString *dir = hearth_gallery_dir(hearth_library().documentsDir, g.titleId, g.name);
+    if (!dir) { [self toast:@"The screenshot was not saved"]; return; }
+    __weak DmGameVC *w = self;
+    hearth_capture(self.game, [self.view convertRect:self.content toView:self.game], hearth_gallery_new_path(dir, NSDate.date, @"jpg"), ^(NSString *path, double grab, double enc) {
+        LOG("capture: %s, grab %.1f ms (main thread), encode %.1f ms", path ? path.lastPathComponent.UTF8String : "FAILED", grab, enc);
+        [w toast:path ? @"Saved to Gallery" : @"The screenshot was not saved"];
+    });
+}
+// A short notice at the picture's top left that goes by itself (about 2 s) and takes no touches
+- (void)toast:(NSString *)text {
+    UILabel *l = [UILabel new]; l.text = text; l.textAlignment = NSTextAlignmentCenter; l.userInteractionEnabled = NO;
+    l.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor;
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.62]; l.layer.cornerRadius = 10; l.layer.masksToBounds = YES;
+    CGSize z = [l sizeThatFits:CGSizeMake(400, 40)];
+    l.frame = CGRectMake(CGRectGetMinX(self.content) + 16, CGRectGetMinY(self.content) + 16, ceil(z.width) + 28, ceil(z.height) + 16);
+    [self.view addSubview:l];
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, text);
+    [UIView animateWithDuration:0.3 delay:1.8 options:0 animations:^{ l.alpha = 0; } completion:^(BOOL f) { (void)f; [l removeFromSuperview]; }];
+}
+// DM_CAPTURE_TEST=<count>@<start s>@<every s> (env.txt, spike C1): that many screenshots on a timer while the game runs, each logged with its times
+- (void)captureTest {
+    const char *e = getenv("DM_CAPTURE_TEST"); int n = 0; double at = 30, every = 2;
+    if (!e || sscanf(e, "%d@%lf@%lf", &n, &at, &every) < 1 || n <= 0) return;
+    LOG("capture test: %d screenshots every %.1f s from %.0f s on", n, every, at);
+    __weak DmGameVC *w = self; __block int left = n;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [NSTimer scheduledTimerWithTimeInterval:every repeats:YES block:^(NSTimer *t) { if (!w || left-- <= 0) { [t invalidate]; return; } [w capture]; }];
+    });
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
@@ -204,6 +254,22 @@ static UILabel *front_ios_fps_label(void);
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
 UIViewController *front_ios_root(void) { return [DmGameVC new]; }
+
+// The capture album (front.h, hle_album.c), on a game thread. The game's picture is copied before returning (the game reuses its buffer) and encoded in the background
+int front_album_save(const void *rgba, int w, int h) {
+    HearthGame *g = hearth_running_game(); if (!g) return -1;
+    NSString *dir = hearth_gallery_dir(hearth_library().documentsDir, g.titleId, g.name); if (!dir) return -1;
+    hearth_capture_rgba([NSData dataWithBytes:rgba length:(NSUInteger)w * h * 4], w, h, hearth_gallery_new_path(dir, NSDate.date, @"jpg"), ^(NSString *path) {
+        LOG("album: the game's picture %s", path ? path.lastPathComponent.UTF8String : "was NOT saved");
+        [g_game_vc toast:path ? @"Saved to Gallery" : @"The picture was not saved"];
+    });
+    return 0;
+}
+int front_capture(void) {
+    if (!g_game_vc) return -1;
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_game_vc capture]; });
+    return 0;
+}
 
 // Thermal state and screen brightness for the power and present rows every 300 frames (hle_nvn.c; its weak defaults return -1 on the Mac). thermalState: 0 nominal, 1 fair, 2 serious, 3 critical.
 // Brightness is read on the main thread at start and on each change; every change of the thermal state and of Low Power Mode (which lowers the CPU clock) is logged with the time since launch
@@ -287,6 +353,53 @@ void front_notice(const char *title, const char *msg) {
     LOG("front end: telling the player: %s: %s", title, msg);
     NSString *t = @(title), *m = @(msg);
     dispatch_async(dispatch_get_main_queue(), ^{ notice_show(t, m, 20); });
+}
+
+// The game's error applet (front.h, hle_err.c): Hearth's dialog over the game, recorded in the error history (About); the game thread waits for the answer, as it waits for the applet on the console.
+// HOME is ignored meanwhile (a presented dialog, HearthLaunch.m). Copy log puts the end of the game's log on the clipboard
+#define ERROR_LOG_TAIL (64 * 1024)
+static NSString *front_log_tail(HearthGame *g) {
+    fflush(stderr);
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:[[hearth_library() logDirFor:g] stringByAppendingPathComponent:@"log.txt"]]; if (!h) return nil;
+    unsigned long long n = [h seekToEndOfFile]; [h seekToFileOffset:n > ERROR_LOG_TAIL ? n - ERROR_LOG_TAIL : 0];
+    NSString *s = [[NSString alloc] initWithData:[h readDataToEndOfFile] encoding:NSUTF8StringEncoding]; [h closeFile];
+    return s;
+}
+// The game's own "who is playing" (front.h, hle_account.c's ShowUserSelector): Hearth's picker, the game thread waiting for the answer as with the software keyboard
+int front_user_select(char out[33]) {
+    if (!g_layer) return -1;
+    __block HearthUser *picked = nil; __block BOOL shown = NO;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = nil;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+        if (!vc) { dispatch_semaphore_signal(done); return; }
+        shown = YES;
+        hearth_pick_user(vc, @"Who is playing?", [hearth_users() userWithUid:hearth_running_user()], ^(HearthUser *u) { picked = u; dispatch_semaphore_signal(done); });
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    if (!shown) return -1;
+    if (!picked) return 0;
+    snprintf(out, 33, "%s", picked.uid.UTF8String);
+    return 1;
+}
+
+void front_error(const char *code, int network) {
+    if (!g_layer) { LOG("front end: error %s not shown: no window", code); return; }
+    NSString *c = @(code); dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        HearthGame *g = hearth_running_game();
+        hearth_error_record(hearth_library().documentsDir, g.titleId ?: @"", g.name ?: @"", c, network, NSDate.date);
+        UIViewController *vc = nil;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+        if (!vc) { LOG("[RED] front end: no window for error %s", c.UTF8String); dispatch_semaphore_signal(done); return; }
+        hearth_dialog(vc, network ? @"Offline only" : @"Something went wrong", hearth_error_message(c, network), @[@"Copy log", @"OK"], -1, 1, 1, ^(NSInteger i) {
+            if (i == 0) { NSString *t = front_log_tail(g); if (t) UIPasteboard.generalPasteboard.string = t; LOG("front end: log copied (%lu characters)", (unsigned long)t.length); }
+            dispatch_semaphore_signal(done);
+        });
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    LOG("front end: error %s dismissed", code);
 }
 
 // Save write failed (most likely the phone's storage is full). hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;

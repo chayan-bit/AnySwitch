@@ -88,17 +88,18 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 @end
 
 @implementation HearthTopBar {
-    UILabel *_player, *_clock, *_battery; UIImageView *_avatar, *_cell; NSDateFormatter *_fmt; NSTimer *_tick; HearthMetrics _m;
+    UILabel *_player, *_clock, *_battery; UIImageView *_cell; NSMutableArray<UIButton *> *_avatars; NSDateFormatter *_fmt; NSTimer *_tick; HearthMetrics _m;
 }
 - (instancetype)initWithFrame:(CGRect)f {
     if (!(self = [super initWithFrame:f])) return nil;
-    _avatar = [UIImageView new]; _avatar.tintColor = DmUI.accentText; _avatar.contentMode = UIViewContentModeScaleAspectFit;
+    _avatars = [NSMutableArray array];
     _player = [UILabel new]; _player.textColor = DmUI.text;
     _clock = [UILabel new]; _clock.textColor = DmUI.text; _clock.textAlignment = NSTextAlignmentRight;
     _battery = [UILabel new]; _battery.textColor = DmUI.sub; _battery.textAlignment = NSTextAlignmentRight;
     _cell = [UIImageView new]; _cell.tintColor = DmUI.sub;
-    [self setMetrics:hearth_metrics(1024, 768, 0, 0)];
-    for (UIView *v in @[_avatar, _player, _clock, _battery, _cell]) [self addSubview:v];
+    _m = hearth_metrics(1024, 768, 0, 0);
+    [self setMetrics:_m];
+    for (UIView *v in @[_player, _clock, _battery, _cell]) [self addSubview:v];
     _fmt = [NSDateFormatter new]; _fmt.locale = NSLocale.currentLocale; [_fmt setLocalizedDateFormatFromTemplate:@"jmm"];
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     for (NSNotificationName n in @[UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification])
@@ -109,14 +110,27 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     return self;
 }
 - (void)dealloc { [_tick invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
-- (void)setPlayer:(NSString *)name { _player.text = name; [self setNeedsLayout]; }
 - (void)setMetrics:(HearthMetrics)m {
     _m = m;
-    _avatar.image = [UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:m.avatar * 30 / 36 weight:UIImageSymbolWeightRegular]];
     _player.font = [DmUI font:m.playerFont weight:UIFontWeightSemibold];
     _clock.font = tabular([DmUI font:m.clockFont weight:UIFontWeightSemibold]); _battery.font = tabular([DmUI font:m.batteryFont weight:UIFontWeightMedium]);
+    for (UIButton *b in _avatars) b.layer.cornerRadius = m.avatar / 2;
     [self setNeedsLayout];
 }
+- (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names {
+    for (UIButton *b in _avatars) [b removeFromSuperview];
+    [_avatars removeAllObjects];
+    for (NSUInteger i = 0; i < pictures.count; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom]; [b setImage:pictures[i] forState:UIControlStateNormal];
+        b.imageView.contentMode = UIViewContentModeScaleAspectFill; b.clipsToBounds = YES; b.layer.cornerRadius = _m.avatar / 2; b.tag = (NSInteger)i;
+        b.accessibilityLabel = i < names.count ? names[i] : nil;
+        [b addTarget:self action:@selector(avatarTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:b]; [_avatars addObject:b];
+    }
+    _player.text = names.count == 1 ? names[0] : nil;   // several users: their pictures say who is here
+    [self setNeedsLayout];
+}
+- (void)avatarTapped:(UIButton *)b { if (self.onUser) self.onUser(b.tag); }
 - (void)refresh {
     _clock.text = [_fmt stringFromDate:NSDate.date];
     float level = UIDevice.currentDevice.batteryLevel; UIDeviceBatteryState st = UIDevice.currentDevice.batteryState;
@@ -131,9 +145,9 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat h = self.bounds.size.height, w = self.bounds.size.width;
-    CGFloat av = _m.avatar;
-    _avatar.frame = CGRectMake(0, (h - av) / 2, av, av);
-    _player.frame = CGRectMake(av + 12, 0, w / 2 - av - 12, h);
+    CGFloat av = _m.avatar, step = av + (_m.compact ? 6 : 8), ax = 0;
+    for (UIButton *b in _avatars) { b.frame = CGRectMake(ax, (h - av) / 2, av, av); ax += step; }   // the users' pictures; the name follows when there is one
+    _player.frame = CGRectMake(ax + 4, 0, MAX(0, w / 2 - ax - 4), h);
     [_battery sizeToFit]; [_clock sizeToFit];
     CGFloat x = w;
     if (!_cell.hidden) { x -= 34; _cell.frame = CGRectMake(x, (h - 22) / 2, 34, 22); _cell.contentMode = UIViewContentModeScaleAspectFit; }
