@@ -53,7 +53,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 
 @interface DmSettings : NSObject
 + (instancetype)shared;   // the running game's store (dm_settings_set_game before the first call), over the process environment and the main bundle's Info.plist; made once per process
-+ (instancetype)systemStore;   // the system layer only (no game rows), for Home; it neither exports nor announces (a game's store reads the file when the game starts)
++ (instancetype)systemStore;   // the system layer only (no game rows), for Home; it neither exports nor announces itself, and it is linked to the shared store (linkSystemLayer:)
 + (instancetype)storeForGame:(NSString *)titleId packRoot:(NSString *)root;   // a game's store (its pack's profile/settings.json rows and defaults): the shared store for the running game, else one that neither exports nor announces
 // Documents/settings.json is {"version": 2, "system": {key: value}, "games": {title id: {key: value}}}; a version 1 file ({"values": ...}) is read as the system layer and written as version 2 on the first change.
 // Each change merges into the file on disk key by key, so a system store and a game store over the same file do not undo each other's changes
@@ -63,6 +63,9 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 // gameId: nil = the system store (game-scope rows hidden and refused), else that game's store: changes of game and both entries go to its layer, of system entries to the system layer
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *capability))caps gameId:(NSString *)gameId storePath:(NSString *)path env:(NSString *(^)(NSString *key))env setEnv:(void (^)(NSString *key, NSString *value))setEnv plist:(id (^)(NSString *plistKey))plist;
 @property (nonatomic, readonly) NSString *gameId;
+// Two stores over the same file share the system layer from now on: a system change in either is taken by the other, which exports and announces it when its own effective value changes
+// (a game's own choice still wins there). The app links the system store and the shared store, so settings changed on Home reach a paused game at once
+- (void)linkSystemLayer:(DmSettings *)other;
 @property (nonatomic) int frameTarget;   // the game's frame rate target (30 or 60; 0 = not known), set by the app as the host reports it (it can change while the game runs). Moves the default of every `defaultAtFps` entry, and announces (DmSettingDidChangeNotification) each one whose effective value changes with it
 @property (nonatomic, copy) BOOL (^capabilities)(NSString *capability);   // the app sets it once it can tell what the game provides; read each time the screen is built
 @property (nonatomic, readonly) NSArray<DmSection *> *sections;           // every page of the registry; sections with the same id are merged (a game's entries join the built-in page)

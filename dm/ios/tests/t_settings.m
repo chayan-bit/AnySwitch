@@ -456,6 +456,31 @@ int main(void) { @autoreleasepool {
       for (NSString *t in shown) CHECK([banned numberOfMatchesInString:t options:0 range:NSMakeRange(0, t.length)] == 0, "brand word in: %s", t.UTF8String);
       CHECK([banned numberOfMatchesInString:@"1x (Switch)" options:0 range:NSMakeRange(0, 11)] == 1, "the check catches a planted word"); }
 
+    // 19. Home's system store and the running game's store share the system layer once linked: a system change made on Home reaches the paused game at once (exported and announced
+    // by the game's store) unless the game has its own choice; a system-scope change made in the game shows on Home; a game's own choice stays in its layer
+    { NSString *p = tmpFile(); NSMutableDictionary *se = [NSMutableDictionary dictionary], *ge = [NSMutableDictionary dictionary];
+      DmSettings *sys = makeG(builtin, nil, nil, p, se), *game = makeG(builtin, nil, @"0100000000010000", p, ge);
+      [game setValue:@"sharp" forKey:@"DM_UPSCALE"];   // this game's own choice
+      [sys linkSystemLayer:game];
+      NSMutableArray<NSString *> *heard = [NSMutableArray array];
+      id obs = [NSNotificationCenter.defaultCenter addObserverForName:DmSettingDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [heard addObject:n.object]; }];
+      [ge removeAllObjects]; [heard removeAllObjects];
+      CHECK([sys setValue:@"0.5" forKey:@"DM_VOLUME"], "system volume set");
+      EQ([game valueForKey:@"DM_VOLUME"], @"0.5"); EQ(ge[@"DM_VOLUME"], @"0.5");
+      CHECK([heard filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF == 'DM_VOLUME'"]].count == 2, "announced by both stores (%lu)", (unsigned long)heard.count);
+      [ge removeAllObjects];
+      [sys setValue:@"bilinear" forKey:@"DM_UPSCALE"]; [sys setValue:@"sharp" forKey:@"DM_LETTERBOX"];   // not a valid letterbox value: refused, nothing changes
+      EQ([game valueForKey:@"DM_UPSCALE"], @"sharp"); CHECK(ge[@"DM_UPSCALE"] == nil, "the game's own choice wins: nothing exported");
+      [sys setValue:@"black" forKey:@"DM_LETTERBOX"]; EQ([game valueForKey:@"DM_LETTERBOX"], @"black"); EQ(ge[@"DM_LETTERBOX"], @"black");   // a both entry the game follows
+      [game useSystemForKey:@"DM_UPSCALE"]; EQ([game valueForKey:@"DM_UPSCALE"], @"bilinear");
+      [game setValue:@"0.25" forKey:@"DM_VOLUME"]; EQ([sys valueForKey:@"DM_VOLUME"], @"0.25");   // system scope, changed in the game's settings: Home shows it
+      [game setValue:@"sharp" forKey:@"DM_UPSCALE"]; EQ([sys valueForKey:@"DM_UPSCALE"], @"bilinear");   // the game's own layer stays its own
+      [ge removeAllObjects]; [sys resetAll];
+      EQ([game valueForKey:@"DM_VOLUME"], @"1"); EQ(ge[@"DM_VOLUME"], @"1"); EQ([game valueForKey:@"DM_UPSCALE"], @"sharp");
+      DmSettings *fresh = makeG(builtin, nil, @"0100000000010000", p, [NSMutableDictionary dictionary]);
+      EQ([fresh valueForKey:@"DM_VOLUME"], [game valueForKey:@"DM_VOLUME"]); EQ([fresh valueForKey:@"DM_LETTERBOX"], [game valueForKey:@"DM_LETTERBOX"]);   // memory and file agree
+      [NSNotificationCenter.defaultCenter removeObserver:obs]; }
+
     printf("t_settings: %d checks, %d failed\n", g_n, g_fail);
     return g_fail ? 1 : 0;
 } }

@@ -4,4 +4,6 @@
 
 @interface HearthHomeVC : UIViewController
 @property (nonatomic) BOOL overlay;   // set before the view loads
+- (void)openQuick;    // Quick Settings over Home (long HOME, or Home's own button)
+- (BOOL)closeQuick;   // closes Quick Settings when it is open (HOME does that first)
 @end

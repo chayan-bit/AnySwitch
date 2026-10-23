@@ -155,6 +155,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
     NSArray<DmSection *> *_sections; NSMutableDictionary<NSString *, DmSetting *> *_byKey;
     NSString *_path, *_gameId; NSMutableDictionary<NSString *, NSString *> *_user, *_game, *_envLock, *_launch, *_gameDef; int _frameTarget;   // _user: the system layer, _game: this game's layer
     void (^_setEnv)(NSString *, NSString *); id (^_plist)(NSString *); BOOL _quiet;   // _quiet: a store of a game that is not running (no notifications)
+    __weak DmSettings *_peer;   // the store sharing this one's system layer (linkSystemLayer:)
 }
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes {
     NSString *d = @"Draws the game at a multiple of its original resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.";
@@ -267,6 +268,7 @@ static NSDictionary *gameFile(NSString *path) {
 }
 static NSString *g_game_id, *g_pack_root;   // the launched game and its pack (Hearth); nil = no game: the shared store is the system store
 static BOOL g_shared_made;
+static __weak DmSettings *g_shared_store, *g_system_store;   // linked once both exist
 void dm_settings_set_game(NSString *titleId, NSString *root) {
     if (g_shared_made) say(@"[RED] dm_settings_set_game after the shared store was made: it stays the store it was");
     g_game_id = titleId.copy; g_pack_root = root.copy;
@@ -286,14 +288,14 @@ static DmSettings *app_store(NSString *gameId, NSString *packRoot, BOOL live) {
 }
 + (instancetype)shared {
     static DmSettings *s; static dispatch_once_t once;
-    dispatch_once(&once, ^{ g_shared_made = YES; s = app_store(g_game_id, g_pack_root, YES); });
+    dispatch_once(&once, ^{ g_shared_made = YES; s = app_store(g_game_id, g_pack_root, YES); g_shared_store = s; [g_system_store linkSystemLayer:s]; });
     return s;
 }
 // Its own store, never the shared one: Home reads it before a game is launched in this process, and the shared store must become that game's.
-// ponytail: it neither exports nor announces, and while a game runs it and the game's store each keep their own copy of the system layer (a change in one reaches the other at the next start); one shared layer object when Home's settings open over a running game (step 8)
+// It neither exports nor announces itself; it is linked to the shared store (linkSystemLayer:), so a change made on Home reaches the running game through the game's store
 + (instancetype)systemStore {
     static DmSettings *s; static dispatch_once_t once;
-    dispatch_once(&once, ^{ s = app_store(nil, nil, NO); });
+    dispatch_once(&once, ^{ s = app_store(nil, nil, NO); g_system_store = s; [g_shared_store linkSystemLayer:s]; });
     return s;
 }
 + (instancetype)storeForGame:(NSString *)titleId packRoot:(NSString *)root {
@@ -424,6 +426,15 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
     if (_gameId) { if (mine.count) games[_gameId] = mine; else [games removeObjectForKey:_gameId]; }
     NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"version": @2, @"system": sys, @"games": games} options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     NSError *e = nil; if (!d || ![d writeToFile:_path options:NSDataWritingAtomic error:&e]) say([NSString stringWithFormat:@"[RED] could not write %@: %@", _path.lastPathComponent, e.localizedDescription]);
+    for (NSString *k in keys) if (![self inGameLayer:_byKey[k]]) [_peer peerSystemValue:_user[k] forKey:k];   // every change of the system layer passes here
+}
+- (void)linkSystemLayer:(DmSettings *)other { if (other == self) return; _peer = other; other->_peer = self; }
+// The peer's system layer changed for key (v nil: no choice): take it, and when this store's effective value changes with it, export and announce it here
+- (void)peerSystemValue:(NSString *)v forKey:(NSString *)key {
+    if (!_byKey[key]) return;
+    NSString *before = [self valueForKey:key];
+    if (v) _user[key] = v; else [_user removeObjectForKey:key];
+    if (![before isEqualToString:[self valueForKey:key]]) [self announce:key];
 }
 - (void)announce:(NSString *)key {
     NSString *v = [self valueForKey:key]; _setEnv(key, v);

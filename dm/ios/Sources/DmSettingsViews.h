@@ -41,9 +41,12 @@ CGColorRef dm_cg(UIView *v, UIColor *c);             // a dynamic colour resolve
 @property (nonatomic) BOOL chosen, paneFocused;
 @end
 
-typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemResetAll, DmItemRestart };
+typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemResetAll, DmItemRestart, DmItemAction };   // Action: a titled row that is not a setting (Hearth's Quick Settings and System Settings pages)
 @interface DmRowView : UIView
 - (instancetype)initWithSetting:(DmSetting *)s kind:(DmItemKind)kind compact:(BOOL)compact;   // setting is nil for the reset and restart rows
+- (instancetype)initWithAction:(NSString *)title detail:(NSString *)detail compact:(BOOL)compact;   // an action row; info = YES makes it plain text that does nothing
+- (void)setActionTitle:(NSString *)title detail:(NSString *)detail;
+@property (nonatomic) BOOL info, destructive;   // an action row: plain information (no accent), or an action that removes something (warning colour)
 @property (nonatomic, readonly) DmSetting *setting;
 @property (nonatomic, readonly) DmItemKind kind;
 @property (nonatomic, readonly) DmSliderView *slider;

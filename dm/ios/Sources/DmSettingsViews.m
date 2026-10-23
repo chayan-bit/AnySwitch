@@ -201,6 +201,15 @@ static const CGFloat kKnob = 26;
     }
     return self;
 }
+- (instancetype)initWithAction:(NSString *)title detail:(NSString *)detail compact:(BOOL)compact {
+    if (!(self = [self initWithSetting:nil kind:DmItemAction compact:compact])) return nil;
+    _title.textAlignment = NSTextAlignmentNatural; _detail.textAlignment = NSTextAlignmentNatural;
+    [self setActionTitle:title detail:detail];
+    return self;
+}
+- (void)setActionTitle:(NSString *)title detail:(NSString *)detail { _title.text = title; _detail.text = detail; [self setNeedsLayout]; }
+- (void)setInfo:(BOOL)i { _info = i; [self paint]; }
+- (void)setDestructive:(BOOL)d { _destructive = d; [self paint]; }
 // The title and detail of the rows that are not a setting
 - (void)showPlainTitle {
     switch (_kind) {
@@ -209,13 +218,13 @@ static const CGFloat kKnob = 26;
             _title.text = _confirming ? @"Tap again to restore everything" : @"Restore all defaults";
             _detail.text = @"Puts every setting on every page back to its default."; break;
         case DmItemRestart: _title.text = @"Restart now"; _detail.text = @"Closes the game so the changed settings apply on the next start. Progress that was not saved in the game is lost."; break;
-        case DmItemSetting: break;
+        case DmItemSetting: case DmItemAction: break;
     }
 }
 - (void)setConfirming:(BOOL)c { _confirming = c; [self showPlainTitle]; [self paint]; [self setNeedsLayout]; }
 - (void)paint {
     self.layer.backgroundColor = dm_cg(self, DmUI.row);
-    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accentText);
+    _title.textColor = _kind == DmItemSetting || (_kind == DmItemAction && _info) ? DmUI.text : (_kind == DmItemRestart || _confirming || _destructive ? DmUI.warn : DmUI.accentText);
     _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accentText;
     _note.textColor = _disabled ? DmUI.sub : DmUI.warn;
     if (!_locked && !_disabled && _scopeNote.length && [_note.text hasPrefix:_scopeNote]) {   // where the value comes from is information, not a warning: only a restart note after it keeps the warning colour

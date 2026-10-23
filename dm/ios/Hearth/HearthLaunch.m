@@ -90,6 +90,13 @@ void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(vo
     if (zoom) zoom(show); else show();
 }
 
+void hearth_restart_game(void) {
+    if (!g_running) return;
+    fprintf(stderr, "hearth: restarting %s for its changed settings\n", g_running.titleId.UTF8String);
+    [hearth_library() writeNext:@{@"action": @"launch", @"id": g_running.titleId}];
+    relaunch();
+}
+
 void hearth_confirm_close(UIViewController *over) {
     confirm(over, [NSString stringWithFormat:@"Close %@?", g_running.name ?: @"the game"], @"Close", @"close", ^{ hearth_close(); });
 }
@@ -126,8 +133,10 @@ void hearth_resume(void) {
                      completion:^(BOOL f) { (void)f; [h.view removeFromSuperview]; [h removeFromParentViewController]; }];
     fprintf(stderr, "hearth: back to %s\n", g_running.titleId.UTF8String);
 }
-static void home_deliver(void) { dispatch_async(dispatch_get_main_queue(), ^{ if (g_overlay) hearth_resume(); else home_show(); }); }
+static void home_deliver(void) { dispatch_async(dispatch_get_main_queue(), ^{ if (g_overlay) { if (![g_overlay closeQuick]) hearth_resume(); } else home_show(); }); }
+static void home_long_deliver(void) { dispatch_async(dispatch_get_main_queue(), ^{ if (!g_overlay) home_show(); [g_overlay openQuick]; }); }
 void hearth_home(void) { if (g_running) dm_home_press(home_deliver); }
+void hearth_home_long(void) { if (g_running) dm_home_press(home_long_deliver); }
 
 // Called by main.m for a launch intent from next.json, before UIApplicationMain: the game boots early, as the single-game app did
 void hearth_mark_running(HearthGame *g) { g_running = g; }

@@ -108,6 +108,7 @@ static UILabel *front_ios_fps_label(void);
     if ([DmSettings.shared boolForKey:@"DM_SHOW_FPS"]) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; }   // above the pad, which hides while a controller is connected
     self.gear = [self makeGear]; [self.view addSubview:self.gear];
     self.home = [self makeRoundButton:@"house.fill" label:@"Home" action:@selector(homePressed)]; [self.view addSubview:self.home];
+    UILongPressGestureRecognizer *lh = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(homeHeld:)]; lh.minimumPressDuration = 0.5; [self.home addGestureRecognizer:lh];   // long HOME: Quick Settings
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:UIKeyModifierCommand action:@selector(homePressed)]];   // HOME on a keyboard (Cmd+H belongs to the system)
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
@@ -117,7 +118,8 @@ static UILabel *front_ios_fps_label(void);
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { (void)t; DmSettings.shared.frameTarget = mtl_fps_target(); }];
 }
 - (UIButton *)makeGear { return [self makeRoundButton:@"gearshape.fill" label:@"Settings" action:@selector(toggleSettings)]; }   // right of the frame-rate counter
-- (void)homePressed { void hearth_home(void); [self closeSettings]; hearth_home(); }   // the in-game settings close first: Home takes the controller and the game's focus
+- (void)homePressed { void hearth_home(void); [self closeSettings]; hearth_home(); }
+- (void)homeHeld:(UILongPressGestureRecognizer *)g { void hearth_home_long(void); if (g.state != UIGestureRecognizerStateBegan) return; [self closeSettings]; hearth_home_long(); }   // the in-game settings close first: Home takes the controller and the game's focus
 - (UIButton *)makeRoundButton:(NSString *)symbol label:(NSString *)label action:(SEL)action {   // a 44 pt target with a 32 pt translucent disc
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
     UIButtonConfiguration *c = [UIButtonConfiguration plainButtonConfiguration];
@@ -135,6 +137,7 @@ static UILabel *front_ios_fps_label(void);
     if (self.settings || !self.game) return;
     DmSettingsVC *vc = [[DmSettingsVC alloc] initWithSettings:DmSettings.shared size:self.view.bounds.size];
     __weak DmGameVC *w = self; vc.onClose = ^{ [w closeSettings]; };
+    void hearth_restart_game(void); vc.onRestart = ^{ hearth_restart_game(); };   // back into this game in a new process, not out to the iPadOS Home Screen
     self.settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
