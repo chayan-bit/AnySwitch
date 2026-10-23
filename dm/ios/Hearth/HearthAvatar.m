@@ -20,8 +20,7 @@ static UIColor *colour(NSString *name) {
     return [UIColor colorWithRed:((v >> 16) & 0xff) / 255.0 green:((v >> 8) & 0xff) / 255.0 blue:(v & 0xff) / 255.0 alpha:1];
 }
 static NSArray<NSDictionary *> *art_choices(void) {
-    NSArray *p = @[@[@"person.fill", @"amber"], @[@"star.fill", @"teal"], @[@"leaf.fill", @"lime"], @[@"flame.fill", @"coral"], @[@"moon.fill", @"violet"], @[@"bolt.fill", @"sky"], @[@"heart.fill", @"rose"], @[@"pawprint.fill", @"slate"]];
-    NSMutableArray *out = [NSMutableArray array];
+    NSArray *p = @[@[@"person.fill", @"amber"], @[@"star.fill", @"teal"], @[@"leaf.fill", @"lime"], @[@"flame.fill", @"coral"], @[@"moon.fill", @"violet"], @[@"bolt.fill", @"sky"], @[@"heart.fill", @"rose"], @[@"pawprint.fill", @"slate"]];    NSMutableArray *out = [NSMutableArray array];
     for (NSArray *a in p) [out addObject:@{@"kind": @"art", @"symbol": a[0], @"colour": a[1]}];
     return out;
 }
@@ -94,7 +93,8 @@ void hearth_pick_user(UIViewController *over, NSString *title, HearthUser *prefe
 void hearth_choose_avatar(UIViewController *over, HearthUser *u, void (^done)(BOOL changed)) {
     NSArray<NSDictionary *> *arts = art_choices();
     NSMutableArray *names = [NSMutableArray array], *imgs = [NSMutableArray array];
-    for (NSDictionary *a in arts) { [names addObject:@""]; [imgs addObject:draw_art(a, AVATAR_EDGE)]; }
+    NSDictionary *named = @{@"person.fill": @"Person", @"star.fill": @"Star", @"leaf.fill": @"Leaf", @"flame.fill": @"Flame", @"moon.fill": @"Moon", @"bolt.fill": @"Bolt", @"heart.fill": @"Heart", @"pawprint.fill": @"Paw"};
+    for (NSDictionary *a in arts) { [names addObject:named[a[@"symbol"]] ?: @"Picture"]; [imgs addObject:draw_art(a, AVATAR_EDGE)]; }   // the name under the tile, for VoiceOver and the A hint
     [names addObject:@"Photo"]; [imgs addObject:[[UIImage systemImageNamed:@"photo.on.rectangle"] imageWithTintColor:UIColor.grayColor renderingMode:UIImageRenderingModeAlwaysOriginal]];
     [names addObject:@"Cancel"]; [imgs addObject:NSNull.null];
     NSUInteger cur = [arts indexOfObject:u.avatar]; NSInteger focus = cur == NSNotFound ? 0 : (NSInteger)cur, cancel = (NSInteger)names.count - 1;
