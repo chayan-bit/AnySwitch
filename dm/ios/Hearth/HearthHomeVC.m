@@ -8,6 +8,7 @@
 #import "HearthTheme.h"
 #import "HearthSound.h"
 #import "HearthQuickVC.h"
+#import "HearthGalleryVC.h"
 #import "HearthSleep.h"
 #import "HearthDialog.h"
 #import "HearthSettingsPages.h"
@@ -30,7 +31,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     HearthTopBar *_bar; UIScrollView *_row; UILabel *_empty; UIView *_divider; UILabel *_buttonName; CGFloat _tileSize; NSMutableArray<HearthTile *> *_tiles; NSArray<HearthRoundButton *> *_buttons;
     DmFocusView *_tileRing, *_buttonRing; DmHintBar *_hints; NSArray *_shownHints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _launching;
-    DmSettingsVC *_settings; HearthQuickVC *_quick; NSArray<NSString *> *_buttonActions;
+    DmSettingsVC *_settings; HearthQuickVC *_quick; HearthGalleryVC *_gallery; NSArray<NSString *> *_buttonActions;
 }
 
 #pragma mark - Build
@@ -47,7 +48,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _tileRing = [DmFocusView new]; _tileRing.radius = HEARTH_TILE_RADIUS + 6; [_row addSubview:_tileRing];
     _empty = [UILabel new]; _empty.text = @"No games yet"; _empty.font = [DmUI font:22 weight:UIFontWeightSemibold]; _empty.textColor = DmUI.sub; _empty.textAlignment = NSTextAlignmentCenter;
     NSMutableArray *bs = [NSMutableArray array], *acts = [NSMutableArray array];
-    NSArray *defs = @[@[@"gearshape.fill", @"Settings", @"openSettings"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
+    NSArray *defs = @[@[@"photo.on.rectangle", @"Gallery", @"openGallery"], @[@"gearshape.fill", @"Settings", @"openSettings"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
     if (_overlay) defs = [defs arrayByAddingObject:@[@"xmark", @"Close the game", @"closeGame"]];   // touch's way to close the paused game
     for (NSArray *d in defs) { [bs addObject:[[HearthRoundButton alloc] initWithSymbol:d[0] label:d[1]]]; [acts addObject:d[2]]; }
     _buttons = bs; _buttonActions = acts;
@@ -200,8 +201,9 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     __weak HearthHomeVC *w = self;
     hearth_sleep(^{ HearthHomeVC *s = w; if (hearth_home_up()) hearth_resume(); else if (s) { [s takeController]; [s becomeFirstResponder]; } });
 }
+- (BOOL)layerUp { return _quick || _settings || _gallery; }   // a panel, a sheet or the Gallery is over Home
 - (void)openQuick {
-    if (_quick || _settings) return;
+    if (self.layerUp) return;
     hearth_sound(HearthSoundOpen); [_repeat stop];
     HearthQuickVC *q = [HearthQuickVC new]; _quick = q;
     __weak HearthHomeVC *w = self;
@@ -212,7 +214,23 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     [self.view addSubview:q.view]; [q didMoveToParentViewController:self]; hearth_ax_cover(q.view, YES);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [q padState:m lx:lx ly:ly]; });
 }
-- (BOOL)closeQuick { if (!_quick) return NO; [_quick close]; return YES; }   // HOME with the panel open closes only the panel
+- (BOOL)closeQuick { if (_gallery) { [_gallery close]; return YES; } if (!_quick) return NO; [_quick close]; return YES; }   // HOME with the panel or the Gallery open closes only that
+- (void)openGallery {
+    if (self.layerUp) return;
+    hearth_sound(HearthSoundOpen); [_repeat stop];
+    HearthGalleryVC *g = [HearthGalleryVC new]; _gallery = g;
+    __weak HearthHomeVC *w = self; g.onClose = ^{ [w galleryGone]; };
+    [self addChildViewController:g];
+    g.view.frame = self.view.bounds; g.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:g.view]; [g didMoveToParentViewController:self]; hearth_ax_cover(g.view, YES);
+    dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [g padState:m lx:lx ly:ly]; });
+}
+- (void)galleryGone {
+    HearthGalleryVC *g = _gallery; if (!g) return;
+    _gallery = nil;
+    [g willMoveToParentViewController:nil]; hearth_ax_cover(g.view, NO); [g.view removeFromSuperview]; [g removeFromParentViewController];
+    [self takeController]; [self becomeFirstResponder];
+}
 - (void)quickGone {
     HearthQuickVC *q = _quick; if (!q) return;
     _quick = nil;
@@ -245,7 +263,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 }
 - (void)openSettings { [self showSheet:hearth_system_settings(self.view.bounds.size)]; }
 - (void)openUser:(HearthUser *)u {   // a picture in the top bar: that user on the Users page
-    if (_settings || _quick) return;
+    if (self.layerUp) return;
     DmSettingsVC *v = hearth_system_settings(self.view.bounds.size); [self showSheet:v]; hearth_settings_show_user(v, u.uid);
 }
 - (void)openOptions:(HearthGame *)g {
@@ -255,7 +273,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 }
 // System Settings or a game's Options, over Home; it has the controller until it closes
 - (void)showSheet:(DmSettingsVC *)vc {
-    if (_settings || _quick) return;
+    if (self.layerUp) return;
     hearth_sound(HearthSoundOpen); [_repeat stop];
     __weak HearthHomeVC *w = self;
     vc.onClose = ^{ [w closeSettings]; };
@@ -324,7 +342,7 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     if (up & 1ull << DMB_X && _focus.zone == ZoneTiles && _focus.index >= 0 && _tiles[(NSUInteger)_focus.index].playing) { [_focus showRing]; hearth_confirm_close(self); }
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
-    if (_settings || _quick || _launching) return @[];
+    if (self.layerUp || _launching) return @[];
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in @[@[UIKeyInputUpArrow, @"keyUp"], @[UIKeyInputDownArrow, @"keyDown"], @[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"], @[@"\r", @"activate"]]) {
         UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:p[0] modifierFlags:0 action:NSSelectorFromString(p[1])]; c.wantsPriorityOverSystemBehavior = YES; [r addObject:c];

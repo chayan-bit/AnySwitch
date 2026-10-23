@@ -39,6 +39,7 @@ targets:
         UILaunchStoryboardName: ""
         UIFileSharingEnabled: true          # Documents (log.txt, saves) visible in the Files app
         LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryAddUsageDescription: Hearth adds the screenshots you choose in its Gallery to your photo library.   # the Gallery's Save to Photos (add-only access)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
