@@ -1928,7 +1928,7 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
     if (r != (unsigned)pk->vbase) { static int nl; if (nl++ < 6) MLOG("sparse texture ser=%llu %ux%u: sampled from level %u of %u (finer levels not mapped)", (unsigned long long)t->serial, t->d.width, t->d.height, r, n); }
     pk->vbase = (int)r;
 }
-// ---- Render-target heaps: NVN aliasing kept (off by default: DM_NVN_RTHEAP=1 turns it on) ----
+// ---- Render-target heaps: NVN aliasing kept (on by default; DM_NVN_RTHEAP=0 turns it off) ----
 // A game places render targets it never uses at the same time in the same or overlapping storage of one pool, and initializes new texture objects on that storage as it goes (Odyssey:
 // a 100 MB G-buffer pool holds about 1,000 texture descriptions by the Cap Kingdom, 1.4 GB summed at 1x, as its dynamic resolution and passes re-describe the same 60 MB; one storage is
 // used as R11G11B10F and as R32F). One Metal texture per (pool, offset, description) gave each its own memory, and kept it until the pool went. Here the GPU-owned textures of a pool share
@@ -1948,7 +1948,7 @@ typedef struct { uint64_t pool; int64_t off; uint64_t size; nvn_texdesc d; MTLSi
 static pthread_mutex_t g_rh_mu = PTHREAD_MUTEX_INITIALIZER;
 static rh_tex *g_rh; static uint32_t g_rh_n, g_rh_cap; static nvn_hmap g_rh_idx = {.klen = sizeof(alias_key)};   // registry of initialized eligible textures, deduplicated by storage + description
 static NSMutableArray<NvRtHeap *> *g_rh_heaps; static int g_rh_on = -1; static uint64_t g_rh_placed, g_rh_shared;   // textures placed in heaps, of them over bytes a member already used
-static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = e && atoi(e) != 0; } return g_rh_on; }
+static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = !(e && atoi(e) == 0); } return g_rh_on; }
 // A texture that becomes a plain GPU-owned private texture in tex_mtl_ (not packaged, linear, buffer or compressed): a sampled texture of a sparse virtual pool is read through the page
 // table (packaged), as tex_mtl_ decides
 static int rh_eligible(const tex_t *t) {
