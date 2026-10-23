@@ -96,9 +96,9 @@ pack-check: $(B)/t_pack $(B)/t_pack_embedded ../../games/game.py
 	TMPDIR="$(abspath $(B))" $(B)/t_pack $(B)/pack_profile $(PACK_ID) 2>/dev/null
 	TMPDIR="$(abspath $(B))" $(B)/t_pack_embedded $(B)/pack_profile $(PACK_ID) 2>/dev/null
 $(B)/t_pack: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
-	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
+	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation -framework Metal
 $(B)/t_pack_embedded: t_pack.m ../boot.m ../boot.h ../profile.m ../profile.h ../dm_abi.h ../dm.h | $(B)
-	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -DEMBED_TITLE='"$(PACK_ID)"' -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation
+	clang -O0 -Wall -Wno-unused-function -fobjc-arc -I.. -DEMBED_TITLE='"$(PACK_ID)"' -o $@ t_pack.m ../boot.m ../profile.m -framework Foundation -framework Metal
 .PHONY: run tsan profile-schema pack-check
 tsan: $(B)/t_audio_spsc_tsan $(B)/t_sync_tsan
 	$(B)/t_audio_spsc_tsan
