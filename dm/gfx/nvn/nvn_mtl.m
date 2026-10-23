@@ -1929,36 +1929,50 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
     pk->vbase = (int)r;
 }
 // ---- Render-target heaps: NVN aliasing kept (DM_NVN_RTHEAP=0 turns it off) ----
-// A game places render targets it never uses at the same time in the same or overlapping storage of one pool (Odyssey: 6.5 MB targets 0.4 MB apart in its G-buffer pool, and one
-// storage used as R11G11B10F and as R32F). One Metal texture per (pool, offset, description) gave each its own memory: 194 MB of Metal textures for a 100 MB guest pool at 1x, about
-// four times that at 2x. Here the GPU-owned textures of a group of overlapping storage (a cluster: the textures initialized in the pool whose guest ranges overlap, transitively) share a
-// Metal placement heap, each at its guest offset times the cluster's scale K (the largest host size + alignment over guest size of its members), so textures whose guest ranges overlap
-// share bytes as on the Switch and textures whose guest ranges are disjoint never share host bytes (host range ⊂ [K(o - lo), K(o + size - lo)), see rh_place).
-// The replay already orders every pass after the passes before it (full barriers between encoders), which is what aliased memory needs. A texture created over bytes another member
-// already used is not zeroed (on the Switch it reads what is there; zeroing would clobber the other texture). Generic: no title lists; textures that do not fit a cluster, packaged,
-// linear, buffer, CPU-written and initial-content textures stay standalone, as before. Clusters and the registry live until their pool is finalized (mtl_alias_drop_pool)
-typedef struct { uint64_t pool; int64_t off; uint64_t size; nvn_texdesc d; } rh_tex;
+// A game places render targets it never uses at the same time in the same or overlapping storage of one pool, and initializes new texture objects on that storage as it goes (Odyssey:
+// a 100 MB G-buffer pool holds about 1,000 texture descriptions by the Cap Kingdom, 1.4 GB summed at 1x, as its dynamic resolution and passes re-describe the same 60 MB; one storage is
+// used as R11G11B10F and as R32F). One Metal texture per (pool, offset, description) gave each its own memory, and kept it until the pool went. Here the GPU-owned textures of a pool share
+// a Metal placement heap laid out like the pool: each at its guest offset times the heap's scale K (host size + alignment over guest size), so textures whose guest ranges overlap share
+// bytes as on the Switch and textures whose guest ranges are disjoint never share host bytes (host range within [K(o - lo), K(o + size - lo)), see rh_place).
+// The heap covers the whole pool when that is smaller than 9/10 of the textures initialized in it so far apart (a pool of render targets); else a cluster: the textures whose guest
+// ranges overlap, transitively, when there are at least two and the same saving holds. K covers 90% of the members' host bytes; a texture that needs more (small ones, whose alignment
+// dominates) stays standalone, as does every texture outside a heap. The replay already orders every pass after the passes before it (full barriers between encoders), which is what aliased
+// memory needs. A texture created over bytes another member already used is not zeroed (on the Switch it reads what is there; zeroing would clobber the other texture). Generic: no title
+// lists; packaged, linear, buffer, CPU-written and initial-content textures stay standalone, as before. The registry and heaps live until their pool is finalized (mtl_alias_drop_pool)
+typedef struct { uint64_t pool; int64_t off; uint64_t size; nvn_texdesc d; MTLSizeAndAlign sa; } rh_tex;
 @interface NvRtHeap : NSObject { @public uint64_t pool; int64_t lo, hi; double k; NSUInteger align; id<MTLHeap> heap; uint32_t members; uint64_t (*used)[2]; uint32_t nused; } @end
 @implementation NvRtHeap - (void)dealloc { free(used); } @end
 static pthread_mutex_t g_rh_mu = PTHREAD_MUTEX_INITIALIZER;
 static rh_tex *g_rh; static uint32_t g_rh_n, g_rh_cap; static nvn_hmap g_rh_idx = {.klen = sizeof(alias_key)};   // registry of initialized eligible textures, deduplicated by storage + description
 static NSMutableArray<NvRtHeap *> *g_rh_heaps; static int g_rh_on = -1; static uint64_t g_rh_placed, g_rh_shared;   // textures placed in heaps, of them over bytes a member already used
 static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = !e || atoi(e) != 0; } return g_rh_on; }
-// A texture that becomes a plain GPU-owned private texture in tex_mtl_ (not packaged, linear, buffer or compressed); a virtual pool's texture that may be read through the page table
-// (packaged when the pool is sparse) is left out unless it is compressible or an image, as tex_mtl_ decides
+// A texture that becomes a plain GPU-owned private texture in tex_mtl_ (not packaged, linear, buffer or compressed): a sampled texture of a sparse virtual pool is read through the page
+// table (packaged), as tex_mtl_ decides
 static int rh_eligible(const tex_t *t) {
     if (!t->pool || !t->L.size || t->has_layout || t->d.target == NVN_TEXTURE_TARGET_BUFFER || fmt_compressed(t->d.format)) return 0;
     if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;
-    if ((t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && !(t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE))) return 0;
+    if ((t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && !(t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE)) && nvn_sparse_pool(t->pool)) return 0;
     return 1;
+}
+// Host size and alignment of a texture description in a heap, at the session scale when it may be scaled (an upper bound: a member made at 1x takes less)
+static MTLSizeAndAlign rh_size(const nvn_texdesc *td) {
+    tex_t t; memset(&t, 0, sizeof t); t.d = *td; MTLSizeAndAlign z = {0, 0};
+    MTLTextureDescriptor *d = tex_desc(&t, 0); if (!d) return z;
+    if (g_rs != 1.0f && (td->target == 1 || td->target >= 4) && td->target <= 6 && nvn_rs_host(td->width, g_rs) <= 16384 && nvn_rs_host(td->height, g_rs) <= 16384) {
+        d.width = nvn_rs_host((uint32_t)d.width, g_rs); d.height = nvn_rs_host((uint32_t)d.height, g_rs); }
+    return [g_dev heapTextureSizeAndAlignWithDescriptor:d];
 }
 static void rh_note(const tex_t *t) {   // TextureInitialize
     if (!rh_on() || !rh_eligible(t)) return;
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
+    pthread_mutex_lock(&g_rh_mu); int known = nvn_hm_get(&g_rh_idx, &ak) != NULL; pthread_mutex_unlock(&g_rh_mu);
+    if (known) return;
+    MTLSizeAndAlign sa; @autoreleasepool { sa = rh_size(&t->d); }   // a game thread: its implicit pool is never drained
+    if (!sa.size) return;
     pthread_mutex_lock(&g_rh_mu);
     if (!nvn_hm_get(&g_rh_idx, &ak)) {
         if (g_rh_n == g_rh_cap) { g_rh_cap = g_rh_cap ? g_rh_cap * 2 : 256; g_rh = realloc(g_rh, g_rh_cap * sizeof *g_rh); if (!g_rh) abort(); }
-        g_rh[g_rh_n] = (rh_tex){ak.pool, t->off, t->L.size, t->d}; g_rh_n++;
+        g_rh[g_rh_n] = (rh_tex){ak.pool, t->off, t->L.size, t->d, sa}; g_rh_n++;
         nvn_hm_put(&g_rh_idx, &ak, (void *)(uintptr_t)g_rh_n);
     }
     pthread_mutex_unlock(&g_rh_mu);
@@ -1973,14 +1987,6 @@ static void rh_drop_pool(const void *pool) {   // pool Finalize: its registry en
         defer_obj_release(g_rh_heaps[(NSUInteger)i]->heap); [g_rh_heaps removeObjectAtIndex:(NSUInteger)i]; }
     pthread_mutex_unlock(&g_rh_mu);
 }
-// Host size and alignment of a registry texture in a heap, at the session scale when it may be scaled (an upper bound: a member made at 1x takes less)
-static MTLSizeAndAlign rh_size(const rh_tex *e) {
-    tex_t t; memset(&t, 0, sizeof t); t.d = e->d; MTLSizeAndAlign z = {0, 0};
-    MTLTextureDescriptor *d = tex_desc(&t, 0); if (!d) return z;
-    if (g_rs != 1.0f && (e->d.target == 1 || e->d.target >= 4) && e->d.target <= 6 && nvn_rs_host(e->d.width, g_rs) <= 16384 && nvn_rs_host(e->d.height, g_rs) <= 16384) {
-        d.width = nvn_rs_host((uint32_t)d.width, g_rs); d.height = nvn_rs_host((uint32_t)d.height, g_rs); }
-    return [g_dev heapTextureSizeAndAlignWithDescriptor:d];
-}
 // Host offset of a texture at guest offset o (size g) in heap h for a host size n: aligned K(o - lo), and only if it ends before K(o + g - lo) and the heap's end
 static int rh_place(NvRtHeap *h, int64_t o, uint64_t g, MTLSizeAndAlign sa, uint64_t *at) {
     if (o < h->lo || o + (int64_t)g > h->hi || !sa.size || h->align % sa.align) return 0;
@@ -1988,46 +1994,62 @@ static int rh_place(NvRtHeap *h, int64_t o, uint64_t g, MTLSizeAndAlign sa, uint
     if (a + sa.size > (uint64_t)floor((double)(o + (int64_t)g - h->lo) * h->k) || a + sa.size > h->heap.size) return 0;
     *at = a; return 1;
 }
-// The cluster of t (under g_rh_mu): a heap for the registry textures of t's pool connected to t by overlap, when there are at least two and the heap is smaller than 9/10 of their
-// separate sizes; nil otherwise (and when the cluster reaches an existing heap: the textures stay standalone)
-static NvRtHeap *rh_cluster(const tex_t *t) {
-    uint64_t pool = (uint64_t)(uintptr_t)t->pool; int64_t lo = t->off, hi = t->off + (int64_t)t->L.size;
-    for (int grew = 1; grew;) { grew = 0;
-        for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; int64_t elo = e->off, ehi = e->off + (int64_t)e->size;
-            if (e->pool == pool && elo < hi && lo < ehi && (elo < lo || ehi > hi)) { lo = MIN(lo, elo); hi = MAX(hi, ehi); grew = 1; } } }
-    for (NvRtHeap *h in g_rh_heaps) if (h->pool == pool && h->lo < hi && lo < h->hi) return nil;
-    double k = 0; NSUInteger al = 1; uint64_t sum = 0; uint32_t n = 0;
-    for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i];
-        if (e->pool != pool || e->off < lo || e->off + (int64_t)e->size > hi) continue;
-        MTLSizeAndAlign sa = rh_size(e); if (!sa.size) continue;
-        al = MAX(al, sa.align); sum += sa.size; n++; }
+// K's margin over the textures known when the heap is made: descriptions the game initializes later on the same storage (another resolution, another format) need up to about a tenth
+// more host bytes per guest byte (guest rows are padded to the block-linear layout, scaled sizes round up); they fit, at a heap a seventh larger
+#define RH_K_SLACK 1.15
+typedef struct { double r; uint64_t w; } rh_rw;
+static int rh_rw_cmp(const void *a, const void *b) { double x = ((const rh_rw *)a)->r, y = ((const rh_rw *)b)->r; return (x > y) - (x < y); }
+// A heap for t's pool over guest [lo, hi) (under g_rh_mu): K is the smallest scale that fits 90% of the host bytes of the registry textures inside; nil when fewer than two fit or the heap
+// is not smaller than 9/10 of the ones that fit apart
+static NvRtHeap *rh_heap_new(const tex_t *t, int64_t lo, int64_t hi, const char *what) {
+    uint64_t pool = (uint64_t)(uintptr_t)t->pool; NSUInteger al = 1; uint32_t n = 0; uint64_t all = 0;
+    for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; if (e->pool == pool && e->off >= lo && e->off + (int64_t)e->size <= hi) { al = MAX(al, e->sa.align); n++; } }
     if (n < 2) return nil;
+    rh_rw *rw = malloc(n * sizeof *rw); if (!rw) abort(); n = 0;
     for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i];
-        if (e->pool != pool || e->off < lo || e->off + (int64_t)e->size > hi) continue;
-        MTLSizeAndAlign sa = rh_size(e); if (sa.size) k = MAX(k, (double)(sa.size + al) / (double)e->size); }
+        if (e->pool == pool && e->off >= lo && e->off + (int64_t)e->size <= hi) { rw[n++] = (rh_rw){(double)(e->sa.size + al) / (double)e->size, e->sa.size}; all += e->sa.size; } }
+    qsort(rw, n, sizeof *rw, rh_rw_cmp);
+    double k = 0; uint64_t sum = 0; uint32_t fit = 0;
+    for (uint32_t i = 0; i < n && sum * 10 < all * 9; i++) { k = rw[i].r; sum += rw[i].w; }
+    k *= RH_K_SLACK; sum = 0;
+    for (uint32_t i = 0; i < n && rw[i].r <= k; i++) { sum += rw[i].w; fit++; }
+    free(rw);
     uint64_t size = ((uint64_t)ceil((double)(hi - lo) * k) + al - 1) / al * al;
-    if (size * 10 >= sum * 9) return nil;
+    if (fit < 2 || size * 10 >= sum * 9) return nil;
     MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.storageMode = MTLStorageModePrivate; hd.hazardTrackingMode = MTLHazardTrackingModeUntracked; hd.size = size;
     id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd];
-    if (!heap) { static int nf; if (!nf++) MLOG("[RED] render-target heap of %llu MB not created: the cluster's textures stay standalone", (unsigned long long)(size >> 20)); return nil; }
+    if (!heap) { static int nf; if (!nf++) MLOG("[RED] render-target heap of %llu MB not created: its textures stay standalone", (unsigned long long)(size >> 20)); return nil; }
     NvRtHeap *h = [NvRtHeap new]; h->pool = pool; h->lo = lo; h->hi = hi; h->k = k; h->align = al; h->heap = heap;
     if (!g_rh_heaps) g_rh_heaps = [NSMutableArray array];
     [g_rh_heaps addObject:h];
     res_add((id<MTLResource>)(id)heap);   // the heap is the allocation the residency set holds (MTLAllocation; res_add_at only adds it)
-    static int nl; if (nl++ < 16) MLOG("render-target heap: pool %p guest %#llx..%#llx (%llu KB), %u textures of %llu KB apart in %llu KB (scale %.3f)", t->pool, (unsigned long long)lo, (unsigned long long)hi,
-                                       (unsigned long long)((hi - lo) >> 10), n, (unsigned long long)(sum >> 10), (unsigned long long)(size >> 10), k);
+    static int nl; if (nl++ < 16) MLOG("render-target heap (%s): pool %p guest %#llx..%#llx (%llu KB), %u of %u textures, %llu KB apart, in %llu KB (scale %.3f)", what, t->pool, (unsigned long long)lo,
+                                       (unsigned long long)hi, (unsigned long long)((hi - lo) >> 10), fit, n, (unsigned long long)(sum >> 10), (unsigned long long)(size >> 10), k);
     return h;
 }
-// t's texture in its cluster's heap, or nil (standalone). *over: it starts on bytes a member already used (not zeroed then)
+// A heap for t (under g_rh_mu): the whole pool, unless the pool has one already or it would not save; else t's cluster, unless that reaches an existing heap (then t stays standalone)
+static NvRtHeap *rh_cluster(const tex_t *t) {
+    uint64_t pool = (uint64_t)(uintptr_t)t->pool; int whole = 0;
+    for (NvRtHeap *h in g_rh_heaps) whole |= h->pool == pool && h->lo == 0 && h->hi == (int64_t)t->pool->size;
+    if (!whole && t->pool->size >= (uint64_t)t->off + t->L.size) { NvRtHeap *h = rh_heap_new(t, 0, (int64_t)t->pool->size, "whole pool"); if (h) return h; }
+    int64_t lo = t->off, hi = t->off + (int64_t)t->L.size;
+    for (int grew = 1; grew;) { grew = 0;
+        for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; int64_t elo = e->off, ehi = e->off + (int64_t)e->size;
+            if (e->pool == pool && elo < hi && lo < ehi && (elo < lo || ehi > hi)) { lo = MIN(lo, elo); hi = MAX(hi, ehi); grew = 1; } } }
+    for (NvRtHeap *h in g_rh_heaps) if (h->pool == pool && h->lo < hi && lo < h->hi) return nil;
+    return rh_heap_new(t, lo, hi, "cluster");
+}
+// t's texture in a heap of its pool (the widest that holds its range and its scale), or nil (standalone). *over: it starts on bytes a member already used (not zeroed then)
 static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d, int *over) {
     *over = 0;
     if (!rh_on() || !rh_eligible(t) || tex_init_wanted(t, d.pixelFormat)) return nil;
     MTLSizeAndAlign sa = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
     pthread_mutex_lock(&g_rh_mu);
-    NvRtHeap *h = nil; uint64_t pool = (uint64_t)(uintptr_t)t->pool, at = 0;
-    for (NvRtHeap *x in g_rh_heaps) if (x->pool == pool && x->lo <= t->off && t->off + (int64_t)t->L.size <= x->hi) { h = x; break; }
-    if (!h) { alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = pool; ak.off = t->off; ak.d = t->d; if (nvn_hm_get(&g_rh_idx, &ak)) h = rh_cluster(t); }
-    if (!h || !rh_place(h, t->off, t->L.size, sa, &at)) { pthread_mutex_unlock(&g_rh_mu); return nil; }
+    NvRtHeap *h = nil; uint64_t pool = (uint64_t)(uintptr_t)t->pool, at = 0, a;
+    for (NvRtHeap *x in g_rh_heaps) if (x->pool == pool && (!h || x->hi - x->lo > h->hi - h->lo) && rh_place(x, t->off, t->L.size, sa, &a)) { h = x; at = a; }
+    if (!h) { alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = pool; ak.off = t->off; ak.d = t->d;
+        if (nvn_hm_get(&g_rh_idx, &ak) && (h = rh_cluster(t)) && !rh_place(h, t->off, t->L.size, sa, &at)) h = nil; }
+    if (!h) { pthread_mutex_unlock(&g_rh_mu); return nil; }
     for (uint32_t i = 0; i < h->nused; i++) *over |= h->used[i][0] < at + sa.size && at < h->used[i][1];
     uint64_t (*nu)[2] = realloc(h->used, (h->nused + 1) * sizeof *nu); if (!nu) abort(); h->used = nu; h->used[h->nused][0] = at; h->used[h->nused][1] = at + sa.size; h->nused++;
     h->members++; g_rh_placed++; g_rh_shared += *over;
