@@ -17,6 +17,7 @@
 #import "HearthCapture.h"
 #import "HearthGallery.h"
 #import "HearthAvatar.h"
+#import "HearthTheme.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -200,8 +201,9 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
         hud = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
     if (self.fps) self.fps.frame = hud;
-    self.home.frame = CGRectMake(floor(b.size.width / 2 - 22), CGRectGetMaxY(UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets)) - 52, 44, 44);   // bottom centre, between the stick and the face buttons
-    self.shot.frame = CGRectOffset(self.home.frame, -52, 0);   // Capture left of HOME, as on the console's left and right controllers
+    HearthGameButtons gb = hearth_game_buttons(b.size.width, b.size.height, CGRectGetMaxY(UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets)), CGRectGetMaxX(content));   // in the side bar the picture leaves (iPhone), else bottom centre
+    self.home.frame = CGRectMake(gb.homeX, gb.homeY, 44, 44);
+    self.shot.frame = CGRectMake(gb.shotX, gb.shotY, 44, 44);   // Capture left of HOME at the bottom centre, as on the console's left and right controllers; under HOME in a side bar
     self.gear.frame = CGRectMake(CGRectGetMaxX(hud) + 4, CGRectGetMidY(hud) - 22, 44, 44);   // the counter's place stays reserved while it is off, so nothing moves when it is switched
 }
 - (void)viewDidAppear:(BOOL)a {

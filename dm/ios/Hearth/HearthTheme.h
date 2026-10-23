@@ -66,3 +66,22 @@ static inline HearthMetrics hearth_metrics(double width, double height, double s
     m.tile = (double)(long)t;
     return m;
 }
+
+// The game screen's HOME and Capture buttons (44 pt targets) as top-left corners. The picture is the game's 16:9 frame fitted in the screen. Where it leaves a bar at the side (an iPhone: 16:9 on
+// a 19.5:9 screen) wide enough for a target, they go there, in the right bar (the Dynamic Island is at the left), stacked about the screen's middle with HOME above Capture, clear of the
+// controls in the corners and never over the picture's subtitles. Otherwise (an iPad, whose bars are above and below the picture) HOME is at the bottom centre with Capture to its left, as before.
+// safeMaxY: the bottom edge of the safe area; contentMaxX: the right edge of the picture.
+#define HEARTH_GAME_BUTTON 44.0
+#define HEARTH_GAME_BAR_MIN 52.0    // the side bar's least width for the buttons: a target and 4 pt each side
+typedef struct { double homeX, homeY, shotX, shotY; int sideBar; } HearthGameButtons;
+static inline HearthGameButtons hearth_game_buttons(double width, double height, double safeMaxY, double contentMaxX) {
+    HearthGameButtons g = {0};
+    double bar = width - contentMaxX;
+    if (bar >= HEARTH_GAME_BAR_MIN) {
+        g.sideBar = 1; g.homeX = g.shotX = (double)(long)(width - bar / 2 - HEARTH_GAME_BUTTON / 2);
+        g.homeY = (double)(long)(height / 2 - HEARTH_GAME_BUTTON - 4); g.shotY = g.homeY + HEARTH_GAME_BUTTON + 8;
+        return g;
+    }
+    g.homeX = (double)(long)(width / 2 - HEARTH_GAME_BUTTON / 2); g.homeY = g.shotY = safeMaxY - 52; g.shotX = g.homeX - 52;
+    return g;
+}
