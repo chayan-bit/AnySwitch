@@ -20,6 +20,7 @@ static void manifest(NSString *root, NSString *title, int format) {
 }
 static void nacp(NSString *root, int lang, NSString *name, NSString *pub) {
     NSMutableData *d = [NSMutableData dataWithLength:0x4000];
+    if (lang == 0) memcpy((char *)d.mutableBytes + 0x3060, "1.3.2", 5);   // the display version (the pack with the American English entry has one)
     memcpy((char *)d.mutableBytes + lang * 0x300, name.UTF8String, strlen(name.UTF8String));
     memcpy((char *)d.mutableBytes + lang * 0x300 + 0x200, pub.UTF8String, strlen(pub.UTF8String));
     [NSFileManager.defaultManager createDirectoryAtPath:[root stringByAppendingPathComponent:@"meta"] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -52,6 +53,7 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
     CHECK(all.count == 3, "count %lu", (unsigned long)all.count);
     CHECK(all[0].bundled && [all[0].titleId isEqual:@"0100000000030000"] && [all[1].titleId isEqual:@"0100000000010000"] && [all[2].titleId isEqual:@"0100000000020000"], "order");
     CHECK([all[0].name isEqual:@"Bundled Game"] && [all[0].publisher isEqual:@"Maker"], "NACP American English: %s", all[0].name.UTF8String);
+    CHECK([all[0].version isEqual:@"1.3.2"] && all[1].version == nil, "NACP display version: %s / %s", all[0].version.UTF8String, all[1].version.UTF8String);
     CHECK([all[1].name isEqual:@"Second Language Name"], "NACP first set language: %s", all[1].name.UTF8String);
     CHECK([all[2].name isEqual:@"0100000000020000"], "no NACP: the title id");
 

@@ -4,6 +4,7 @@
 #import "HearthHomeViews.h"
 #import "HearthSound.h"
 #import "HearthImport.h"
+#import "HearthDialog.h"
 #import <objc/message.h>
 #include "hle.h"
 
@@ -91,38 +92,22 @@ void hearth_close(void) {
     relaunch();
 }
 
-// The confirming action of the dialog on screen, for a controller's A; cleared by either button
-static void (^g_confirm)(void);
-void hearth_dialog_answer(UIViewController *over, BOOL yes) {
-    void (^f)(void) = yes ? g_confirm : nil; g_confirm = nil;
-    if (!f && over.presentedViewController) fprintf(stderr, "hearth: dialog dismissed (controller)\n");
-    [over dismissViewControllerAnimated:YES completion:f];
-}
-// A two-button dialog: the confirming button is destructive and preferred (Return on a keyboard, A on a controller), Cancel keeps things as they are
+// A two-button dialog (HearthDialog.m): the confirming button is destructive and focused first (Return on a keyboard, A on a controller), Cancel keeps things as they are
 static void confirm(UIViewController *over, NSString *title, NSString *yes, NSString *what, void (^run)(void)) {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:@"Progress that was not saved will be lost." preferredStyle:UIAlertControllerStyleAlert];
     fprintf(stderr, "hearth: %s dialog shown\n", what.UTF8String);   // with DM_TOUCH_LOG=1 the touches around it are logged too (main.m)
-    void (^go)(void) = ^{ fprintf(stderr, "hearth: %s dialog: %s\n", what.UTF8String, yes.UTF8String); run(); };
-    UIAlertAction *y = [UIAlertAction actionWithTitle:yes style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; g_confirm = nil; go(); }];
-    [a addAction:y];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; g_confirm = nil; fprintf(stderr, "hearth: %s dialog: Cancel\n", what.UTF8String); }]];
-    a.preferredAction = y;
-    g_confirm = ^{ fprintf(stderr, "hearth: (controller A)\n"); go(); };
-    [over presentViewController:a animated:YES completion:nil];
+    hearth_dialog(over, title, @"Progress that was not saved will be lost.", @[@"Cancel", yes], 1, 1, 0, ^(NSInteger i) {
+        fprintf(stderr, "hearth: %s dialog: %s\n", what.UTF8String, i == 1 ? yes.UTF8String : "Cancel");
+        if (i == 1) run();
+    });
 }
 
-static void alert(UIViewController *over, NSString *title, NSString *msg) {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [over presentViewController:a animated:YES completion:nil];
-}
+static void alert(UIViewController *over, NSString *title, NSString *msg) { hearth_dialog_info(over, title, msg); }
 
 void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void))) {
     if (g.reason) { alert(window.rootViewController, hearth_state_line(g), g.why); return; }   // titled like the tile's state line
     if (g_running) {   // one game per process: close the running one, then the restart boots g
         if ([g_running.titleId isEqual:g.titleId]) { hearth_resume(); return; }
-        UIViewController *over = window.rootViewController; while (over.presentedViewController) over = over.presentedViewController;
-        confirm(over, [NSString stringWithFormat:@"Close %@ and start %@?", g_running.name, g.name], @"Close and Start", @"switch", ^{
+        confirm(window.rootViewController, [NSString stringWithFormat:@"Close %@ and start %@?", g_running.name, g.name], @"Close and Start", @"switch", ^{
             [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId}];
             play_stop(); caps_note();
             relaunch();
@@ -169,7 +154,7 @@ static void home_show(void) {
 }
 void hearth_resume(void) {
     HearthHomeVC *h = g_overlay; if (!h) return;
-    g_overlay = nil; g_confirm = nil;
+    g_overlay = nil;
     UIViewController *root = game_vc(); if (root.presentedViewController) [root dismissViewControllerAnimated:NO completion:nil];   // Home's own dialog (no game dialog can be up: Home does not open over one)
     dm_gamepad_set_capture(nil);   // the controller goes back to the game
     dm_home_suspend(0);

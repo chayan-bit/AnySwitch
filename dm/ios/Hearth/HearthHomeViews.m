@@ -21,31 +21,34 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     return [UIFont fontWithDescriptor:d size:f.pointSize];
 }
 
-#define NAME_H 36.0    // room above the art for the focused game's name
-#define STATE_H 30.0   // room below it for the state line
+#define NAME_H 56.0    // room above the art for the focused game's name
+#define STATE_H 44.0   // room below it for the state line
 
 @implementation HearthTile {
     UIImageView *_image; UILabel *_name, *_state;
 }
-- (instancetype)initWithGame:(HearthGame *)g {
-    if (!(self = [super initWithFrame:CGRectMake(0, 0, HEARTH_TILE_SIZE, NAME_H + HEARTH_TILE_SIZE + STATE_H)])) return nil;
-    _game = g;
-    _art = [[UIView alloc] initWithFrame:CGRectMake(0, NAME_H, HEARTH_TILE_SIZE, HEARTH_TILE_SIZE)];
-    _art.userInteractionEnabled = NO; _art.layer.shadowOpacity = 0.25; _art.layer.shadowRadius = 12; _art.layer.shadowOffset = CGSizeMake(0, 6);
++ (CGFloat)nameHeight { return NAME_H; }
++ (CGFloat)stateHeight { return STATE_H; }
+- (instancetype)initWithGame:(HearthGame *)g size:(CGFloat)size {
+    if (!(self = [super initWithFrame:CGRectMake(0, 0, size, NAME_H + size + STATE_H)])) return nil;
+    _game = g; _size = size;
+    _art = [[UIView alloc] initWithFrame:CGRectMake(0, NAME_H, size, size)];
+    _art.userInteractionEnabled = NO; _art.layer.shadowOpacity = 0.28; _art.layer.shadowRadius = 18; _art.layer.shadowOffset = CGSizeMake(0, 8);
     _art.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_art.bounds cornerRadius:HEARTH_TILE_RADIUS].CGPath;
     _image = [[UIImageView alloc] initWithFrame:_art.bounds];
     _image.layer.cornerRadius = HEARTH_TILE_RADIUS; _image.layer.cornerCurve = kCACornerCurveContinuous; _image.clipsToBounds = YES; _image.contentMode = UIViewContentModeScaleAspectFill;
     UIImage *icon = g.iconPath ? [UIImage imageWithContentsOfFile:g.iconPath] : nil;
     if (icon) _image.image = icon;
     else {   // no icon: the game controller symbol on a quiet card
-        _image.image = [UIImage systemImageNamed:@"gamecontroller.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:64 weight:UIImageSymbolWeightRegular]];
+        _image.image = [UIImage systemImageNamed:@"gamecontroller.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:size * 0.3 weight:UIImageSymbolWeightRegular]];
         _image.contentMode = UIViewContentModeCenter; _image.tintColor = DmUI.sub; _image.backgroundColor = DmUI.row;
     }
     [_art addSubview:_image];
-    _name = [[UILabel alloc] initWithFrame:CGRectMake(-40, 0, HEARTH_TILE_SIZE + 80, NAME_H - 8)];
-    _name.text = g.name; _name.font = [DmUI font:20 weight:UIFontWeightSemibold]; _name.textColor = DmUI.text; _name.textAlignment = NSTextAlignmentCenter; _name.alpha = 0;
-    _state = [[UILabel alloc] initWithFrame:CGRectMake(0, NAME_H + HEARTH_TILE_SIZE + 6, HEARTH_TILE_SIZE, STATE_H - 6)];
-    _state.text = hearth_state_line(g); _state.font = [DmUI font:16 weight:UIFontWeightSemibold]; _state.textColor = DmUI.warn; _state.textAlignment = NSTextAlignmentCenter;
+    _name = [[UILabel alloc] initWithFrame:CGRectMake(-40, 8, size + 80, 36)];
+    _name.text = g.name; _name.font = [DmUI font:26 weight:UIFontWeightSemibold]; _name.textColor = DmUI.text; _name.textAlignment = NSTextAlignmentCenter; _name.alpha = 0;
+    _name.adjustsFontSizeToFitWidth = YES; _name.minimumScaleFactor = 0.75; _name.lineBreakMode = NSLineBreakByTruncatingTail;
+    _state = [[UILabel alloc] initWithFrame:CGRectMake(0, NAME_H + size + 8, size, STATE_H - 8)];
+    _state.text = hearth_state_line(g); _state.font = [DmUI font:19 weight:UIFontWeightSemibold]; _state.textColor = DmUI.warn; _state.textAlignment = NSTextAlignmentCenter;
     for (UIView *v in @[_art, _name, _state]) [self addSubview:v];
     if (g.reason) _image.alpha = 0.45;   // a game that cannot start stays in the row, dimmed, and says why
     self.isAccessibilityElement = YES; self.accessibilityLabel = g.name; self.accessibilityValue = hearth_state_line(g); self.accessibilityTraits = UIAccessibilityTraitButton;
@@ -60,10 +63,10 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 - (void)setChosen:(BOOL)f animated:(BOOL)animated {
     _chosen = f;
     void (^apply)(void) = ^{
-        CGFloat s = f ? HEARTH_TILE_FOCUS_SCALE : 1;
+        CGFloat s = f ? hearth_tile_focus_scale(self->_size) : 1, grow = (s - 1) * self->_size / 2;
         self->_art.transform = CGAffineTransformMakeScale(s, s);
-        self->_name.alpha = f; self->_name.transform = CGAffineTransformMakeTranslation(0, f ? -(s - 1) * HEARTH_TILE_SIZE / 2 : 0);   // both lines stay clear of the grown art
-        self->_state.transform = CGAffineTransformMakeTranslation(0, f ? (s - 1) * HEARTH_TILE_SIZE / 2 : 0);
+        self->_name.alpha = f; self->_name.transform = CGAffineTransformMakeTranslation(0, f ? -grow : 0);   // both lines stay clear of the grown art
+        self->_state.transform = CGAffineTransformMakeTranslation(0, f ? grow : 0);
     };
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) [UIView animateWithDuration:HEARTH_FOCUS_SECONDS delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:apply completion:nil];
     else apply();

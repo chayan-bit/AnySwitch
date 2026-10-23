@@ -2,6 +2,7 @@
 // empty zones, a touch hiding the ring, and the repeat timing. Foundation only, runs on the Mac: make -C dm/ios/tests run
 #import <Foundation/Foundation.h>
 #import "HearthFocus.h"
+#import "HearthTheme.h"
 #import "DmRepeat.h"
 
 static int g_fail, g_n;
@@ -61,6 +62,33 @@ int main(void) { @autoreleasepool {
       CHECK(a == 0 && b >= 2 && r.held == 3, "a new hold replaces the old one (old %d, new %d)", a, b);
       [r hold:4 step:nil]; [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
       CHECK(r.held == 4 && b < 20, "held without steps (a key already down)"); [r stop]; }
+
+    // 5. the button hints belong to the ring: gone after a touch, back with the ring, never shown when nothing is focused
+    { HearthFocus *f = [[HearthFocus alloc] initWithZones:2];
+      CHECK(!f.hintsVisible, "nothing focused: no hints");
+      [f setCount:3 forZone:0]; [f setCount:1 forZone:1];
+      CHECK(f.hintsVisible, "a fresh Home shows the ring and the hints");
+      [f touched]; CHECK(!f.hintsVisible && !f.ringVisible, "a touch hides the ring and the hints with it");
+      [f focusZone:0 index:2]; CHECK(!f.hintsVisible, "a tap focuses a tile and the hints stay away");
+      CHECK(![f move:HearthDirLeft] && f.hintsVisible, "the first direction after a touch brings the ring and the hints back");
+      [f touched]; [f showRing]; CHECK(f.hintsVisible, "A on a hidden ring shows both");
+      [f touched]; [f setCount:0 forZone:0]; [f move:HearthDirDown]; CHECK(f.hintsVisible == f.ringVisible, "hints follow the ring on the button row too");
+      HearthFocus *e = [[HearthFocus alloc] initWithZones:1]; [e setCount:0 forZone:0]; CHECK(!e.hintsVisible, "an emptied Home has no hints"); }
+    // 6. the dialog's buttons are one zone: it starts on the focus it was given, left and right stop at the ends
+    { HearthFocus *f = [[HearthFocus alloc] initWithZones:1]; [f setCount:2 forZone:0]; [f focusZone:0 index:1];
+      CHECK(f.index == 1 && f.hintsVisible, "Cancel and Close: the focus starts on Close");
+      CHECK(![f move:HearthDirRight] && f.index == 1, "right of the last button does nothing");
+      CHECK([f move:HearthDirLeft] && f.index == 0 && ![f move:HearthDirLeft], "left reaches Cancel and stops");
+      CHECK(![f move:HearthDirUp] && ![f move:HearthDirDown] && f.index == 0, "up and down do nothing in a row of buttons"); }
+    // 7. Home's measures (HearthTheme.h): 300 pt tiles, 340 pt focused, on the 1024 pt iPad screen; smaller and larger screens scale and clamp
+    { CHECK(hearth_tile_size(1024) == 300, "iPad Air landscape: %g", hearth_tile_size(1024));
+      CHECK(fabs(hearth_tile_size(1024) * hearth_tile_focus_scale(hearth_tile_size(1024)) - 340) < 1e-9, "focused edge %g", hearth_tile_size(1024) * hearth_tile_focus_scale(300));
+      CHECK(hearth_tile_size(744) == 218 && hearth_tile_size(1032) == 302, "other iPads: %g and %g", hearth_tile_size(744), hearth_tile_size(1032));
+      CHECK(hearth_tile_size(300) == HEARTH_TILE_MIN && hearth_tile_size(4000) == HEARTH_TILE_MAX, "clamped: %g and %g", hearth_tile_size(300), hearth_tile_size(4000));
+      double h = 1024, size = hearth_tile_size(h), centre = h * HEARTH_ROW_CENTRE;
+      CHECK(fabs(centre - 409.6) < 1e-9 && centre - size / 2 > 100, "the art's centre sits at 40%% of the height, clear of the top bar (%g)", centre);
+      double rowBottom = centre + size / 2 + 44, buttonsTop = rowBottom + HEARTH_BUTTONS_GAP, barTop = h - HEARTH_BAR_HEIGHT;
+      CHECK(buttonsTop + HEARTH_BUTTON_SIZE + 24 < barTop, "the round buttons (%g to %g) fit above the bottom bar (%g)", buttonsTop, buttonsTop + HEARTH_BUTTON_SIZE, barTop); }
 
     printf("t_home_focus: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;

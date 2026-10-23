@@ -3,6 +3,7 @@
 #import "HearthLaunch.h"
 #import "HearthHomeViews.h"
 #import "HearthSound.h"
+#import "HearthDialog.h"
 #import "DmSettings.h"
 #import "DmSettingsViews.h"
 #import "DmHaptics.h"
@@ -34,7 +35,7 @@ static NSString *tail(NSString *path) {   // the end of a text file, cut at a li
 @interface HearthTextVC : UIViewController
 @end
 @implementation HearthTextVC {
-    NSString *_title, *_text; BOOL _mono; UITextView *_view; __weak DmSettingsVC *_under; uint64_t _prev; BOOL _based;
+    NSString *_title, *_text; BOOL _mono; UITextView *_view; DmHintBar *_hints; __weak DmSettingsVC *_under; uint64_t _prev; BOOL _based;
 }
 + (void)show:(NSString *)title text:(NSString *)text mono:(BOOL)mono over:(DmSettingsVC *)under {
     HearthTextVC *t = [self new]; t->_title = title; t->_text = text; t->_mono = mono; t->_under = under;
@@ -53,15 +54,20 @@ static NSString *tail(NSString *path) {   // the end of a text file, cut at a li
     close.tintColor = DmUI.sub; close.backgroundColor = DmUI.row; close.layer.cornerRadius = 22; close.accessibilityLabel = @"Close";
     [close addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
     _view = [UITextView new]; _view.editable = NO; _view.text = _text; _view.textColor = DmUI.text; _view.backgroundColor = UIColor.clearColor;
+    _view.textContainer.lineFragmentPadding = 0;   // the text starts where the title does
     _view.font = _mono ? [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular] : [DmUI font:15 weight:UIFontWeightRegular];
-    for (UIView *v in @[head, close, _view]) [self.view addSubview:v];
+    _hints = [DmHintBar new]; [_hints setHints:@[@[@"B", @"Back"]]];   // the way out for a controller or a keyboard, as every other screen shows
+    self.view.accessibilityViewIsModal = YES;
+    for (UIView *v in @[head, close, _view, _hints]) [self.view addSubview:v];
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; UIEdgeInsets si = self.view.safeAreaInsets; CGFloat l = si.left + 40, r = b.size.width - si.right - 40, top = MAX(si.top, 22);
     [self.view viewWithTag:1].frame = CGRectMake(l, top, r - l - 60, 60);
     [self.view viewWithTag:2].frame = CGRectMake(r - 44, top + 8, 44, 44);
-    _view.frame = CGRectMake(l, top + 72, r - l, b.size.height - top - 72 - MAX(si.bottom, 16));
+    CGFloat hh = [_hints heightWithCompact:NO], hy = b.size.height - MAX(si.bottom, 16) - hh;
+    _hints.frame = CGRectMake(l, hy, r - l, hh);
+    _view.frame = CGRectMake(l, top + 72, r - l, hy - 12 - top - 72);
 }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a]; [self becomeFirstResponder];
@@ -70,6 +76,7 @@ static NSString *tail(NSString *path) {   // the end of a text file, cut at a li
 - (BOOL)canBecomeFirstResponder { return YES; }
 - (void)close {
     DmSettingsVC *u = _under; __weak DmSettingsVC *wu = u;
+    [u resumeController];
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [wu padState:m lx:lx ly:ly]; });   // the first call only records what is held, so the B that closed this does nothing there
     [self dismissViewControllerAnimated:YES completion:^{ [u becomeFirstResponder]; }];
 }
@@ -102,17 +109,15 @@ static DmPageItem *action(NSString *t, NSString *d, void (^run)(void)) { return 
 static DmPageItem *info(NSString *t, NSString *d) { return [DmPageItem info:t detail:d]; }
 static DmPageItem *confirmed(DmPageItem *it, NSString *ask) { it.destructive = YES; it.confirmTitle = ask; return it; }
 static void tell(UIViewController *over, NSString *title, NSString *msg) {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [over presentViewController:a animated:YES completion:nil];
+    hearth_dialog_info(over, title, msg);
 }
 static void show_log(HearthGame *g, DmSettingsVC *over) {
     NSString *p = [[hearth_library() logDirFor:g] stringByAppendingPathComponent:@"log.txt"];
     [HearthTextVC show:[NSString stringWithFormat:@"Log: %@", g.name] text:tail(p) ?: @"This game has no log yet. It writes one when it starts." mono:YES over:over];
 }
 static DmPageItem *delete_game_item(HearthGame *g, DmSettingsVC *(^vc)(void), void (^done)(void)) {
-    if (g.bundled) return info(@"Delete game", @"This game is built into the app and goes only when Hearth is deleted.");
-    if ([hearth_running_game().titleId isEqual:g.titleId]) return info(@"Delete game", @"Close the game first.");
+    if (g.bundled) return [DmPageItem unavailable:@"Delete game" detail:@"This game is built into the app and goes only when Hearth is deleted."];
+    if ([hearth_running_game().titleId isEqual:g.titleId]) return [DmPageItem unavailable:@"Delete game" detail:@"Close the game first."];
     return confirmed(action(@"Delete game", @"Removes the game and its prepared shaders. Its saves stay.", ^{
         NSString *why = nil;
         if (![hearth_library() deleteGame:g error:&why]) { tell(vc(), @"The game was not deleted", why); return; }
@@ -120,7 +125,7 @@ static DmPageItem *delete_game_item(HearthGame *g, DmSettingsVC *(^vc)(void), vo
     }), [NSString stringWithFormat:@"Press again to delete %@", g.name]);
 }
 static DmPageItem *delete_saves_item(HearthGame *g, DmSettingsVC *(^vc)(void)) {
-    if ([hearth_running_game().titleId isEqual:g.titleId]) return info(@"Delete saves", @"Close the game first.");
+    if ([hearth_running_game().titleId isEqual:g.titleId]) return [DmPageItem unavailable:@"Delete saves" detail:@"Close the game first."];
     return confirmed(action(@"Delete saves", @"Removes this game's saved progress. This cannot be undone.", ^{
         NSString *why = nil;
         if (![hearth_library() deleteSavesOf:g error:&why]) tell(vc(), @"The saves were not deleted", why);
@@ -250,7 +255,7 @@ DmSettingsVC *hearth_options(HearthGame *g, CGSize size, void (^gone)(void)) {
     BOOL learned = [hearth_running_game().titleId isEqual:g.titleId] || [lib capsOf:g] != nil;
     NSMutableArray *pages = [NSMutableArray arrayWithObject:[DmPage page:@"Overview" icon:@"info.circle.fill" items:^{
         NSDictionary *s = [lib sizesOf:g];
-        NSMutableArray *o = [NSMutableArray arrayWithArray:@[info(@"Publisher", g.publisher.length ? g.publisher : @"Unknown"), info(@"Title ID", g.titleId),
+        NSMutableArray *o = [NSMutableArray arrayWithArray:@[info(@"Publisher", g.publisher.length ? g.publisher : @"Unknown"), info(@"Version", g.version.length ? g.version : @"Unknown"), info(@"Title ID", g.titleId),
             info(@"Size", [NSString stringWithFormat:@"%@ (%@)", bytes(installed(s)), size_detail(s)]),
             info(@"Last played", when(g.lastPlayed)), info(@"Play time", duration([lib playTimeOf:g]))]];
         if (!learned) [o addObject:info(@"More options appear after the first start", @"Some settings depend on what the game provides, which Hearth learns when it runs.")];

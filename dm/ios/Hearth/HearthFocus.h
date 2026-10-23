@@ -14,5 +14,6 @@ typedef NS_ENUM(NSInteger, HearthDir) { HearthDirNone = 0, HearthDirUp, HearthDi
 - (void)focusZone:(NSInteger)zone index:(NSInteger)i;    // a touch chose this item; the ring stays as it is
 @property (nonatomic, readonly) BOOL ringVisible;
 - (void)touched;                                         // a touch: the ring hides
+- (BOOL)hintsVisible;                                     // the button hints belong to the focused item and show only while its ring does: after a touch they are gone with it (nothing is focused for a controller to press)
 - (void)showRing;                                        // a key or controller button other than a direction (A on a hidden ring acts on the focused item and shows it)
 @end

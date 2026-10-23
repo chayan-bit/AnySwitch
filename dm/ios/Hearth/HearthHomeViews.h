@@ -5,8 +5,11 @@
 NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows when its game cannot start ("Rebuild needed", "Needs signing"), nil when it can
 
 @interface HearthTile : UIControl
-- (instancetype)initWithGame:(HearthGame *)g;
+- (instancetype)initWithGame:(HearthGame *)g size:(CGFloat)size;   // size: the art's edge (hearth_tile_size of the screen's height)
++ (CGFloat)nameHeight;    // room above the art for the focused game's name
++ (CGFloat)stateHeight;   // room below it for the state line
 @property (nonatomic, readonly) HearthGame *game;
+@property (nonatomic, readonly) CGFloat size;
 @property (nonatomic, readonly) UIView *art;   // the rounded icon (the launch zoom starts from it)
 @property (nonatomic) BOOL chosen;              // Home's focus is on it: grows a little and shows the game's name above it (not UIKit's own `focused`)
 - (void)setChosen:(BOOL)chosen animated:(BOOL)animated;

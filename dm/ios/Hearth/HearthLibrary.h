@@ -11,6 +11,7 @@
 
 @interface HearthGame : NSObject
 @property (nonatomic, copy) NSString *titleId, *name, *publisher, *root, *iconPath;
+@property (nonatomic, copy) NSString *version;      // the NACP's display version ("1.3.2"), nil when the pack has none
 @property (nonatomic, copy) NSString *codePath;     // Frameworks/<id>.dylib when that is the code used, else nil (the pack's own code/ios.dylib, or this executable's embedded code)
 @property (nonatomic, copy) NSString *romfsPath;    // caller-provided game files (the bundled pack keeps them in Documents), else nil (the pack's romfs.dmstore)
 @property (nonatomic) BOOL bundled;                 // the pack that ships inside the app

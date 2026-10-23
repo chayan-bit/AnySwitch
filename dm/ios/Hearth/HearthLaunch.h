@@ -14,13 +14,10 @@ void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(vo
 void hearth_close(void);
 // The settings screens' Restart now: the running game closes and starts again in a new process, with the changed settings
 void hearth_restart_game(void);
-// "Close <game>?": Close ends the running game (hearth_close), Cancel keeps it
+// "Close <game>?" (a Hearth dialog, HearthDialog.h): Close ends the running game (hearth_close), Cancel keeps it
 void hearth_confirm_close(UIViewController *over);
 // HOME (the touch Home button, Cmd+Return): Home over the paused game, or back to the game when Home is up. While the game blocks HOME the press waits (dm_home_press)
 void hearth_home(void);
 void hearth_home_long(void);   // long HOME (a long press on the touch Home button): Home with Quick Settings open over the paused game
 void hearth_resume(void);    // leave Home: the game runs again
 BOOL hearth_home_up(void);   // Home is over a paused game
-// A controller's answer to the dialog over over (UIAlertController takes no controller input): it is dismissed; yes (A) also runs the confirming action of a dialog
-// hearth_confirm_close or the switch dialog showed, no (B) is Cancel
-void hearth_dialog_answer(UIViewController *over, BOOL yes);

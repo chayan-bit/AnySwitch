@@ -7,7 +7,7 @@ t_library: t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthLibrary.h ../He
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_library.m ../Hearth/HearthLibrary.m ../Hearth/HearthSign.m ../Hearth/HearthSound.m ../../host/boot.m ../../host/profile.m -framework Foundation
 t_import: t_import.m ../Hearth/HearthImport.m ../Hearth/HearthImport.h ../Hearth/HearthLibrary.m ../Hearth/HearthLibrary.h ../Hearth/HearthSign.m ../Hearth/HearthSound.m ../../host/boot.m ../../host/profile.m
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_import.m ../Hearth/HearthImport.m ../Hearth/HearthLibrary.m ../Hearth/HearthSign.m ../Hearth/HearthSound.m ../../host/boot.m ../../host/profile.m -framework Foundation -lAppleArchive
-t_home_focus: t_home_focus.m ../Hearth/HearthFocus.m ../Hearth/HearthFocus.h ../Sources/DmRepeat.m ../Sources/DmRepeat.h
+t_home_focus: t_home_focus.m ../Hearth/HearthFocus.m ../Hearth/HearthFocus.h ../Hearth/HearthTheme.h ../Sources/DmRepeat.m ../Sources/DmRepeat.h
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../Sources -o $@ t_home_focus.m ../Hearth/HearthFocus.m ../Sources/DmRepeat.m -framework Foundation
 PACK_ID = $(firstword $(sort $(notdir $(patsubst %/game.tsv,%,$(wildcard ../../games/*/game.tsv)))))
 run: t_settings t_haptics t_library t_import t_home_focus

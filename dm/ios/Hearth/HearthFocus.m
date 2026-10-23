@@ -34,6 +34,7 @@
     if (z < 0 || z >= _n || i < 0 || i >= _count[z]) return;
     _zone = z; _pos[z] = i; _placed = YES;
 }
+- (BOOL)hintsVisible { return _ringVisible && self.index >= 0; }
 - (void)touched { _ringVisible = NO; }
 - (void)showRing { _ringVisible = YES; }
 @end
