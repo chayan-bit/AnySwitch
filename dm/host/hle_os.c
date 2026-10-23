@@ -76,19 +76,21 @@ static pthread_mutex_t g_gfz_mu = PTHREAD_MUTEX_INITIALIZER; static unsigned g_g
 // guest threads go on until they block, so a guest reading the clock twice there saw no time pass. Super Mario Galaxy 2's frame pacing (main+0x5926a8) took the interval between two
 // frames as its period, got 0, and the next frame's loop that steps by it (main+0x9abd0) never ended. Guest reads of the system counter (the cntpct gate, svc GetSystemTick) wait while
 // the app is in the background (reason 1); host work (dm_host_work: inside a submit or present, which the graphics suspend waits for) reads the frozen clock, as do the other reasons
+// Home over the game (DM_SUSPEND_HOME) parks the guest the same way: the app stays in the foreground, but the game is just as suspended
+#define GFZ_PARK (1u << 1 | 1u << DM_SUSPEND_HOME)
 static pthread_cond_t g_gfz_cv = PTHREAD_COND_INITIALIZER; static _Atomic int g_gfz_bg;
 void guest_clock_read_wait(void) {
     if (!atomic_load(&g_gfz_bg) || atomic_load(&dm_host_work)) return;
     pthread_mutex_lock(&g_gfz_mu);
-    while (g_gfz_reasons & 2u) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
+    while (g_gfz_reasons & GFZ_PARK) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
     pthread_mutex_unlock(&g_gfz_mu);
 }
 void guest_clock_freeze_for(int reason, int on) {
     pthread_mutex_lock(&g_gfz_mu);
     if (on) g_gfz_reasons |= 1u << reason; else g_gfz_reasons &= ~(1u << reason);
     guest_clock_freeze_apply(g_gfz_reasons != 0);
-    atomic_store(&g_gfz_bg, (g_gfz_reasons & 2u) != 0);
-    if (!(g_gfz_reasons & 2u)) pthread_cond_broadcast(&g_gfz_cv);   // after the clock is running again: a released read sees it continue
+    atomic_store(&g_gfz_bg, (g_gfz_reasons & GFZ_PARK) != 0);
+    if (!(g_gfz_reasons & GFZ_PARK)) pthread_cond_broadcast(&g_gfz_cv);   // after the clock is running again: a released read sees it continue
     pthread_mutex_unlock(&g_gfz_mu);
 }
 void guest_clock_freeze(int on) { guest_clock_freeze_for(0, on); }

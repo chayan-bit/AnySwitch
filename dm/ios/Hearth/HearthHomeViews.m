@@ -51,13 +51,19 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     self.isAccessibilityElement = YES; self.accessibilityLabel = g.name; self.accessibilityValue = hearth_state_line(g); self.accessibilityTraits = UIAccessibilityTraitButton;
     return self;
 }
+- (void)setPlaying:(BOOL)p {
+    _playing = p;
+    _state.text = p ? @"Playing" : hearth_state_line(_game); _state.textColor = p ? DmUI.accentText : DmUI.warn;
+    self.accessibilityValue = _state.text;
+}
 - (void)setChosen:(BOOL)f { [self setChosen:f animated:NO]; }
 - (void)setChosen:(BOOL)f animated:(BOOL)animated {
     _chosen = f;
     void (^apply)(void) = ^{
         CGFloat s = f ? HEARTH_TILE_FOCUS_SCALE : 1;
         self->_art.transform = CGAffineTransformMakeScale(s, s);
-        self->_name.alpha = f; self->_name.transform = CGAffineTransformMakeTranslation(0, f ? -(s - 1) * HEARTH_TILE_SIZE / 2 : 0);   // stays clear of the grown art
+        self->_name.alpha = f; self->_name.transform = CGAffineTransformMakeTranslation(0, f ? -(s - 1) * HEARTH_TILE_SIZE / 2 : 0);   // both lines stay clear of the grown art
+        self->_state.transform = CGAffineTransformMakeTranslation(0, f ? (s - 1) * HEARTH_TILE_SIZE / 2 : 0);
     };
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) [UIView animateWithDuration:HEARTH_FOCUS_SECONDS delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:apply completion:nil];
     else apply();

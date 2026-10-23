@@ -113,5 +113,34 @@ int main(void) {
     h_au_Close(out3);
     int ok3 = got3 == 20 && order3 && total3 > 1900 && total3 < 2600 && back && cb_restart && cb_end > cb_restart;
     printf("device stall: released %d/20 in order=%d in %.0f ms (expected 2000-2600), AudioUnit restarted and calling back again=%d %s\n", got3, order3, total3, back && cb_restart && cb_end > cb_restart, ok3 ? "✓" : "✗");
-    return !ok3;
+    if (!ok3) return 1;
+
+    // Scenario 4: a suspended game queues nothing (its clock is frozen), and the silent sink's pulls on the empty queue are not underruns: nothing is played, nothing is missing.
+    // They used to be counted, so the first statistics line after a resume reported the whole suspended span as zero padding (a 20 s Home: 4126 underruns, 20.6 s).
+    // Then the two suspend reasons (the front end's background, Hearth's Home) compose: the output plays again only when both are lifted
+    char out4[64]; gbuf b4; static int16_t pcm4[2400 * 2];
+    if (h_au_Open(out4, ev, NULL, prm)) return 1;
+    h_au_SetBuf(&b4, pcm4, sizeof pcm4, sizeof pcm4); h_au_Append(out4, &b4);
+    aout *a4 = ao(out4); h_au_Start(out4); usleep(150000);   // the 50 ms block is played and released: the queue is empty from here on
+    dm_audio_suspend(1); uint64_t u0 = atomic_load(&a4->under_n), b0 = atomic_load(&a4->under_b); usleep(300000);
+    uint64_t du = atomic_load(&a4->under_n) - u0, db = atomic_load(&a4->under_b) - b0;
+    dm_audio_suspend_for(DM_SUSPEND_HOME, 1); dm_audio_suspend(0);
+    pthread_mutex_lock(&g_aos_lock); int held = a4->backend == BK_NULL; pthread_mutex_unlock(&g_aos_lock);
+    dm_audio_suspend_for(DM_SUSPEND_HOME, 0);
+    pthread_mutex_lock(&g_aos_lock); int plays = a4->backend == BK_AU; pthread_mutex_unlock(&g_aos_lock);
+    // A resume restarts the AudioUnit under g_aos_lock and stamps the watchdog with the time (au_go). The watchdog used to read its clock before taking the lock: waking during a
+    // resume, it held an older time than the stamp, the difference wrapped around, and a playing output was declared stalled for 18446744073710 ms (the silent sink for 1 s after a HOME)
+    int false_stall = 0;
+    for (int i = 0; i < 4; i++) {
+        pthread_mutex_lock(&g_aos_lock); usleep(80000);   // the watchdog's tick falls inside this: it waits for the lock
+        a4->wd_n = atomic_load(&a4->cb_n); a4->wd_t = now_ns();   // what au_go does on a resume
+        pthread_mutex_unlock(&g_aos_lock); usleep(30000);
+        pthread_mutex_lock(&g_aos_lock); false_stall |= a4->stalled || a4->backend != BK_AU; pthread_mutex_unlock(&g_aos_lock);
+    }
+    plays &= !false_stall;
+    h_au_Close(out4);
+    int ok4 = du == 0 && db == 0 && held && plays;
+    printf("suspended and empty: %llu underruns, %llu bytes zero-padded while suspended (expected 0, 0); Home still holds it after the background resume=%d, plays after both=%d %s\n",
+           (unsigned long long)du, (unsigned long long)db, held, plays, ok4 ? "✓" : "✗");
+    return !ok4;
 }

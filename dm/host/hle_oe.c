@@ -63,10 +63,12 @@ static _Atomic int g_focus = 1; static _Atomic uint64_t g_focus_in_ns;   // time
 // its Wii layer's pause on focus 2 (main+0x663ba0) never finished: the main loop waits for the GX thread to pause (main+0x5ce870), which waits for work the paused CPU never sends
 static _Atomic int g_focus_mode = -1;
 static int focus_notifies(void) { int m = atomic_load(&g_focus_mode); return m != 0 && m != 3; }   // no mode set: notify, as before
+static _Atomic int g_home;   // Hearth's Home is over the game (dm_home_suspend): the game stays out of focus whatever the scene does
 int dm_focus_now(void) { return atomic_load(&g_focus); }
 uint64_t dm_focus_in_since(void) { return atomic_load(&g_focus_in_ns); }   // graphics layer display link watchdog: stalls are only computed while active, counted from activation (nvn_mtl.m mtl_present_wait)
 void dm_focus_set(int st) {
     if (st < 1 || st > 3) die("dm_focus_set: invalid state %d", st);
+    if (st == 1 && atomic_load(&g_home)) st = 2;   // the app became active again with Home still up: the game stays out of focus until Home is left
     if (st == 1) atomic_store(&g_focus_in_ns, now_ns());
     if (atomic_exchange(&g_focus, st) == st) return;
     LOG("oe focus state → %d", st);
@@ -94,8 +96,31 @@ HLE_FORCE("_ZN2nn2oe16DisableRecordingEv", "video recording switch; the host has
 HLE_FORCE("_ZN2nn2oe16EnableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_EnableShot, void) {}
 HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_DisableShot, void) {}
 // Super Mario Odyssey: HOME button blocking around its own menus, screenshot orientation, and the auto-sleep query (all through am)
-HLE_FORCE("_ZN2nn2oe23BeginBlockingHomeButtonEv", "temporarily block the HOME button (through am); the host has no HOME button", void, h_oe_BlockHome, void) {}
-HLE_FORCE("_ZN2nn2oe21EndBlockingHomeButtonEv", "restore the HOME button (through am)", void, h_oe_UnblockHome, void) {}
+// HOME blocking is a counter: a HOME pressed meanwhile is held (dm_home_press) and delivered at the last End, or after g_hb_cap_ms so a game cannot keep Home away for good
+// (10 s, an estimate of a sane cap). Begin and End come from guest threads, the press from the front end
+#include <dispatch/dispatch.h>
+static pthread_mutex_t g_hb_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_hb_n, g_hb_cap_ms = 10000; static unsigned g_hb_gen; static void (*g_hb_pending)(void);
+static void (*hb_take(void))(void) { void (*f)(void) = g_hb_pending; g_hb_pending = NULL; return f; }   // under g_hb_mu
+static void hb_cap(void *gen) {
+    pthread_mutex_lock(&g_hb_mu); void (*f)(void) = (uintptr_t)gen == g_hb_gen ? hb_take() : NULL; pthread_mutex_unlock(&g_hb_mu);
+    if (f) { LOG("HOME: the game has blocked it for %d ms, delivered anyway", g_hb_cap_ms); f(); }
+}
+int dm_home_press(void (*deliver)(void)) {
+    pthread_mutex_lock(&g_hb_mu);
+    if (!g_hb_n) { pthread_mutex_unlock(&g_hb_mu); deliver(); return 1; }
+    g_hb_pending = deliver; uintptr_t gen = ++g_hb_gen; int n = g_hb_n; pthread_mutex_unlock(&g_hb_mu);
+    LOG("HOME: the game blocks it (depth %d): held until it unblocks, at most %d ms", n, g_hb_cap_ms);
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)g_hb_cap_ms * 1000000), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), (void *)gen, hb_cap);
+    return 0;
+}
+HLE_FORCE("_ZN2nn2oe23BeginBlockingHomeButtonEv", "temporarily block the HOME button (through am): a press meanwhile is held (dm_home_press)", void, h_oe_BlockHome, void) {
+    pthread_mutex_lock(&g_hb_mu); g_hb_n++; pthread_mutex_unlock(&g_hb_mu);
+}
+HLE_FORCE("_ZN2nn2oe21EndBlockingHomeButtonEv", "restore the HOME button (through am): a press held meanwhile is delivered at the last End", void, h_oe_UnblockHome, void) {
+    pthread_mutex_lock(&g_hb_mu); if (g_hb_n) g_hb_n--; void (*f)(void) = g_hb_n ? NULL : hb_take(); pthread_mutex_unlock(&g_hb_mu);
+    if (f) { LOG("HOME: delivered after the game unblocked it"); f(); }
+}
 HLE_FORCE("_ZN2nn2oe29SetScreenShotImageOrientationENS_5album16ImageOrientationE", "screenshot orientation (through am); the host has no system screenshot", void, h_oe_ShotOrient, int o) { (void)o; }
 HLE_FORCE("_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", "whether auto screen-off on inactivity is extended; the host does not turn the screen off, reports no", unsigned, h_oe_InactivityExtQ, void) { return 0; }
 // Hyrule Warriors: Age of Calamity (SDK 9.6.0, main+0x8d1238): the copyright frame buffer, an overlay the system draws only into screenshots and recordings. The SDK hands the buffer to am as transfer memory
@@ -129,7 +154,8 @@ HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "set
     LOG("oe::SetPerformanceConfiguration mode=%d cfg=%#x (ignored)", mode, cfg);
 }
 
-// Scripted state changes (verify lifecycle / overheat downgrade without a window): DM_OE_SCRIPT="focus=3@10,focus=1@20,opmode=0@30" (second N); bg=1 / bg=0 run the whole background round trip (see script_bg)
+// Scripted state changes (verify lifecycle / overheat downgrade without a window): DM_OE_SCRIPT="focus=3@10,focus=1@20,opmode=0@30" (second N); bg=1 / bg=0 run the whole background round trip (see script_bg),
+// home=1 / home=0 Hearth's Home over the game (dm_home_suspend)
 // Time counts from the game's first notification fetch. Coexists with front end calls.
 #include <unistd.h>
 // bg=1 / bg=0: the whole "to background / back to foreground" sequence, in the same order as the scene lifecycle in front_ios.m (resign active -> enter background; enter foreground -> become active), minus the audio session reset iOS does on returning.
@@ -137,6 +163,17 @@ HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "set
 static void script_bg(int on) {
     if (on) { dm_focus_set(2); dm_focus_set(3); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); }
     else { dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_focus_set(2); dm_focus_set(1); }
+}
+// Hearth's Home over the game: the background sequence without focus 3 (the app stays in the foreground), each piece held for its own reason so it composes with the background
+// round trip (HOME, then the app to the background and back, lands on Home with the game still suspended). A Switch game sees focus messages only, as on resume from HOME
+int dm_home_active(void) { return atomic_load(&g_home); }
+void dm_home_suspend(int on) {
+    on = on != 0;
+    if (atomic_exchange(&g_home, on) == on) return;
+    uint64_t t0 = now_ns();
+    if (on) { dm_focus_set(2); dm_audio_suspend_for(DM_SUSPEND_HOME, 1); guest_clock_freeze_for(DM_SUSPEND_HOME, 1); dm_gfx_suspend_for(DM_SUSPEND_HOME, 1); }
+    else { dm_gfx_suspend_for(DM_SUSPEND_HOME, 0); guest_clock_freeze_for(DM_SUSPEND_HOME, 0); dm_audio_suspend_for(DM_SUSPEND_HOME, 0); dm_focus_set(1); }
+    LOG("HOME: game %s in %.1f ms", on ? "suspended" : "resumed", (now_ns() - t0) / 1e6);
 }
 static void *oe_script(void *arg) {
     char *buf = arg; uint64_t t0 = now_ns();
@@ -148,7 +185,8 @@ static void *oe_script(void *arg) {
         if (!strcmp(key, "focus")) dm_focus_set(v);
         else if (!strcmp(key, "opmode")) dm_set_opmode(v);
         else if (!strcmp(key, "bg")) script_bg(v);
-        else die("DM_OE_SCRIPT unknown key '%s' (focus / opmode / bg)", key);
+        else if (!strcmp(key, "home")) dm_home_suspend(v);
+        else die("DM_OE_SCRIPT unknown key '%s' (focus / opmode / bg / home)", key);
     }
     return NULL;
 }

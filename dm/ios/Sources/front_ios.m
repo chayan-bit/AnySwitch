@@ -21,6 +21,7 @@ void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
 void dm_gamepad_scale(float s);
 void dm_gamepad_opacity(float o);
+void dm_gamepad_idle_fade(BOOL on);
 void dm_gamepad_shake_g(double g);
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 void dm_gamepad_set_chord(void (^handler)(void));
@@ -45,6 +46,7 @@ static void front_ios_settings(void) {
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
     s.frameTarget = mtl_fps_target();   // Upscaling defaults to Sharp at 30 fps, Bilinear at 60 (DmSettings.m); the target is polled below while the game runs
     mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]);
+    dm_gamepad_idle_fade([s boolForKey:@"DM_CONTROLS_IDLE_FADE"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
     dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
     s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
@@ -79,7 +81,7 @@ static UILabel *front_ios_fps_label(void);
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
 @property (nonatomic, strong) UIButton *gear;
-@property (nonatomic, strong) UIButton *home;   // Hearth's Home button on the touch layer (step 2: closes the game after a confirmation; the Home overlay comes in step 6)
+@property (nonatomic, strong) UIButton *home;   // HOME on the touch layer: Hearth's Home over the paused game (hearth_home)
 @property (nonatomic, strong) DmSettingsVC *settings;
 @end
 @implementation DmGameVC
@@ -107,6 +109,7 @@ static UILabel *front_ios_fps_label(void);
     self.gear = [self makeGear]; [self.view addSubview:self.gear];
     self.home = [self makeRoundButton:@"house.fill" label:@"Home" action:@selector(homePressed)]; [self.view addSubview:self.home];
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
+    [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:UIKeyModifierCommand action:@selector(homePressed)]];   // HOME on a keyboard (Cmd+H belongs to the system)
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
     __weak DmGameVC *w = self; dm_gamepad_set_chord(^{ [w toggleSettings]; });   // + and - held together on a controller
     // The frame rate target is not known at start: a game that runs at 30 asks for present interval 2, and the host reports 30 once it has held it for a second (hle_nvn.c). The store moves the
@@ -114,7 +117,7 @@ static UILabel *front_ios_fps_label(void);
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { (void)t; DmSettings.shared.frameTarget = mtl_fps_target(); }];
 }
 - (UIButton *)makeGear { return [self makeRoundButton:@"gearshape.fill" label:@"Settings" action:@selector(toggleSettings)]; }   // right of the frame-rate counter
-- (void)homePressed { void hearth_confirm_close(UIViewController *); hearth_confirm_close(self); }
+- (void)homePressed { void hearth_home(void); [self closeSettings]; hearth_home(); }   // the in-game settings close first: Home takes the controller and the game's focus
 - (UIButton *)makeRoundButton:(NSString *)symbol label:(NSString *)label action:(SEL)action {   // a 44 pt target with a 32 pt translucent disc
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
     UIButtonConfiguration *c = [UIButtonConfiguration plainButtonConfiguration];
@@ -155,6 +158,7 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_CONTROLS_LAYOUT"]) { g_controls_auto = [v isEqualToString:@"auto"]; [self.view setNeedsLayout]; }
     else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
     else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
+    else if ([k isEqualToString:@"DM_CONTROLS_IDLE_FADE"]) dm_gamepad_idle_fade([v isEqualToString:@"1"]);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
     else if ([k isEqualToString:@"DM_UPSCALE"] || [k isEqualToString:@"DM_UPSCALE_SHARPNESS"]) { DmSettings *s = DmSettings.shared; mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]); }
     else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);

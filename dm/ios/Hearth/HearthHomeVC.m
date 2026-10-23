@@ -33,7 +33,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 - (void)viewDidLoad {
     [super viewDidLoad];
     __weak HearthHomeVC *w = self;
-    dm_on_style(self.view, ^{ w.view.backgroundColor = DmUI.bg; });
+    dm_on_style(self.view, ^{ w.view.backgroundColor = DmUI.bg; });   // opaque over the game too: a see-through Home showed the game's touch controls and, back from the background, its paused frame
     _focus = [[HearthFocus alloc] initWithZones:ZoneCount]; _repeat = [DmRepeat new]; _tiles = [NSMutableArray array];
     _bar = [HearthTopBar new];
     _row = [UIScrollView new]; _row.showsHorizontalScrollIndicator = NO; _row.showsVerticalScrollIndicator = NO; _row.alwaysBounceVertical = NO; _row.clipsToBounds = NO; _row.delegate = self;
@@ -41,11 +41,13 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _tileRing = [DmFocusView new]; _tileRing.radius = HEARTH_TILE_RADIUS + 6; [_row addSubview:_tileRing];
     _empty = [UILabel new]; _empty.text = @"No games yet"; _empty.font = [DmUI font:22 weight:UIFontWeightSemibold]; _empty.textColor = DmUI.sub; _empty.textAlignment = NSTextAlignmentCenter;
     HearthRoundButton *settings = [[HearthRoundButton alloc] initWithSymbol:@"gearshape.fill" label:@"Settings"];
-    [settings addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
     _buttons = @[settings];
+    if (_overlay) _buttons = [_buttons arrayByAddingObject:[[HearthRoundButton alloc] initWithSymbol:@"xmark" label:@"Close the game"]];   // touch's way to close the paused game
+    for (HearthRoundButton *b in _buttons) [b addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
     _buttonRing = [DmFocusView new]; _buttonRing.radius = HEARTH_BUTTON_SIZE / 2 + 6;
     _hints = [DmHintBar new];
-    for (UIView *v in @[_bar, _row, _empty, settings, _buttonRing, _hints]) [self.view addSubview:v];
+    for (UIView *v in @[_bar, _row, _empty, _buttonRing, _hints]) [self.view addSubview:v];
+    for (UIView *v in _buttons) [self.view insertSubview:v belowSubview:_buttonRing];
     [_focus setCount:(NSInteger)_buttons.count forZone:ZoneButtons];
     dm_gamepad_watch();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
@@ -59,11 +61,17 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     if (_launching) return;
     NSString *was = _focus.zone == ZoneTiles && _focus.index >= 0 && _focus.index < (NSInteger)_tiles.count ? _tiles[(NSUInteger)_focus.index].game.titleId : nil;
     NSArray<HearthGame *> *games = [hearth_library() scan];
+    HearthGame *run = _overlay ? hearth_running_game() : nil;
+    if (run) {   // the paused game comes first, as the one a player most likely returns to
+        NSMutableArray *m = [NSMutableArray arrayWithObject:run];
+        for (HearthGame *g in games) if (![g.titleId isEqual:run.titleId]) [m addObject:g];
+        games = m;
+    }
     fprintf(stderr, "home: %lu games\n", (unsigned long)games.count);
     for (HearthTile *t in _tiles) [t removeFromSuperview];
     [_tiles removeAllObjects];
     for (HearthGame *g in games) {
-        HearthTile *t = [[HearthTile alloc] initWithGame:g];
+        HearthTile *t = [[HearthTile alloc] initWithGame:g]; t.playing = g == run;
         [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
         [_row insertSubview:t belowSubview:_tileRing]; [_tiles addObject:t];
     }
@@ -124,7 +132,8 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _tileRing.active = onTiles && _focus.ringVisible;
     _buttonRing.active = _focus.zone == ZoneButtons && _focus.ringVisible;
     if (onTiles) [_row scrollRectToVisible:CGRectInset(_tiles[(NSUInteger)_focus.index].frame, -HEARTH_TILE_SPACING, 0) animated:animated];
-    DmFocusKind k = _focus.zone == ZoneButtons ? DmFocusHomeButton : onTiles && _tiles[(NSUInteger)_focus.index].game.reason ? DmFocusHomeBlocked : DmFocusHomeGame;
+    HearthTile *ft = onTiles ? _tiles[(NSUInteger)_focus.index] : nil;
+    DmFocusKind k = _focus.zone == ZoneButtons ? DmFocusHomeButton : ft.playing ? DmFocusHomeRunning : ft.game.reason ? DmFocusHomeBlocked : DmFocusHomeGame;
     NSArray *h = onTiles || _focus.zone == ZoneButtons ? dm_hints_for_focus(k, NO, NO) : @[];
     if (![h isEqual:_shownHints]) { _shownHints = h; [_hints setHints:h]; }
 }
@@ -137,7 +146,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 
 - (void)activate {
     [_focus showRing];
-    if (_focus.zone == ZoneButtons) { [self openSettings]; return; }   // the only system button in this step
+    if (_focus.zone == ZoneButtons) { [self pressButton:[_focus indexInZone:ZoneButtons]]; return; }
     if (_focus.index < 0) return;
     HearthTile *t = _tiles[(NSUInteger)_focus.index];
     if (t.game.reason) [self explain:t.game]; else [self launch:t];
@@ -153,8 +162,17 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
+- (void)pressButton:(NSInteger)i {
+    if (i == 0) [self openSettings];
+    else hearth_confirm_close(self);   // overlay only: Close the game
+}
 - (void)launch:(HearthTile *)t {
     if (_launching) return;
+    HearthGame *run = hearth_running_game();
+    if (run) {   // the paused game's tile goes back to it; another tile asks to close it first (the controller stays with Home meanwhile)
+        if (t.playing) hearth_resume(); else hearth_launch(t.game, self.view.window, nil);
+        return;
+    }
     _launching = YES; hearth_sound(HearthSoundOpen);
     [_repeat stop]; dm_gamepad_set_capture(nil);   // the game takes the controller
     __block BOOL zoomed = NO;
@@ -205,7 +223,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 - (void)buttonTapped:(HearthRoundButton *)b {
     NSUInteger i = [_buttons indexOfObject:b]; if (i == NSNotFound) return;
     [_focus touched]; [_focus focusZone:ZoneButtons index:(NSInteger)i]; [self showFocus:YES];
-    [self openSettings];
+    [self pressButton:(NSInteger)i];
 }
 - (void)scrollViewWillBeginDragging:(UIScrollView *)s { (void)s; [_focus touched]; [self showFocus:NO]; }
 
@@ -225,11 +243,11 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
 }
 - (void)padState:(uint64_t)m lx:(int32_t)lx ly:(int32_t)ly {
     HearthDir d = dir_of(m, lx, ly);
-    uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B);
+    uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_X);
     if (!_baselined) { _baselined = YES; _prev = want; if (d) [_repeat hold:d step:nil]; return; }   // what is held when Home takes the controller does nothing until released
     uint64_t up = want & ~_prev; _prev = want;
-    if (self.presentedViewController) {   // an explanation is up: A or B closes it
-        if (up) [self dismissViewControllerAnimated:YES completion:nil];
+    if (self.presentedViewController) {   // a dialog is up: A answers it (Close, Close and Start, or OK), B cancels
+        if (up & (1ull << DMB_A | 1ull << DMB_B)) hearth_dialog_answer(self, (up & 1ull << DMB_A) != 0);
         return;
     }
     if (d != (HearthDir)_repeat.held) {
@@ -237,6 +255,7 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
         if (d) { [self go:d]; __weak HearthHomeVC *w = self; [_repeat hold:d step:^NSTimeInterval { [w go:d]; return DM_REPEAT_NEXT; }]; }
     }
     if (up & 1ull << DMB_A) [self activate];
+    if (up & 1ull << DMB_X && _focus.zone == ZoneTiles && _focus.index >= 0 && _tiles[(NSUInteger)_focus.index].playing) { [_focus showRing]; hearth_confirm_close(self); }
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
     if (_settings || _launching) return @[];
@@ -245,8 +264,10 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
         UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:p[0] modifierFlags:0 action:NSSelectorFromString(p[1])]; c.wantsPriorityOverSystemBehavior = YES; [r addObject:c];
     }
     [r addObject:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(openSettings)]];
+    if (_overlay) [r addObject:[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:UIKeyModifierCommand action:@selector(keyHome)]];   // HOME: back to the game
     return r;
 }
+- (void)keyHome { hearth_home(); }
 - (void)keyUp { [self go:HearthDirUp]; }
 - (void)keyDown { [self go:HearthDirDown]; }
 - (void)keyLeft { [self go:HearthDirLeft]; }

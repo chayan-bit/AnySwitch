@@ -25,7 +25,7 @@ int dm_detclock_enabled(void);
 void dm_guest_clock_advanced(void);
 uint64_t dm_guest_frame(void);        // Incremented each time the host presents a frame; unaffected by machine load
 void guest_clock_freeze(int on);
-void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
+void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard, DM_SUSPEND_HOME Home); see hle_os.c
 void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
 
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
@@ -50,7 +50,12 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 int dm_opmode(void);
 void dm_set_opmode(int m);          // On change, push notification 30 / 31 according to the switches the game has turned on
 // Focus (1 foreground / 2 focus lost / 3 background): called by the front end on lifecycle changes; a change pushes notification 15
-void dm_focus_set(int st);
+void dm_focus_set(int st);   // 1 is held at 2 while Home is up (dm_home_suspend)
+// Hearth's Home over the game (hle_oe.c): on suspends the game for the Home reason (focus 2, audio, guest clock, graphics), off resumes it and sets focus 1. dm_home_press calls
+// deliver at once, or, while the game blocks HOME (oe::BeginBlockingHomeButton), at its last End or after 10 s, on whatever thread that happens: deliver hops to the main thread itself
+void dm_home_suspend(int on);
+int dm_home_active(void);
+int dm_home_press(void (*deliver)(void));   // 1 = delivered at once
 // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
 extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag, +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
 // What the loaded build can do, asked by the settings screen to show only the rows that have an effect: "fstep" the frame-step stubs (frame cap and render scale), "fpscap" a frame cap
@@ -58,6 +63,7 @@ extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_s
 int dm_capability(const char *name);
 int dm_fps_lock_present(void);   // hle_fpslock.c: the main module has an engine frame limit row
 void dm_audio_volume(double v);   // master volume 0...1 (the "Volume" setting): applied in the sound card callback, lock-free, any thread
-void dm_audio_suspend(int on);
+void dm_audio_suspend(int on);                   // the front end's reason (0)
+void dm_audio_suspend_for(int reason, int on);   // real output stops and the silent sink paces the game while any reason holds (dm.h DM_SUSPEND_HOME)
 uint64_t dm_audio_render_calls(void);   // Cumulative sound card callback count (the silent sink is not counted)
 void dm_audio_reset(void);   // iOS media services reset: recreate the AudioUnits (hle_audio.c)

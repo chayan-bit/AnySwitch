@@ -232,6 +232,7 @@ int main(void) { @autoreleasepool {
       EQ(names(dm_hints_for_focus(DmFocusHomeGame, NO, NO)), @"A Start");                           // Home: B does nothing, so it gets no hint
       EQ(names(dm_hints_for_focus(DmFocusHomeBlocked, NO, NO)), @"A Details");
       EQ(names(dm_hints_for_focus(DmFocusHomeButton, NO, NO)), @"A Open");
+      EQ(names(dm_hints_for_focus(DmFocusHomeRunning, NO, NO)), @"A Resume | X Close");               // the game under Home: A goes back to it, X offers to close it
       EQ(names(dm_hints_for_focus(DmFocusRestore, NO, NO)), @"A Restore | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, NO)), @"A Restore | B Back | L R Category"); EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, YES)), @"A Confirm | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestart, NO, NO)), @"A Restart | B Back | L R Category");

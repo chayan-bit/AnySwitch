@@ -1,6 +1,11 @@
 // Hearth's process model (HearthLaunch.h)
 #import "HearthLaunch.h"
+#import "HearthHomeVC.h"
+#import "HearthSound.h"
 #import <objc/message.h>
+#include "hle.h"
+
+void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 
 int hearth_boot_game(HearthGame *g);       // main.m: the game's environment, log and dm_boot_game; 1 = booting
 UIViewController *front_ios_root(void);    // front_ios.m: the game's view controller
@@ -41,6 +46,26 @@ void hearth_close(void) {
     relaunch();
 }
 
+// The confirming action of the dialog on screen, for a controller's A; cleared by either button
+static void (^g_confirm)(void);
+void hearth_dialog_answer(UIViewController *over, BOOL yes) {
+    void (^f)(void) = yes ? g_confirm : nil; g_confirm = nil;
+    if (!f && over.presentedViewController) fprintf(stderr, "hearth: dialog dismissed (controller)\n");
+    [over dismissViewControllerAnimated:YES completion:f];
+}
+// A two-button dialog: the confirming button is destructive and preferred (Return on a keyboard, A on a controller), Cancel keeps things as they are
+static void confirm(UIViewController *over, NSString *title, NSString *yes, NSString *what, void (^run)(void)) {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:@"Progress that was not saved will be lost." preferredStyle:UIAlertControllerStyleAlert];
+    fprintf(stderr, "hearth: %s dialog shown\n", what.UTF8String);   // with DM_TOUCH_LOG=1 the touches around it are logged too (main.m)
+    void (^go)(void) = ^{ fprintf(stderr, "hearth: %s dialog: %s\n", what.UTF8String, yes.UTF8String); run(); };
+    UIAlertAction *y = [UIAlertAction actionWithTitle:yes style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; g_confirm = nil; go(); }];
+    [a addAction:y];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; g_confirm = nil; fprintf(stderr, "hearth: %s dialog: Cancel\n", what.UTF8String); }]];
+    a.preferredAction = y;
+    g_confirm = ^{ fprintf(stderr, "hearth: (controller A)\n"); go(); };
+    [over presentViewController:a animated:YES completion:nil];
+}
+
 static void alert(UIViewController *over, NSString *title, NSString *msg) {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
@@ -49,10 +74,14 @@ static void alert(UIViewController *over, NSString *title, NSString *msg) {
 
 void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void))) {
     if (g.reason) { alert(window.rootViewController, g.reason == 2 ? @"Rebuild needed" : @"This game cannot start", g.why); return; }
-    if (g_running) {   // one game per process: restart straight into the new one (the close dialog arrives with the Home overlay in step 6)
-        if ([g_running.titleId isEqual:g.titleId]) return;
-        [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId}];
-        relaunch(); return;
+    if (g_running) {   // one game per process: close the running one, then the restart boots g
+        if ([g_running.titleId isEqual:g.titleId]) { hearth_resume(); return; }
+        UIViewController *over = window.rootViewController; while (over.presentedViewController) over = over.presentedViewController;
+        confirm(over, [NSString stringWithFormat:@"Close %@ and start %@?", g_running.name, g.name], @"Close and Start", @"switch", ^{
+            [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId}];
+            relaunch();
+        });
+        return;
     }
     if (!hearth_boot_game(g)) { alert(window.rootViewController, @"This game cannot start", @"Its log has the reason (Documents/Logs)."); return; }
     g_running = g;
@@ -61,14 +90,43 @@ void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(vo
 }
 
 void hearth_confirm_close(UIViewController *over) {
-    NSString *name = g_running.name ?: @"the game";
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Close %@?", name] message:@"Progress that was not saved will be lost."
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    fprintf(stderr, "hearth: close dialog shown\n");   // with DM_TOUCH_LOG=1 the touches around it are logged too (main.m)
-    [a addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; fprintf(stderr, "hearth: close dialog: Close\n"); hearth_close(); }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; fprintf(stderr, "hearth: close dialog: Cancel\n"); }]];
-    [over presentViewController:a animated:YES completion:nil];
+    confirm(over, [NSString stringWithFormat:@"Close %@?", g_running.name ?: @"the game"], @"Close", @"close", ^{ hearth_close(); });
 }
+
+// HOME: Home is a child of the game's view controller, over its view; the game is suspended first (dm_home_suspend: focus 2, audio, guest clock, graphics), so its last frame stays
+// under Home. Leaving resumes the game at once and fades Home out over it
+static HearthHomeVC *g_overlay;
+BOOL hearth_home_up(void) { return g_overlay != nil; }
+static UIViewController *game_vc(void) {
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) return w.rootViewController;
+    return nil;
+}
+static void home_show(void) {
+    UIViewController *root = game_vc(); if (!root || g_overlay || !g_running) return;
+    if (root.presentedViewController) { fprintf(stderr, "hearth: HOME ignored: a dialog is up\n"); return; }   // the software keyboard's guest thread waits for its answer
+    dm_home_suspend(1);
+    HearthHomeVC *h = [HearthHomeVC new]; h.overlay = YES; g_overlay = h;
+    [root addChildViewController:h];
+    h.view.frame = root.view.bounds; h.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; h.view.alpha = 0;
+    [root.view addSubview:h.view]; [h didMoveToParentViewController:root];
+    hearth_sound(HearthSoundOpen);
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ h.view.alpha = 1; } completion:nil];
+    fprintf(stderr, "hearth: Home over %s\n", g_running.titleId.UTF8String);
+}
+void hearth_resume(void) {
+    HearthHomeVC *h = g_overlay; if (!h) return;
+    g_overlay = nil; g_confirm = nil;
+    UIViewController *root = game_vc(); if (root.presentedViewController) [root dismissViewControllerAnimated:NO completion:nil];   // Home's own dialog (no game dialog can be up: Home does not open over one)
+    dm_gamepad_set_capture(nil);   // the controller goes back to the game
+    dm_home_suspend(0);
+    hearth_sound(HearthSoundBack);
+    [h willMoveToParentViewController:nil];
+    [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ h.view.alpha = 0; }
+                     completion:^(BOOL f) { (void)f; [h.view removeFromSuperview]; [h removeFromParentViewController]; }];
+    fprintf(stderr, "hearth: back to %s\n", g_running.titleId.UTF8String);
+}
+static void home_deliver(void) { dispatch_async(dispatch_get_main_queue(), ^{ if (g_overlay) hearth_resume(); else home_show(); }); }
+void hearth_home(void) { if (g_running) dm_home_press(home_deliver); }
 
 // Called by main.m for a launch intent from next.json, before UIApplicationMain: the game boots early, as the single-game app did
 void hearth_mark_running(HearthGame *g) { g_running = g; }

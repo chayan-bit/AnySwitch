@@ -8,16 +8,27 @@ struct dm_profile g_profile;   // no game profile: op_mode handheld, perf_mode f
 #include <signal.h>
 #include <sys/wait.h>
 uint64_t now_ns(void) { return 0; }
-void dm_audio_suspend(int on) { (void)on; }   // stubs for the bg item of DM_OE_SCRIPT (hle_audio.c / hle_os.c / hle_nvn.c)
-void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }
-void dm_gfx_suspend(int on) { (void)on; }
+// Stubs of the suspend pieces (hle_audio.c / hle_os.c / hle_nvn.c) for the bg item of DM_OE_SCRIPT and for dm_home_suspend: each keeps its reasons as the real one does,
+// and every call is appended to a trace ("a+3": audio, reason 3 added), so the order of a suspend and a resume can be checked
+static unsigned r_audio, r_clock, r_gfx; static char trace[512];
+static void note(unsigned *r, char what, int reason, int on) {
+    if (on) *r |= 1u << reason; else *r &= ~(1u << reason);
+    size_t l = strlen(trace); snprintf(trace + l, sizeof trace - l, "%s%c%c%d", l ? " " : "", what, on ? '+' : '-', reason);
+}
+void dm_audio_suspend_for(int reason, int on) { note(&r_audio, 'a', reason, on); }
+void dm_audio_suspend(int on) { dm_audio_suspend_for(0, on); }
+void guest_clock_freeze_for(int reason, int on) { note(&r_clock, 'c', reason, on); }
+void dm_gfx_suspend_for(int reason, int on) { note(&r_gfx, 'g', reason, on); }
+void dm_gfx_suspend(int on) { dm_gfx_suspend_for(0, on); }
+static _Atomic int delivered;
+static void deliver(void) { delivered++; }
 // The notification event (hle_thread.c binds a kernel event): the unit test only tracks whether it is signalled
 static int ev_bound, ev_sig;
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; ev_bound = 1; }
 void hle_signal_system_event(void *g) { (void)g; ev_sig = 1; }
 void hle_clear_system_event(void *g) { (void)g; ev_sig = 0; }
 static int checks, fails;
-#define CHECK(c, s) do { checks++; int ok = !!(c); fails += !ok; printf("%s %s\n", ok ? "✓" : "✗", s); } while (0)
+#define CHECK(c, ...) do { checks++; int ok = !!(c); fails += !ok; printf("%s ", ok ? "✓" : "✗"); printf(__VA_ARGS__); printf("\n"); } while (0)
 static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; g_focus_mode = -1; }
 static int pop_is(uint32_t want) { uint32_t m = 999; return h_oe_TryPopMsg(&m) && m == want; }
 static int empty(void) { uint32_t m = 999; return !h_oe_TryPopMsg(&m) && m == 999; }
@@ -123,5 +134,33 @@ int main(void) {
     CHECK(pop_is(15) && empty(), "focus mode 2: focus notification 15");
     h_oe_SetFocusMode(1); dm_focus_set(2);
     CHECK(pop_is(15) && empty(), "focus mode 1: focus notification 15");
+    // HOME (Hearth's Home over the game): the suspend order mirrors the background one without focus 3; the resume reverses it and ends in focus 1
+    reset(); trace[0] = 0; r_audio = r_clock = r_gfx = 0;
+    dm_home_suspend(1);
+    CHECK(!strcmp(trace, "a+3 c+3 g+3") && h_oe_GetFocus() == 2 && pop_is(15) && empty() && dm_home_active(), "HOME: focus 2 (message 15), then audio, guest clock and graphics suspended for the Home reason");
+    trace[0] = 0; dm_home_suspend(1);
+    CHECK(!trace[0] && empty(), "HOME twice: the second does nothing");
+    dm_home_suspend(0);
+    CHECK(!strcmp(trace, "g-3 c-3 a-3") && h_oe_GetFocus() == 1 && pop_is(15) && empty() && !dm_home_active(), "HOME off: graphics, clock and audio back in reverse order, then focus 1 (message 15)");
+    // HOME, then the app to the background and back: the game stays suspended under Home (the background resume lifts only its own reasons and cannot set focus 1)
+    reset(); r_audio = r_clock = r_gfx = 0;
+    dm_home_suspend(1); script_bg(1); script_bg(0);
+    unsigned h = 1u << DM_SUSPEND_HOME;
+    CHECK(r_audio == h && r_clock == h && r_gfx == h && h_oe_GetFocus() == 2, "HOME + background + foreground: only the Home reason holds (audio %#x clock %#x gfx %#x), focus %d (expected 2)", r_audio, r_clock, r_gfx, h_oe_GetFocus());
+    dm_home_suspend(0);
+    CHECK(!r_audio && !r_clock && !r_gfx && h_oe_GetFocus() == 1, "then HOME off: nothing holds, focus 1");
+    // The game's own HOME blocking (BeginBlockingHomeButton / End..., a counter): a press while blocked is held and delivered once, at the last End or at the cap
+    delivered = 0;
+    CHECK(dm_home_press(deliver) == 1 && delivered == 1, "HOME press, not blocked: delivered at once");
+    h_oe_BlockHome(); h_oe_BlockHome(); delivered = 0;
+    CHECK(dm_home_press(deliver) == 0 && delivered == 0, "HOME press while blocked twice: held");
+    h_oe_UnblockHome(); CHECK(delivered == 0, "the first End: still blocked, still held");
+    h_oe_UnblockHome(); CHECK(delivered == 1, "the last End: delivered");
+    h_oe_UnblockHome(); CHECK(dm_home_press(deliver) == 1 && delivered == 2, "an End without a Begin does not go below zero: the next press is delivered at once");
+    g_hb_cap_ms = 50; h_oe_BlockHome(); delivered = 0; dm_home_press(deliver);
+    usleep(200000); CHECK(delivered == 1, "blocked longer than the cap: delivered at the cap (%d)", delivered);
+    h_oe_UnblockHome(); CHECK(delivered == 1, "the End after the cap delivers nothing more");
+    h_oe_BlockHome(); delivered = 0; dm_home_press(deliver); h_oe_UnblockHome(); usleep(200000);
+    CHECK(delivered == 1, "delivered at the End: the cap that follows delivers nothing more (%d)", delivered);
     printf("== oe %d checks, %d failed ==\n", checks, fails); return fails != 0;
 }

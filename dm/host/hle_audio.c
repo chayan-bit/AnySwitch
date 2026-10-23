@@ -45,7 +45,7 @@ typedef struct {
 #define AOMAX 8
 static aout *g_aos[AOMAX];
 static pthread_mutex_t g_aos_lock = PTHREAD_MUTEX_INITIALIZER;
-static int g_suspended;
+static unsigned g_suspended;   // the suspend reasons that hold (dm_audio_suspend_for): real output only while none does
 static aout *ao(const void *g) { aout *a = objmap_get(g); if (!a) die("AudioOut %p was not created by the host", g); return a; }
 // the call site as "module+offset"; "host" when the host itself calls (in-process audio renderer)
 static const char *site(void *lr, char *buf, size_t n) {
@@ -82,13 +82,15 @@ static void *event_notify(void *p) {
 }
 
 // Take n bytes from the pending queue and hand them to the output side; once a whole block has played, move it to released and notify the ordinary thread.
-static void pull(aout *a, uint8_t *dst, uint64_t n) {
+// device: the sound card asks (au_render). Only its empty pulls are underruns, something the player hears as a gap; the silent sink (suspended, stalled) pulls an empty queue whenever the
+// game is frozen or quiet, plays nothing and misses nothing, and counting it reported every suspended second as zero padding in the next statistics line
+static void pull(aout *a, uint8_t *dst, uint64_t n, int device) {
     int released = 0;
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
     while (n) {
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
         if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
-            if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); }
+            if (device && qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); }
             memset(dst, 0, n); break; }
         gbuf *b = a->q[qh & (QMAX - 1)];
         uint64_t k = b->size - a->pos; if (k > n) k = n;
@@ -141,7 +143,7 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
         if (++a->st_calls % 2000 == 0) { uint64_t un = atomic_load(&a->under_n), ubb = atomic_load(&a->under_b);
             LOG("audio #%d device callbacks %llu: %u–%u frames each, %.1f blocks queued on average at callback; in these 2000, %llu underruns, %.1f ms zero-padded", a->id, (unsigned long long)a->st_calls, a->st_fmin, a->st_fmax, a->st_qsum / 2000.0,
                 (unsigned long long)(un - a->st_u0), (ubb - a->st_ub0) / (2.0 * a->ch) / (RATE / 1000.0)); a->st_fmin = ~0u; a->st_fmax = 0; a->st_qsum = 0; a->st_u0 = un; a->st_ub0 = ubb; } }
-    pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+    pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize, 1);
     { static int mute = -1; if (mute < 0) { const char *e = getenv("DM_AUDIO_MUTE"); mute = e && atoi(e); }   // diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
       if (mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); }
     {   int32_t g1 = atomic_load_explicit(&g_gain, memory_order_relaxed), g0 = a->gain_init ? a->gain_prev : g1; a->gain_init = 1; a->gain_prev = g1;
@@ -183,7 +185,7 @@ static void *null_sink(void *p) {
     while (atomic_load_explicit(&a->null_run, memory_order_acquire)) {
         t += 5000000; uint64_t now = now_ns();
         if (t > now) usleep((useconds_t)((t - now) / 1000)); else if (now - t > 100000000) t = now;
-        pull(a, scratch, bytes);
+        pull(a, scratch, bytes, 0);
     }
     return NULL;
 }
@@ -212,8 +214,9 @@ enum { WD_TICK_MS = 50, WD_STALL_MS = 200 };
 static void *au_watchdog(void *p) {
     (void)p; uint64_t last = now_ns();
     for (;;) {
-        usleep(WD_TICK_MS * 1000); uint64_t t = now_ns(), gap = t - last; last = t;
-        pthread_mutex_lock(&g_aos_lock);
+        usleep(WD_TICK_MS * 1000);
+        pthread_mutex_lock(&g_aos_lock);   // the clock is read under the lock: a resume holding it stamps wd_t later than a time read before it, and t - wd_t wrapped into a false stall
+        uint64_t t = now_ns(), gap = t - last; last = t;
         for (int i = 0; i < AOMAX; i++) {
             aout *a = g_aos[i]; if (!a || !a->au) continue;
             uint64_t n = atomic_load_explicit(&a->cb_n, memory_order_relaxed);
@@ -392,10 +395,13 @@ void *dm_pcmout_released(void *k) { return h_au_Released(k); }
 
 // Front-end lifecycle / audio session interruption: suspend real audio output, with the silent sink taking over real-time consumption meanwhile (pacing unbroken); switch back to the AudioUnit on resume.
 // The front end calls with 1 on going to background / interruption began, and with 0 on returning to foreground / interruption ended (shouldResume).
-void dm_audio_suspend(int on) {
+void dm_audio_suspend(int on) { dm_audio_suspend_for(0, on); }
+void dm_audio_suspend_for(int reason, int on) {
     pthread_mutex_lock(&g_aos_lock);
-    if (g_suspended != on) {
-        g_suspended = on; int failed = 0;
+    unsigned was = g_suspended; if (on) g_suspended |= 1u << reason; else g_suspended &= ~(1u << reason);
+    on = g_suspended != 0;
+    if (!was != !on) {
+        int failed = 0;
         for (int i = 0; i < AOMAX; i++) {
             aout *a = g_aos[i];
             if (!a || !a->au) continue;
@@ -405,8 +411,8 @@ void dm_audio_suspend(int on) {
                 // The session may still be held by someone else (back in the game with a call not yet hung up): not fatal, the silent sink keeps covering and the watchdog retries
                 null_stop(a); a->stalled = 0; au_go(a, now_ns()); failed |= a->backend != BK_AU; }
         }
-        LOG("audio %s", on ? "suspended (background / interruption)" : failed ? "resumed, an AudioUnit still refuses to start (retrying)" : "resumed (foreground / interruption ended)");
-    }
+        LOG("audio %s (reason %d)", on ? "suspended" : failed ? "resumed, an AudioUnit still refuses to start (retrying)" : "resumed", reason);
+    } else if (was != g_suspended) LOG("audio stays suspended (reason %d %s, reasons now %#x)", reason, g_suspended > was ? "added" : "lifted", g_suspended);   // `on` now says whether any reason holds
     pthread_mutex_unlock(&g_aos_lock);
 }
 // The media services were reset (iOS): every AudioUnit is invalid. Create each output's unit again and restart the ones that were playing; the front end has set the audio session up again first

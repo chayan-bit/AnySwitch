@@ -473,6 +473,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
     if (kind == DmFocusHomeGame) return @[@[@"A", @"Start"]];   // Home has no Back: B does nothing there
     if (kind == DmFocusHomeBlocked) return @[@[@"A", @"Details"]];
     if (kind == DmFocusHomeButton) return @[@[@"A", @"Open"]];
+    if (kind == DmFocusHomeRunning) return @[@[@"A", @"Resume"], @[@"X", @"Close"]];
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;

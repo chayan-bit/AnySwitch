@@ -10,6 +10,7 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @property (nonatomic, readonly) UIView *art;   // the rounded icon (the launch zoom starts from it)
 @property (nonatomic) BOOL chosen;              // Home's focus is on it: grows a little and shows the game's name above it (not UIKit's own `focused`)
 - (void)setChosen:(BOOL)chosen animated:(BOOL)animated;
+@property (nonatomic) BOOL playing;             // the game paused under Home: its state line says Playing
 @end
 
 @interface HearthRoundButton : UIControl

@@ -108,9 +108,11 @@ static const CGFloat
     K_BAR_CLICK_X = 165,                            // bars mode: L3 / R3 centre from the outer edge (in u): inward of L / R
     K_HUD_W = 64, K_HUD_H = 22,                     // the frame-rate counter's size (front_ios.m)
     K_OVERLAY_SCALE_MAX = 1.35,                     // over the picture (overlay layout) DM_CONTROLS_SCALE stops here: the bottom controls must not reach the top row
-    K_CHORD_S = 0.8;                                // + and - held together this long open the settings screen (dm_gamepad_set_chord)
+    K_CHORD_S = 0.8,                                // + and - held together this long open the settings screen (dm_gamepad_set_chord)
+    K_IDLE_S = 5, K_IDLE_LEVEL = 0.3;               // DM_CONTROLS_IDLE_FADE: after this long without a touch the controls fade to this fraction of their opacity (estimates, judged on the device)
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static CGFloat g_scale = 1, g_opacity = 1;   // dm_gamepad_scale: size of the bottom controls, 1 = the default; dm_gamepad_opacity: how solid every control is
+static BOOL g_idle_fade = YES;               // dm_gamepad_idle_fade
 static void (^g_capture)(uint64_t, int32_t, int32_t);   // main thread: the physical controller's buttons (DMB_* bits) and left stick while captured
 static void (^g_chord)(void);                            // main thread: + and - held together
 static uint64_t g_chord_gen;
@@ -138,6 +140,7 @@ static __weak DmGamepad *g_view;
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     BOOL _bars;                                    // controls live in the letterbox bars (dm_gamepad_layout)
     CGRect _content, _top, _bot;                   // the picture, and the usable parts of the bars above and below it
+    NSTimer *_idle; BOOL _faded;                   // idle fade: the count since the last touch ended, and whether the controls are faded now
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn, *k_idleBar, *k_lineBar, *k_ringBar, *k_textBar;
@@ -166,6 +169,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             k_idleBar = [UIColor colorWithWhite:1 alpha:0.18]; k_lineBar = [UIColor colorWithWhite:1 alpha:0.50]; k_ringBar = [UIColor colorWithWhite:1 alpha:0.10]; k_textBar = [UIColor colorWithWhite:1 alpha:0.9];   // frosted: the bars behind are already blurred
         });
         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
+        _controls.allowsGroupOpacity = NO;   // the idle fade lowers this one layer's opacity: each control multiplies it in, with no off-screen pass for the full-screen layer
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
         _knob = shape(_controls);
         CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
@@ -190,6 +194,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
         [self padsChanged];
         motion_start();
+        [self armIdle];
     }
     return self;
 }
@@ -340,7 +345,20 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     for (int i = 0; i < 16; i++) if (!_game[i]) { _game[i] = t; [_owner setObject:@(C_GAME | (uint64_t)i << 8) forKey:t]; return YES; }
     return NO;
 }
+// Idle fade: the controls fade after K_IDLE_S without a touch, so they stop covering the game's own prompts; any touch brings them back at once (and still acts)
+- (void)fadeTo:(BOOL)faded over:(NSTimeInterval)d {
+    _faded = faded;
+    [CATransaction begin]; [CATransaction setAnimationDuration:d]; _controls.opacity = faded ? K_IDLE_LEVEL : 1; [CATransaction commit];
+}
+- (void)armIdle {   // no touch is held: start counting (a held stick or key never fades)
+    [_idle invalidate]; _idle = nil;
+    if (!g_idle_fade) { if (_faded) [self fadeTo:NO over:0.12]; return; }
+    if (_owner.count) return;
+    __weak DmGamepad *w = self;
+    _idle = [NSTimer scheduledTimerWithTimeInterval:K_IDLE_S repeats:NO block:^(NSTimer *t) { (void)t; [w fadeTo:YES over:0.6]; }];
+}
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    [_idle invalidate]; _idle = nil; if (_faded) [self fadeTo:NO over:0.12];
     BOOL game = NO;
     for (UITouch *t in ts) {
         CGPoint p = [t locationInView:self];
@@ -387,10 +405,12 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     if (game) [self pushGame];
     [self recompute];
     if (swap) [self swapLayout];
+    [self armIdle];
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; [self armIdle]; }
+- (void)dealloc { [_idle invalidate]; }
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -534,6 +554,7 @@ void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size (st
     g_scale = fminf(fmaxf(s, K_SCALE_MIN), K_SCALE_MAX); [g_view setNeedsLayout]; }
 CGRect dm_gamepad_hud_frame(void) { return g_view && [g_view inBars] ? [g_view hudFrame] : CGRectNull; }   // the frame-rate counter's place in the bars (CGRectNull: keep the overlay place)
 void dm_gamepad_opacity(float o) { g_opacity = fminf(fmaxf(o, 0.3f), 1.f); [g_view applyOpacity]; }   // main thread: every control's opacity, 0.3...1
+void dm_gamepad_idle_fade(BOOL on) { g_idle_fade = on; [g_view armIdle]; }   // main thread: DM_CONTROLS_IDLE_FADE
 // The settings screen takes the physical controller: while a handler is set the game gets no input (touches are covered by the screen itself), and the handler is called on the main thread with the
 // buttons (DmPadBits.h) and the left stick at once and on every change. NULL gives the controller back
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly)) {

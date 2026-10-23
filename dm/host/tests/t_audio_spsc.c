@@ -73,7 +73,7 @@ static void *consumer(void *p) {
         uint64_t n = 1 + next_random(&state) % 512;
         if (n > avail) n = avail;
         if (done + n == t->total_bytes) atomic_store(&g_last_pull, 1);
-        pull(t->a, t->scratch, n);
+        pull(t->a, t->scratch, n, 1);   // as the sound card does
         for (uint64_t i = 0; i < n; i++) {
             if (t->scratch[i] != (uint8_t)(want++)) atomic_store(&t->failed, 1);
         }
