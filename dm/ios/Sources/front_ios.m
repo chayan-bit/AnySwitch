@@ -14,6 +14,7 @@
 #import "HearthDialog.h"
 #import "HearthErrors.h"
 #import "HearthLaunch.h"
+#import "HearthCapture.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -86,6 +87,7 @@ static UILabel *front_ios_fps_label(void);
 @property (nonatomic, strong) UIButton *gear;
 @property (nonatomic, strong) UIButton *home;   // HOME on the touch layer: Hearth's Home over the paused game (hearth_home)
 @property (nonatomic, strong) DmSettingsVC *settings;
+@property (nonatomic) CGRect content;   // the 16:9 picture inside the screen (viewDidLayoutSubviews)
 @end
 @implementation DmGameVC
 - (void)viewDidLoad {
@@ -182,7 +184,7 @@ static UILabel *front_ios_fps_label(void);
     CGRect b = self.view.bounds; if (!self.game) return;
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    CGRect content = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+    CGRect content = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h); self.content = content;
     self.game.frame = g_ambient ? b : content;   // ambient: the drawable is the whole screen and the present stage letterboxes the picture inside it (the same fit, so the rectangles agree)
     self.pad.frame = b;
     BOOL bars = dm_gamepad_layout(content, g_controls_auto);
@@ -199,7 +201,26 @@ static UILabel *front_ios_fps_label(void);
     [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot();
     // DM_SETTINGS_AT_START=1 (env.txt diagnostics): the settings screen opens by itself once the game shows, for screenshots on a device that is driven without touching the top of the screen
     static int once; const char *e = getenv("DM_SETTINGS_AT_START");
+    if (!once) [self captureTest];
     if (!once++ && e && atoi(e)) { __weak DmGameVC *w = self; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [w openSettings]; }); }
+}
+// A screenshot of the game's picture into Documents/Gallery/<title id>/ (HearthCapture.h)
+- (void)capture {
+    HearthGame *g = hearth_running_game(); if (!self.game || !g) return;
+    NSString *dir = [hearth_library().documentsDir stringByAppendingFormat:@"/Gallery/%@", g.titleId];
+    hearth_capture(self.game, [self.view convertRect:self.content toView:self.game], dir, ^(NSString *path, double grab, double enc) {
+        LOG("capture: %s, grab %.1f ms (main thread), encode %.1f ms", path ? path.lastPathComponent.UTF8String : "FAILED", grab, enc);
+    });
+}
+// DM_CAPTURE_TEST=<count>@<start s>@<every s> (env.txt, spike C1): that many screenshots on a timer while the game runs, each logged with its times
+- (void)captureTest {
+    const char *e = getenv("DM_CAPTURE_TEST"); int n = 0; double at = 30, every = 2;
+    if (!e || sscanf(e, "%d@%lf@%lf", &n, &at, &every) < 1 || n <= 0) return;
+    LOG("capture test: %d screenshots every %.1f s from %.0f s on", n, every, at);
+    __weak DmGameVC *w = self; __block int left = n;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [NSTimer scheduledTimerWithTimeInterval:every repeats:YES block:^(NSTimer *t) { if (!w || left-- <= 0) { [t invalidate]; return; } [w capture]; }];
+    });
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
