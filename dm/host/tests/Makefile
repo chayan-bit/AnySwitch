@@ -1,6 +1,6 @@
 # dm/host unit tests in one command: make -C dm/host/tests run (takes seconds; build output goes to build/ and is not committed)
 B = build
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl $(B)/t_vib $(B)/t_romstore $(B)/t_err $(B)/t_account $(B)/t_album
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_gate_stats $(B)/t_time $(B)/t_sync $(B)/t_gate_cost $(B)/t_devctl $(B)/t_vib $(B)/t_romstore $(B)/t_err $(B)/t_account $(B)/t_album $(B)/t_keymap
 	$(B)/t_touch
 	$(B)/t_vib
 	$(B)/t_oe 2>/dev/null
@@ -22,6 +22,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_err 2>/dev/null
 	$(B)/t_account 2>/dev/null
 	$(B)/t_album 2>/dev/null
+	$(B)/t_keymap
 	TMPDIR="$(abspath $(B))" $(B)/t_romstore 2>/dev/null
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h ../profile.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_touch.c ../hle_touch.c
@@ -61,6 +62,8 @@ $(B)/t_account: t_account.c ../hle_account.c ../hle_bigstack.c ../hle.h ../dm.h 
 	clang -O1 -Wall -Wno-unused-function -Wno-incompatible-pointer-types-discards-qualifiers -DT_ACCOUNT -I.. -o $@ t_account.c ../hle_bigstack.c
 $(B)/t_album: t_album.c ../hle_album.c ../hle_bigstack.c ../hle.h ../dm.h ../front.h | $(B)
 	clang -O1 -Wall -Wno-unused-function -DT_ALBUM -I.. -o $@ t_album.c ../hle_album.c ../hle_bigstack.c
+$(B)/t_keymap: t_keymap.c ../keymap.c ../keymap.h | $(B)
+	clang -O1 -Wall -I.. -o $@ t_keymap.c ../keymap.c
 $(B)/t_err: t_err.c ../hle_err.c ../hle_bigstack.c ../hle.h ../dm.h ../front.h | $(B)
 	clang -O1 -Wall -Wno-unused-function -Wno-incompatible-pointer-types-discards-qualifiers -I.. -o $@ t_err.c ../hle_err.c ../hle_bigstack.c
 $(B)/t_devctl: t_devctl.c ../devctl.c ../devctl.h ../dm_input.h | $(B)

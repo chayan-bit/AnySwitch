@@ -316,7 +316,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if (!g_layer) return -1;
     __block int r = 0; __block NSString *text = nil;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    NSString *t = title && *title ? @(title) : @"", *m = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];
+    NSString *t = title && *title ? @(title) : @"", *m = [[@[@(sub ? sub : ""), @(guide ? guide : "")] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]] componentsJoinedByString:@"\n"];
     NSString *init = initial ? @(initial) : @"", *ph = guide ? @(guide) : @"";
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];

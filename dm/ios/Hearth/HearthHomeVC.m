@@ -12,6 +12,7 @@
 #import "HearthSleep.h"
 #import "HearthDialog.h"
 #import "HearthSettingsPages.h"
+#import "HearthControllers.h"
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
@@ -48,7 +49,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _tileRing = [DmFocusView new]; _tileRing.radius = HEARTH_TILE_RADIUS + 6; [_row addSubview:_tileRing];
     _empty = [UILabel new]; _empty.text = @"No games yet"; _empty.font = [DmUI font:22 weight:UIFontWeightSemibold]; _empty.textColor = DmUI.sub; _empty.textAlignment = NSTextAlignmentCenter;
     NSMutableArray *bs = [NSMutableArray array], *acts = [NSMutableArray array];
-    NSArray *defs = @[@[@"photo.on.rectangle", @"Gallery", @"openGallery"], @[@"gearshape.fill", @"Settings", @"openSettings"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
+    NSArray *defs = @[@[@"photo.on.rectangle", @"Gallery", @"openGallery"], @[@"gearshape.fill", @"Settings", @"openSettings"], @[@"gamecontroller.fill", @"Controllers", @"openControllers"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
     if (_overlay) defs = [defs arrayByAddingObject:@[@"xmark", @"Close the game", @"closeGame"]];   // touch's way to close the paused game
     for (NSArray *d in defs) { [bs addObject:[[HearthRoundButton alloc] initWithSymbol:d[0] label:d[1]]]; [acts addObject:d[2]]; }
     _buttons = bs; _buttonActions = acts;
@@ -262,6 +263,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     } completion:^(BOOL f) { (void)f; t.art.hidden = NO; done(); }];
 }
 - (void)openSettings { [self showSheet:hearth_system_settings(self.view.bounds.size)]; }
+- (void)openControllers { [self showSheet:hearth_controllers(self.view.bounds.size)]; }
 - (void)openUser:(HearthUser *)u {   // a picture in the top bar: that user on the Users page
     if (self.layerUp) return;
     DmSettingsVC *v = hearth_system_settings(self.view.bounds.size); [self showSheet:v]; hearth_settings_show_user(v, u.uid);

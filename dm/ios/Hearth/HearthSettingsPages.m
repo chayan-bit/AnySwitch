@@ -14,6 +14,7 @@
 #import "DmPadBits.h"
 
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
+void dm_gamepad_reload_maps(void);
 
 #define SOURCE_URL @"https://github.com/chayan-bit/AnySwitch"
 #define DEV_KEY @"HearthDeveloper"
@@ -314,7 +315,7 @@ DmSettingsVC *hearth_system_settings(CGSize size) {
     DmSettingsVC *v = [[DmSettingsVC alloc] initWithSettings:DmSettings.systemStore size:size];
     __weak DmSettingsVC *w = v; DmSettingsVC *(^vc)(void) = ^{ return w; };
     v.pages = system_pages(vc);
-    v.onChange = ^{ hearth_apply_appearance(); };   // the system store announces nothing; a running game hears it through the linked store
+    v.onChange = ^{ hearth_apply_appearance(); dm_gamepad_reload_maps(); };   // the system store announces nothing (Restore all clears the button maps too); a running game hears it through the linked store
     return v;
 }
 

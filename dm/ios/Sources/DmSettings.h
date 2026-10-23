@@ -50,6 +50,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 @interface DmSection : NSObject
 @property (nonatomic, readonly) NSString *ident, *title, *icon;     // icon: an SF Symbol name
 @property (nonatomic, readonly) NSArray<DmSetting *> *settings;
+@property (nonatomic, readonly) BOOL listed;   // `"listed": false`: not among the settings screen's own categories, only on a page that names it (the Controllers page's mapping rows)
 @end
 
 @interface DmSettings : NSObject
