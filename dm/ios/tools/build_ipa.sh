@@ -25,7 +25,7 @@ DM=$(cd .. && pwd)
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
 cpc() { cp -c "$@" 2> /dev/null || cp "$@"; }   # copy as an APFS clone (no extra disk on the same volume), a plain copy where cloning is refused
 # Metal's pipeline compiler (metal-tt) leaves temp entries in the per-user gpuarchiver cache (13 GB once): when this build ends, remove the ones it made, never the others (scripts/diskhygiene.py)
-HYG=$DM/../scripts/diskhygiene.py; GPU_SNAP=$(mktemp -t dm_gpusnap) && python3 "$HYG" gpu-snapshot "$GPU_SNAP" && trap 'python3 "$HYG" gpu-clean "$GPU_SNAP"; rm -f "$GPU_SNAP"' EXIT
+HYG=$DM/../scripts/diskhygiene.py; GPU_SNAP=$(mktemp -t dm_gpusnap.XXXXXX) && python3 "$HYG" gpu-snapshot "$GPU_SNAP" && trap 'python3 "$HYG" gpu-clean "$GPU_SNAP"; rm -f "$GPU_SNAP"' EXIT
 ROMFS_MODE=${IPA_ROMFS:-store}   # store (default): a chunk store beside the IPA; 1: loose files in the IPA; 0: none
 case $ROMFS_MODE in store|1|0) ;; *) die "IPA_ROMFS must be store, 1 or 0, not $ROMFS_MODE" ;; esac
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
