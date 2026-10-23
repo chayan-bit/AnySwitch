@@ -1928,7 +1928,7 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
     if (r != (unsigned)pk->vbase) { static int nl; if (nl++ < 6) MLOG("sparse texture ser=%llu %ux%u: sampled from level %u of %u (finer levels not mapped)", (unsigned long long)t->serial, t->d.width, t->d.height, r, n); }
     pk->vbase = (int)r;
 }
-// ---- Render-target heaps: NVN aliasing kept (off by default: DM_NVN_RTHEAP=1 turns it on; an occasional one-frame green flash in Odyssey is not explained yet) ----
+// ---- Render-target heaps: NVN aliasing kept (on by default; DM_NVN_RTHEAP=0 turns it off) ----
 // A game places render targets it never uses at the same time in the same or overlapping storage of one pool, and initializes new texture objects on that storage as it goes (Odyssey:
 // a 100 MB G-buffer pool holds about 1,000 texture descriptions by the Cap Kingdom, 1.4 GB summed at 1x, as its dynamic resolution and passes re-describe the same 60 MB; one storage is
 // used as R11G11B10F and as R32F). One Metal texture per (pool, offset, description) gave each its own memory, and kept it until the pool went. Here the GPU-owned textures of a pool share
@@ -1939,14 +1939,16 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
 // ranges overlap, transitively, when there are at least two and the same saving holds. K covers 90% of the members' host bytes; a texture that needs more (small ones, whose alignment
 // dominates) stays standalone, as does every texture outside a heap. The replay already orders every pass after the passes before it (full barriers between encoders), which is what aliased
 // memory needs. A texture created over bytes another member already used is not zeroed (on the Switch it reads what is there; zeroing would clobber the other texture). Generic: no title
-// lists; packaged, linear, buffer, CPU-written and initial-content textures stay standalone, as before. The registry and heaps live until their pool is finalized (mtl_alias_drop_pool)
+// lists; packaged, linear, buffer, CPU-written and initial-content textures stay standalone, as before. The registry and heaps live until their pool is finalized (mtl_alias_drop_pool).
+// Heap textures have no lossless compression (rh_desc): a compressed texture keeps its own block encoding in the shared bytes, so another description reading them (Odyssey's R32F view of
+// its R11G11B10F storage, a new dynamic-resolution size) decoded garbage, and Odyssey showed a one-frame green flash in 4 of 5 runs at 2x; uncompressed, the bytes are plain texels as on the Switch
 typedef struct { uint64_t pool; int64_t off; uint64_t size; nvn_texdesc d; MTLSizeAndAlign sa; int made; } rh_tex;   // made: a Metal texture exists for it (in a heap or standalone)
 @interface NvRtHeap : NSObject { @public uint64_t pool; int64_t lo, hi; double k; NSUInteger align; id<MTLHeap> heap; uint32_t members; uint64_t (*used)[2]; uint32_t nused; } @end
 @implementation NvRtHeap - (void)dealloc { free(used); } @end
 static pthread_mutex_t g_rh_mu = PTHREAD_MUTEX_INITIALIZER;
 static rh_tex *g_rh; static uint32_t g_rh_n, g_rh_cap; static nvn_hmap g_rh_idx = {.klen = sizeof(alias_key)};   // registry of initialized eligible textures, deduplicated by storage + description
 static NSMutableArray<NvRtHeap *> *g_rh_heaps; static int g_rh_on = -1; static uint64_t g_rh_placed, g_rh_shared;   // textures placed in heaps, of them over bytes a member already used
-static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = e && atoi(e) != 0; } return g_rh_on; }
+static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = !(e && atoi(e) == 0); } return g_rh_on; }
 // A texture that becomes a plain GPU-owned private texture in tex_mtl_ (not packaged, linear, buffer or compressed): a sampled texture of a sparse virtual pool is read through the page
 // table (packaged), as tex_mtl_ decides
 static int rh_eligible(const tex_t *t) {
@@ -1956,9 +1958,11 @@ static int rh_eligible(const tex_t *t) {
     return 1;
 }
 // Host size and alignment of a texture description in a heap, at the session scale when it may be scaled (an upper bound: a member made at 1x takes less)
+static MTLTextureDescriptor *rh_desc(MTLTextureDescriptor *d) { MTLTextureDescriptor *h = [d copy]; h.allowGPUOptimizedContents = NO; return h; }   // a heap member's description (no lossless compression)
 static MTLSizeAndAlign rh_size(const nvn_texdesc *td) {
     tex_t t; memset(&t, 0, sizeof t); t.d = *td; MTLSizeAndAlign z = {0, 0};
     MTLTextureDescriptor *d = tex_desc(&t, 0); if (!d) return z;
+    d = rh_desc(d);
     if (g_rs != 1.0f && (td->target == 1 || td->target >= 4) && td->target <= 6 && nvn_rs_host(td->width, g_rs) <= 16384 && nvn_rs_host(td->height, g_rs) <= 16384) {
         d.width = nvn_rs_host((uint32_t)d.width, g_rs); d.height = nvn_rs_host((uint32_t)d.height, g_rs); }
     return [g_dev heapTextureSizeAndAlignWithDescriptor:d];
@@ -2052,7 +2056,8 @@ static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d, int *o
     *over = 0;
     if (!rh_on() || !rh_eligible(t)) return nil;
     int init = tex_init_wanted(t, d.pixelFormat);   // stays standalone, but counts as a texture in use
-    MTLSizeAndAlign sa = init ? (MTLSizeAndAlign){0, 0} : [g_dev heapTextureSizeAndAlignWithDescriptor:d];
+    MTLTextureDescriptor *hd = rh_desc(d);
+    MTLSizeAndAlign sa = init ? (MTLSizeAndAlign){0, 0} : [g_dev heapTextureSizeAndAlignWithDescriptor:hd];
     pthread_mutex_lock(&g_rh_mu);
     NvRtHeap *h = nil; uint64_t pool = (uint64_t)(uintptr_t)t->pool, at = 0, a;
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = pool; ak.off = t->off; ak.d = t->d; uint32_t ix = (uint32_t)(uintptr_t)nvn_hm_get(&g_rh_idx, &ak);   // registry index + 1
@@ -2067,7 +2072,7 @@ static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d, int *o
     h->members++; g_rh_placed++; g_rh_shared += *over;
     id<MTLHeap> heap = h->heap;
     pthread_mutex_unlock(&g_rh_mu);
-    return [heap newTextureWithDescriptor:d offset:at];
+    return [heap newTextureWithDescriptor:hd offset:at];
 }
 static void rh_stats(uint32_t *heaps, uint64_t *bytes, uint64_t *placed, uint64_t *shared) {
     pthread_mutex_lock(&g_rh_mu); *heaps = (uint32_t)g_rh_heaps.count; *bytes = 0; for (NvRtHeap *h in g_rh_heaps) *bytes += h->heap.size; *placed = g_rh_placed; *shared = g_rh_shared; pthread_mutex_unlock(&g_rh_mu);
