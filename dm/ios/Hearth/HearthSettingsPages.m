@@ -18,7 +18,7 @@ static NSString *bytes(unsigned long long n) { return [NSByteCountFormatter stri
 static NSString *when(double t) { return t > 0 ? [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:t] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle] : @"Never"; }
 static NSString *duration(double s) {
     NSDateComponentsFormatter *f = [NSDateComponentsFormatter new]; f.allowedUnits = NSCalendarUnitHour | NSCalendarUnitMinute; f.unitsStyle = NSDateComponentsFormatterUnitsStyleFull;
-    return s < 60 ? @"Less than a minute" : [f stringFromTimeInterval:s];
+    return s <= 0 ? @"None" : s < 60 ? @"Less than a minute" : [f stringFromTimeInterval:s];
 }
 static NSString *tail(NSString *path) {   // the end of a text file, cut at a line start
     NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:path]; if (!h) return nil;
@@ -130,9 +130,12 @@ static DmPageItem *delete_saves_item(HearthGame *g, DmSettingsVC *(^vc)(void)) {
 #pragma mark - System Settings
 
 static NSString *size_detail(NSDictionary<NSString *, NSNumber *> *s) {
-    NSMutableArray *parts = [NSMutableArray array];
-    for (NSArray *k in @[@[@"code", @"code"], @[@"shaders", @"shaders"], @[@"pipelines", @"pipelines"], @[@"files", @"game files"], @[@"addons", @"add-ons"], @[@"other", @"other"], @[@"save", @"saves"]])
-        if ([s[k[0]] unsignedLongLongValue]) [parts addObject:[NSString stringWithFormat:@"%@ %@", bytes([s[k[0]] unsignedLongLongValue]), k[1]]];
+    NSMutableArray *parts = [NSMutableArray array], *tiny = [NSMutableArray array];   // parts under 1 KB are placeholders ("2 bytes add-ons"): listed only when nothing bigger is
+    for (NSArray *k in @[@[@"code", @"code"], @[@"shaders", @"shaders"], @[@"pipelines", @"pipelines"], @[@"files", @"game files"], @[@"addons", @"add-ons"], @[@"other", @"other"], @[@"save", @"saves"]]) {
+        unsigned long long n = [s[k[0]] unsignedLongLongValue];
+        if (n) [(n < 1024 ? tiny : parts) addObject:[NSString stringWithFormat:@"%@ %@", bytes(n), k[1]]];
+    }
+    if (!parts.count) parts = tiny;
     return parts.count ? [parts componentsJoinedByString:@", "] : @"Nothing on this iPad yet";
 }
 static unsigned long long installed(NSDictionary<NSString *, NSNumber *> *s) { unsigned long long n = 0; for (NSString *k in s) if (![k isEqual:@"save"]) n += s[k].unsignedLongLongValue; return n; }
@@ -173,7 +176,8 @@ static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void));
 static void reload(DmSettingsVC *v) { __weak DmSettingsVC *w = v; v.pages = system_pages(^{ return w; }); [v reloadPages]; }   // the Developer page came or went
 static NSArray<DmPageItem *> *about_items(DmSettingsVC *(^vc)(void)) {
     NSDictionary *i = NSBundle.mainBundle.infoDictionary;
-    NSString *v = [NSString stringWithFormat:@"%@ (%@)", i[@"CFBundleShortVersionString"] ?: @"?", i[@"CFBundleVersion"] ?: @"?"];
+    NSString *sv = i[@"CFBundleShortVersionString"] ?: @"?", *bv = i[@"CFBundleVersion"] ?: @"?";
+    NSString *v = [sv isEqual:bv] ? sv : [NSString stringWithFormat:@"%@ (%@)", sv, bv];   // the build number only when it says something the version does not
     static int presses;
     BOOL dev = [NSUserDefaults.standardUserDefaults boolForKey:DEV_KEY];
     return @[
