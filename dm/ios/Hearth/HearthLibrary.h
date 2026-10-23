@@ -30,7 +30,7 @@
 - (void)markPlayed:(HearthGame *)g;   // State/<id>.json: lastPlayed = now
 - (void)addPlayTime:(double)seconds to:(HearthGame *)g user:(NSString *)uid;   // State/<id>.json playSeconds (the total) and users.<uid>.playSeconds; uid nil: the total only
 - (double)playTimeOf:(HearthGame *)g;   // every user's
-- (double)playTimeOf:(HearthGame *)g user:(NSString *)uid;
+- (double)playTimeOf:(HearthGame *)g user:(NSString *)uid;   // HEARTH_UID's includes the time from before users existed (recorded for no user)
 - (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g;   // what the game provides (dm_capability), learned when it runs (plan decision 12)
 - (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g;   // nil before its first start
 // Bytes per kind: code, shaders (msl/), pipelines (pso/), files (the game's own files), addons (aoc/), other (profile, icon, manifest), save

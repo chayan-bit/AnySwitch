@@ -128,9 +128,13 @@ static NSString *stamp(NSString *p) {
     }];
 }
 - (double)playTimeOf:(HearthGame *)g { id v = [self stateOf:g][@"playSeconds"]; return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0; }
+static double seconds_of(id u) { id v = [u isKindOfClass:NSDictionary.class] ? u[@"playSeconds"] : nil; return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0; }
 - (double)playTimeOf:(HearthGame *)g user:(NSString *)uid {
-    id us = [self stateOf:g][@"users"], u = [us isKindOfClass:NSDictionary.class] && uid ? us[uid] : nil, v = [u isKindOfClass:NSDictionary.class] ? u[@"playSeconds"] : nil;
-    return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0;
+    NSDictionary *st = [self stateOf:g]; id us = st[@"users"]; if (![us isKindOfClass:NSDictionary.class]) us = @{};
+    double own = uid ? seconds_of(us[uid]) : 0;
+    if (![uid isEqualToString:HEARTH_UID]) return own;
+    double named = 0; for (NSString *k in us) named += seconds_of(us[k]);
+    return own + fmax(0, [self playTimeOf:g] - named);   // time no user was recorded for was played before users existed, by the only player then: the first user
 }
 - (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g { [self updateState:g with:^(NSMutableDictionary *st) { st[@"caps"] = caps; }]; }
 - (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g { id c = [self stateOf:g][@"caps"]; return [c isKindOfClass:NSDictionary.class] ? c : nil; }

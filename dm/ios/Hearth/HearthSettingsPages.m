@@ -6,6 +6,8 @@
 #import "HearthDialog.h"
 #import "HearthErrors.h"
 #import "HearthAvatar.h"
+#import "HearthSaves.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "DmSettings.h"
 #import "DmSettingsViews.h"
 #import "DmHaptics.h"
@@ -128,7 +130,7 @@ static DmPageItem *delete_game_item(HearthGame *g, DmSettingsVC *(^vc)(void), vo
 }
 static DmPageItem *delete_saves_item(HearthGame *g, DmSettingsVC *(^vc)(void)) {
     if ([hearth_running_game().titleId isEqual:g.titleId]) return [DmPageItem unavailable:@"Delete saves" detail:@"Close the game first."];
-    return confirmed(action(@"Delete saves", @"Removes this game's saved progress. This cannot be undone.", ^{
+    return confirmed(action(@"Delete saves", @"Removes every user's saved progress in this game. This cannot be undone.", ^{
         NSString *why = nil;
         if (![hearth_library() deleteSavesOf:g error:&why]) tell(vc(), @"The saves were not deleted", why);
     }), [NSString stringWithFormat:@"Press again to delete the saves of %@", g.name]);
@@ -316,6 +318,70 @@ DmSettingsVC *hearth_system_settings(CGSize size) {
     return v;
 }
 
+#pragma mark - Save data (a game's Options)
+
+// The document pickers' answers (UIDocumentPickerViewController keeps its delegate weakly): kept while one is up
+@interface HearthFilePick : NSObject <UIDocumentPickerDelegate>
+@property (nonatomic, copy) void (^picked)(NSURL *url);   // nil: cancelled
+@end
+@implementation HearthFilePick
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls { void (^p)(NSURL *) = self.picked; self.picked = nil; if (p) p(urls.firstObject); }
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { void (^p)(NSURL *) = self.picked; self.picked = nil; if (p) p(nil); }
+@end
+static HearthFilePick *g_pick;
+static void present_picker(UIViewController *over, UIDocumentPickerViewController *p, void (^picked)(NSURL *url)) {
+    g_pick = [HearthFilePick new]; g_pick.picked = ^(NSURL *u) { g_pick = nil; picked(u); };
+    p.delegate = g_pick; p.modalPresentationStyle = UIModalPresentationFormSheet;
+    UIViewController *top = over; while (top.presentedViewController) top = top.presentedViewController;
+    [top presentViewController:p animated:YES completion:nil];
+}
+static void export_save(HearthGame *g, HearthUser *u, DmSettingsVC *(^vc)(void)) {
+    NSString *why = nil, *label = [NSString stringWithFormat:@"%@ - %@ - %@", g.name, u.name, [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle]];
+    NSString *dir = hearth_save_export([hearth_library() saveDirFor:g user:u.uid], [NSTemporaryDirectory() stringByAppendingPathComponent:@"Export"], label, &why);
+    if (!dir) { tell(vc(), @"The save was not exported", why); return; }
+    fprintf(stderr, "hearth: export of %s's save of %s offered\n", u.uid.UTF8String, g.titleId.UTF8String);
+    present_picker(vc(), [[UIDocumentPickerViewController alloc] initForExportingURLs:@[[NSURL fileURLWithPath:dir]] asCopy:YES], ^(NSURL *url) {
+        [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+        fprintf(stderr, "hearth: export %s\n", url ? url.path.UTF8String : "cancelled");
+        if (url) tell(vc(), @"Save exported", [NSString stringWithFormat:@"%@'s save of %@ is in Files as \"%@\".", u.name, g.name, url.lastPathComponent]);
+    });
+}
+static void import_save(HearthGame *g, HearthUser *u, DmSettingsVC *(^vc)(void)) {
+    present_picker(vc(), [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder]], ^(NSURL *url) {
+        if (!url) return;
+        NSString *q = [NSString stringWithFormat:@"Replace %@'s save of %@?", u.name, g.name];
+        hearth_dialog(vc(), q, [NSString stringWithFormat:@"With the folder \"%@\". The current save is kept as a backup beside it.", url.lastPathComponent], @[@"Cancel", @"Replace"], 1, 0, 0, ^(NSInteger i) {
+            if (i != 1) return;
+            BOOL scoped = [url startAccessingSecurityScopedResource]; NSString *why = nil, *kept = nil;
+            BOOL ok = hearth_save_import(url.path, [hearth_library() saveDirFor:g user:u.uid], g.titleId, hearth_running_game().titleId, NSDate.date, &kept, &why);
+            if (scoped) [url stopAccessingSecurityScopedResource];
+            fprintf(stderr, "hearth: import into %s's save of %s: %s%s%s\n", u.uid.UTF8String, g.titleId.UTF8String, ok ? "done" : "refused: ", ok ? "" : why.UTF8String, kept ? ", the old save kept" : "");
+            if (!ok) { tell(vc(), @"The save was not imported", why); return; }
+            tell(vc(), @"Save imported", kept ? [NSString stringWithFormat:@"The previous save is kept as %@.", kept.lastPathComponent] : @"There was no previous save to keep.");
+            [vc() reloadPages];
+        });
+    });
+}
+static NSArray<DmPageItem *> *save_items(HearthGame *g, DmSettingsVC *(^vc)(void)) {
+    HearthLibrary *lib = hearth_library(); NSMutableArray *o = [NSMutableArray array];
+    BOOL running = [hearth_running_game().titleId isEqual:g.titleId];
+    for (HearthUser *u in hearth_users().users) {
+        BOOL has = [[hearth_users() gamesWithSavesOf:u] containsObject:g.titleId];
+        double t = [lib playTimeOf:g user:u.uid];
+        NSString *size = has ? [NSString stringWithFormat:@"Save %@", bytes([lib saveSizeOf:g user:u.uid])] : @"No save yet";
+        [o addObject:info(u.name, t > 0 ? [NSString stringWithFormat:@"%@, play time %@", size, duration(t).lowercaseString] : size)];
+        if (has) [o addObject:action([NSString stringWithFormat:@"Export %@'s save", u.name], @"A copy of the save folder, to keep in Files or move to another device.", ^{ export_save(g, u, vc); })];
+        [o addObject:running ? [DmPageItem unavailable:[NSString stringWithFormat:@"Import a save for %@", u.name] detail:@"Close the game first."]
+                             : action([NSString stringWithFormat:@"Import a save for %@", u.name], @"Replaces this save with a folder from Files. The current one is kept as a backup.", ^{ import_save(g, u, vc); })];
+        if (has && !running) [o addObject:confirmed(action([NSString stringWithFormat:@"Delete %@'s save", u.name], @"Removes this user's progress in this game. This cannot be undone.", ^{
+            NSString *why = nil;
+            if (![lib deleteSavesOf:g user:u.uid error:&why]) tell(vc(), @"The save was not deleted", why);
+            [vc() reloadPages];
+        }), [NSString stringWithFormat:@"Press again to delete %@'s save of %@", u.name, g.name])];
+    }
+    return o;
+}
+
 #pragma mark - A game's Options
 
 static DmSettings *options_store(HearthGame *g) {
@@ -339,12 +405,12 @@ DmSettingsVC *hearth_options(HearthGame *g, CGSize size, void (^gone)(void)) {
         return o;
     }]];
     [pages addObjectsFromArray:[DmPage pagesOf:store gameRowsOnly:YES]];
+    [pages addObject:[DmPage page:@"Save data" icon:@"tray.full.fill" items:^{ return save_items(g, vc); }]];
     [pages addObject:[DmPage page:@"Manage" icon:@"wrench.and.screwdriver.fill" items:^{
         NSMutableArray *o = [NSMutableArray array];
         if ([hearth_running_game().titleId isEqual:g.titleId]) [o addObject:action(@"Close game", @"Ends the game. Progress that was not saved is lost.", ^{ hearth_confirm_close(vc()); })];
         [o addObject:action(@"View log", @"The end of this game's log.", ^{ show_log(g, vc()); })];
         [o addObject:delete_game_item(g, vc, gone)];
-        [o addObject:delete_saves_item(g, vc)];
         return o;
     }]];
     v.pages = pages; v.heading = g.name;
