@@ -89,18 +89,15 @@ def local_profiles(appid, folder=PROFILES):
     return [p for p in (read_profile(f) for f in sorted(Path(folder).glob('*.mobileprovision'))) if p and p['appid'] == appid]
 
 
-def device_profiles(udid, idp):
-    """The provisioning profiles installed on the device (misagent through libimobiledevice: USB first, then the network)"""
-    with tempfile.TemporaryDirectory() as d:
-        errs = []
-        for net in ([], ['-n']):
-            r = subprocess.run(idp(*net, '-u', udid, 'copy', d), capture_output=True, text=True)
-            if r.returncode == 0: return [p for p in (read_profile(f) for f in Path(d).glob('*.mobileprovision')) if p]
-            errs.append((r.stderr or r.stdout).strip()[-200:])
-        raise Fail(' / '.join(dict.fromkeys(errs)))
-
-
 # ---------- device
+
+def device_profiles(udid):
+    """The provisioning profiles installed on the device, read back through devicectl (works from launchd, unlike a direct lockdown connection)"""
+    ps = devicectl('device', 'profile', 'list', '--device', udid, '--type', 'provisioning')['provisioningProfiles']
+    t = lambda s: dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+    return [{'uuid': p['uuid'].lower(), 'name': p['name'], 'bundle': p['name'].split(': ', 1)[-1], 'expires': t(p['expirationDate'])} for p in ps]
+
+
 
 def devicectl(*args, timeout=120):
     """xcrun devicectl ... --json-output -: the parsed result, or Fail with devicectl's message"""
@@ -245,31 +242,29 @@ class Run:
         self.hearth = cfg['hearth_bundle']; w = cfg['wda']
         self.wda_bundle = w['bundle'] + '.xctrunner'; self.wda_dd = Path(w['derived']).expanduser()
         self.wda_app = self.wda_dd / 'Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app'
-        self.idp = tool('ideviceprovision', 'libimobiledevice'); self.xcodegen = tool('xcodegen', 'xcodegen')
+        self.xcodegen = tool('xcodegen', 'xcodegen')
         self.ledger = json.loads(diskhygiene.LEDGER.read_text()) if diskhygiene.LEDGER.is_file() else {}
         self._fresh = {}
 
     def status(self, name, udid):
         """[(app, installed?, expected profile, profile on the device or None, note)] for Hearth and WDA on one device (Fail when unreachable)"""
-        on_dev = {p['uuid']: p for p in device_profiles(udid, self.idp)}
+        on_dev = {p['uuid']: p for p in device_profiles(udid)}
         out = []
         for app, bundle in (('hearth', self.hearth), ('wda', self.wda_bundle)):
             inst = installed_app(udid, bundle)
             if not inst: out.append((app, None, None, None, 'not installed')); continue
+            newest = max((p for p in on_dev.values() if p['bundle'] == bundle), key=lambda p: p['expires'], default=None)
             if app == 'hearth':
                 rec = self.ledger.get(f'{udid}/{bundle}'); why = None
                 if not rec: why = f'no install record: run resign.py adopt {name} <the installed .app>'
                 elif rec.get('url') and rec['url'] != inst['url']: why = 'installed outside diskhygiene.py install: which build is unknown'
-                if why:   # cannot re-sign; the newest profile for it on the device says how urgent that is
-                    newest = max((p for p in on_dev.values() if p['appid'] == f'{self.team}.{bundle}'), key=lambda p: p['expires'], default=None)
-                    out.append((app, inst, None, newest, why)); continue
-                want = rec.get('profile')
+                if why: out.append((app, inst, None, newest, why)); continue   # cannot re-sign; the newest profile says how urgent that is
+                want = rec.get('profile'); mine = on_dev.get((want or '').lower())
+                out.append((app, inst, want, mine, '' if mine else f'profile {want} not on the device'))
             else:
-                want = diskhygiene.profile_uuid(self.wda_app)
-            mine = on_dev.get(want)
-            note = '' if mine else f'profile {want} not on the device'
-            if not mine and app == 'wda': note += ' (reinstall)'
-            out.append((app, inst, want, mine, note))
+                # ios-up.sh installs the runner from the build on every start, so a device whose runner predates the build counts by its newest WDA profile
+                want = diskhygiene.profile_uuid(self.wda_app); mine = on_dev.get((want or '').lower())
+                out.append((app, inst, want, mine or newest, '' if mine else 'runner older than the current build (ios-up.sh installs it)'))
         return out
 
     def known_hours_left(self, udid):
@@ -333,7 +328,7 @@ class Run:
             sh([str(Path(self.cfg['wda']['ios_up']).expanduser()), name if primary else other], self.log, env={**os.environ, 'ONLY': name})
 
     def read_back(self, name, udid, prof):
-        got = {p['uuid']: p for p in device_profiles(udid, self.idp)}.get(prof['uuid'])
+        got = {p['uuid']: p for p in device_profiles(udid)}.get(prof['uuid'].lower())
         if not got: raise Fail(f'the new profile is not on the {name} after the install')
         self.log(f'{name}: device has profile {got["uuid"]} ({got["name"]}), ends {got["expires"]:%Y-%m-%d %H:%M} UTC, {hours_left(got) / 24:.1f} days left')
 
