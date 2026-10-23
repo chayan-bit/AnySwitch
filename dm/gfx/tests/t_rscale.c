@@ -5,8 +5,8 @@
 static int fail, checks;
 static void check(int ok, const char *what) { checks++; fail += !ok; printf("%-64s %s\n", what, ok ? "ok" : "FAIL"); }
 
-// A 1920x1080 RGBA8 render target in a GPU-only pool: the common scaled case
-static nvn_rs_tex rt(uint32_t w, uint32_t h) { return (nvn_rs_tex){ .target = 1, .w = w, .h = h, .levels = 1, .bpp = 4, .gpu_only = 1 }; }
+// A 1920x1080 RGBA8 render target: the common scaled case
+static nvn_rs_tex rt(uint32_t w, uint32_t h) { return (nvn_rs_tex){ .target = 1, .w = w, .h = h, .levels = 1, .bpp = 4 }; }
 
 static void parse(void) {
     check(nvn_rs_parse(NULL) == 1.0f && nvn_rs_parse("") == 1.0f, "unset or empty: 1x");
@@ -48,7 +48,6 @@ static void eligibility(void) {
     t = rt(1920, 1080); t.flags = 0x2; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "VIDEO_DECODE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x20; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "SPARSE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x1 | 0x8; check(nvn_rs_eligible(&t) == NVN_RS_OK, "DISPLAY and COMPRESSIBLE: scaled");
-    t = rt(1920, 1080); t.gpu_only = 0; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "CPU-visible pool: not scaled (cpu)");
     t = rt(1920, 1080); t.packaged = 1; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "packaged: not scaled (cpu)");
     t = rt(1920, 1080); t.init_data = 1; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "storage already holds data: not scaled (cpu)");
     t = rt(1920, 1080); t.levels = 3; check(nvn_rs_eligible(&t) == NVN_RS_OK, "3 levels: scaled");

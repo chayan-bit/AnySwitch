@@ -1836,8 +1836,7 @@ static int rs_decide(const tex_t *t, const alias_key *ak, MTLTextureDescriptor *
     int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     nvn_rs_tex r = { .target = t->d.target, .flags = t->d.flags, .samples = t->d.samples, .w = t->d.width, .h = t->d.height, .levels = t->d.levels ? t->d.levels : 1,
                      .bpp = (uint32_t)(bw * bh == 1 ? bpb : 0), .compressed = (uint8_t)fmt_compressed(t->d.format),
-                     .depth_or_single = (uint8_t)(fmt_depth(t->d.format) || (t->d.format >= NVN_FORMAT_R8 && t->d.format <= NVN_FORMAT_R32I)),
-                     .gpu_only = (uint8_t)(t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) };
+                     .depth_or_single = (uint8_t)(fmt_depth(t->d.format) || (t->d.format >= NVN_FORMAT_R8 && t->d.format <= NVN_FORMAT_R32I)) };
     int why = nvn_rs_eligible(&r);
     if (why == NVN_RS_OK && tex_init_wanted(t, d.pixelFormat) && mem_any(t->mem, t->L.size)) why = NVN_RS_CPU;   // its first content comes from the guest bytes at 1x
     if (why == NVN_RS_OK) { os_unfair_lock_lock(&g_rs_lk); void *was = nvn_hm_get(&g_rs_never, ak); os_unfair_lock_unlock(&g_rs_lk); if (was) why = (int)(uintptr_t)was; }   // demoted before on this storage: the reason it was demoted for

@@ -32,7 +32,7 @@ static inline int nvn_rs_whole(long x, long w, float s) { double a = (double)x *
 typedef struct {
     int target, flags, samples;     // NVNtextureTarget, NVNtextureFlags
     uint32_t w, h, levels, bpp;     // guest size, mip levels, bytes per pixel (for Ryujinx's width alignment)
-    uint8_t compressed, depth_or_single, packaged, gpu_only, init_data;   // block-compressed format; depth / stencil or one-channel format; packaged (CPU-written) texture; pool without CPU access; storage already holds data the GPU must start from
+    uint8_t compressed, depth_or_single, packaged, init_data;   // block-compressed format; depth / stencil or one-channel format; packaged (CPU-written) texture; storage already holds data the GPU must start from
 } nvn_rs_tex;
 
 // Why a texture is not scaled (or demoted later); the names are what the log prints
@@ -43,14 +43,16 @@ static const char *const nvn_rs_why_name[NVN_RS_NWHY] = { "ok", "target", "forma
                                                            "mixed pass", "unsupported binding", "image binding", "cpu write", "copy" };
 
 // Whether a texture is created at the session scale (NVN_RS_OK) or why not.
-// Rules: 2D / 2D array / 2D multisample (array) targets only (Ryujinx IsUpscaleCompatible), GPU-only storage, no flag that lets the CPU or a non-render path see the texels,
+// Rules: 2D / 2D array / 2D multisample (array) targets only (Ryujinx IsUpscaleCompatible), no CPU-written content, no flag that lets the CPU or a non-render path see the texels,
 // then Ryujinx's UpscaleSafeMode on the guest size (TextureCache.cs): <= 3 levels, both edges >= 8, not possibly square unless depth or one channel, not a 16:9 target below 360 lines (blur and bloom chains), not w == h*h (a 3D lookup table laid out in 2D)
 static inline int nvn_rs_eligible(const nvn_rs_tex *t) {
     if (t->target != 1 && t->target != 4 && t->target != 5 && t->target != 6) return NVN_RS_TARGET;
     if (t->compressed) return NVN_RS_FORMAT;
     // VIDEO_DECODE, LINEAR, SPARSE, LINEAR_RENDER_TARGET. IMAGE is allowed: games set it on ordinary render targets, so an image binding demotes instead (nvn_mtl.m rs_bind_check)
     if (t->flags & (0x2 | 0x10 | 0x20 | 0x40)) return NVN_RS_FLAGS;
-    if (t->packaged || !t->gpu_only || t->init_data) return NVN_RS_CPU;
+    // The pool's flags (CPU access, virtual) do not matter: a texture that gets here is GPU-owned, the host never mirrors its texels into guest memory (at 1x either), and the CPU
+    // reaches them only through ReadTexels, copies and the CPU-write tracking, which read a scaled texture at 1x or demote it (notes/internal-res-cpu-pools.md)
+    if (t->packaged || t->init_data) return NVN_RS_CPU;
     if (t->levels > 3) return NVN_RS_LEVELS;
     if (t->w < 8 || t->h < 8) return NVN_RS_SMALL;
     uint32_t al = 64 / (t->bpp && t->bpp <= 64 ? t->bpp : 1);   // GOB width (64 bytes) in pixels
