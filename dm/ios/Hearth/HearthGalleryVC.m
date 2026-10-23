@@ -10,6 +10,7 @@
 #import <Photos/Photos.h>
 
 #define GAP 16.0        // between pictures in the grid
+#define RING_ROOM 10.0   // inside the grid's clipped frame around the pictures: room for the focus ring and its glow
 #define THUMB_PX 640    // a thumbnail's longer edge in pixels: sharp at the grid's size on a 2x screen
 
 static NSString *documents(void) { return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject; }
@@ -22,7 +23,7 @@ static UIImage *thumb_of(NSString *path) {
     if (!im) return nil;
     UIImage *u = [UIImage imageWithCGImage:im]; CGImageRelease(im); return u;
 }
-static NSString *when(NSDate *d) { static NSDateFormatter *f; if (!f) { f = [NSDateFormatter new]; f.dateStyle = NSDateFormatterMediumStyle; f.timeStyle = NSDateFormatterShortStyle; } return [f stringFromDate:d]; }
+static NSString *when(NSDate *d) { static NSDateFormatter *f; if (!f) { f = [NSDateFormatter new]; f.dateStyle = NSDateFormatterMediumStyle; f.timeStyle = NSDateFormatterMediumStyle; } return [f stringFromDate:d]; }
 
 @interface HearthShotCell : UICollectionViewCell
 @property (nonatomic, readonly) UIImageView *image;
@@ -70,7 +71,7 @@ static UIButton *pill(NSString *title, NSString *symbol) {
     _chipRow = [UIScrollView new]; _chipRow.showsHorizontalScrollIndicator = NO; _chipRow.clipsToBounds = NO;
     _chipRing = [DmFocusView new]; _chipRing.radius = 28;
     UICollectionViewFlowLayout *l = [UICollectionViewFlowLayout new]; l.minimumInteritemSpacing = GAP; l.minimumLineSpacing = GAP;
-    _grid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:l]; _grid.backgroundColor = UIColor.clearColor; _grid.clipsToBounds = NO;
+    _grid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:l]; _grid.backgroundColor = UIColor.clearColor; _grid.contentInset = UIEdgeInsetsMake(RING_ROOM, RING_ROOM, RING_ROOM, RING_ROOM);
     _grid.dataSource = self; _grid.delegate = self; [_grid registerClass:HearthShotCell.class forCellWithReuseIdentifier:@"shot"];
     _cellRing = [DmFocusView new]; _cellRing.radius = 18; _cellRing.layer.zPosition = 10; [_grid addSubview:_cellRing];
     _empty = [UILabel new]; _empty.text = @"No screenshots yet.\nDuring a game, the Capture button beside HOME takes one."; _empty.numberOfLines = 0;
@@ -162,7 +163,7 @@ static UIButton *pill(NSString *title, NSString *symbol) {
     CGFloat hh = [_hints heightWithCompact:NO], barTop = b.size.height - MAX(si.bottom, 0) - HEARTH_BAR_HEIGHT;
     _hints.frame = CGRectMake(left, barTop + (HEARTH_BAR_HEIGHT - hh) / 2, w, hh);
     CGFloat gy = top + 68 + 52 + 28;
-    _grid.frame = CGRectMake(left, gy, w, barTop - gy);
+    _grid.frame = CGRectInset(CGRectMake(left, gy, w, barTop - gy), -RING_ROOM, -RING_ROOM);
     _empty.frame = CGRectMake(left, top + 68, w, barTop - top - 68);
     _cols = w >= 960 ? 4 : 3;
     CGFloat iw = floor((w - (_cols - 1) * GAP) / _cols);
@@ -209,7 +210,7 @@ static UIButton *pill(NSString *title, NSString *symbol) {
     UIButton *chip = _filter < (NSInteger)_chips.count ? _chips[(NSUInteger)_filter] : nil;
     CGRect cf = CGRectZero;
     if (_shown.count) { NSIndexPath *ip = [NSIndexPath indexPathForItem:MIN(_cell, (NSInteger)_shown.count - 1) inSection:0]; cf = [_grid layoutAttributesForItemAtIndexPath:ip].frame;
-                        if (!chips) [_grid scrollRectToVisible:CGRectInset(cf, 0, -GAP) animated:animated]; }
+                        if (!chips) [_grid scrollRectToVisible:CGRectInset(cf, 0, -RING_ROOM) animated:animated]; }
     void (^place)(void) = ^{ if (chip) self->_chipRing.frame = CGRectInset(chip.frame, -5, -5); self->_cellRing.frame = CGRectInset(cf, -6, -6); };
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) [UIView animateWithDuration:HEARTH_FOCUS_SECONDS delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:place completion:nil];
     else place();
@@ -262,13 +263,13 @@ static UIButton *pill(NSString *title, NSString *symbol) {
 }
 - (void)disarm {
     _armed = NO;
-    UIButtonConfiguration *c = _del.configuration; c.title = @"Delete"; c.baseForegroundColor = DmUI.text; _del.configuration = c;
+    UIButtonConfiguration *c = _del.configuration; c.title = @"Delete"; c.baseForegroundColor = DmUI.text; _del.configuration = c; [self.view setNeedsLayout];
 }
 - (void)deletePressed {   // the first press asks, the second deletes
     if (_at < 0) return;
     if (!_armed) {
-        _armed = YES; UIButtonConfiguration *c = _del.configuration; c.title = @"Delete?"; c.baseForegroundColor = DmUI.warn; _del.configuration = c;
-        [self status:@"Press Delete again to delete this picture."]; return;
+        _armed = YES; UIButtonConfiguration *c = _del.configuration; c.title = @"Delete?"; c.baseForegroundColor = DmUI.warn; _del.configuration = c; [self.view setNeedsLayout];
+        [self status:@"Press again to delete this picture."]; return;
     }
     NSString *p = _shown[(NSUInteger)_at][@"path"], *why = nil, *next = _at + 1 < (NSInteger)_shown.count ? _shown[(NSUInteger)_at + 1][@"path"] : _at > 0 ? _shown[(NSUInteger)_at - 1][@"path"] : nil;
     [self disarm];
@@ -343,6 +344,7 @@ static UIButton *pill(NSString *title, NSString *symbol) {
     [self openViewer:_cell];
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
+    if (self.presentedViewController) return @[];   // Escape belongs to the share sheet then (it closed the viewer under it)
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in @[@[UIKeyInputUpArrow, @"keyUp"], @[UIKeyInputDownArrow, @"keyDown"], @[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"], @[@"\r", @"accept"], @[UIKeyInputEscape, @"back"]]) {
         UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:p[0] modifierFlags:0 action:NSSelectorFromString(p[1])]; c.wantsPriorityOverSystemBehavior = YES; [r addObject:c];
