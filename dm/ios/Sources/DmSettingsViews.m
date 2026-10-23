@@ -1,6 +1,7 @@
 // Building blocks of the settings screen (see DmSettingsViews.h). Colours are dynamic (light / dark follows the system); layers take theirs through colorsUpdate, which runs again when the style changes.
 #import "DmSettingsViews.h"
 #import "DmPalette.h"
+#import "HearthTheme.h"
 
 static UIColor *dyn(uint32_t light, uint32_t dark) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *t) {
@@ -17,10 +18,10 @@ CGColorRef dm_cg(UIView *v, UIColor *c) { return [c resolvedColorWithTraitCollec
 + (UIColor *)text { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x2D2D2D, 0xF2F2F2); }); return c; }
 + (UIColor *)sub { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x6A6A6A, 0xA6A6A6); }); return c; }
 + (UIColor *)sep { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD6D6D6, 0x575757); }); return c; }
-+ (UIColor *)accent { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00B9E6, 0x20D5FF); }); return c; }
-+ (UIColor *)accentText { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0x00789C, 0x20D5FF); }); return c; }
++ (UIColor *)accent { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_ACCENT_LIGHT, DM_ACCENT_DARK); }); return c; }
++ (UIColor *)accentText { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_ACCENT_TEXT_LIGHT, DM_ACCENT_TEXT_DARK); }); return c; }
 + (UIColor *)track { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(DM_TRACK_LIGHT, DM_TRACK_DARK); }); return c; }
-+ (UIColor *)selected { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xD2EEF7, 0x3E5059); }); return c; }
++ (UIColor *)selected { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xF6E4CC, 0x55483A); }); return c; }   // a soft amber fill
 + (UIColor *)warn { static UIColor *c; static dispatch_once_t o; dispatch_once(&o, ^{ c = dyn(0xC73D18, 0xFF7B54); }); return c; }
 + (UIFont *)font:(CGFloat)size weight:(UIFontWeight)w {
     UIFont *f = [UIFont systemFontOfSize:size weight:w];
@@ -41,7 +42,7 @@ void dm_on_style(UIView *v, void (^apply)(void)) {
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
         self.userInteractionEnabled = NO; self.hidden = YES; _radius = 14;
-        CALayer *l = self.layer; l.borderWidth = 3.5; l.cornerRadius = _radius; l.shadowOpacity = 0.85; l.shadowRadius = 7; l.shadowOffset = CGSizeZero;
+        CALayer *l = self.layer; l.borderWidth = HEARTH_RING_WIDTH; l.cornerRadius = _radius; l.shadowOpacity = HEARTH_GLOW_MAX; l.shadowRadius = HEARTH_GLOW_RADIUS; l.shadowOffset = CGSizeZero;
         __weak DmFocusView *w = self;
         dm_on_style(self, ^{ [w restyle]; });
     }
@@ -52,11 +53,12 @@ void dm_on_style(UIView *v, void (^apply)(void)) {
 - (void)setRadius:(CGFloat)r { _radius = r; self.layer.cornerRadius = r; }
 - (void)setActive:(BOOL)a {
     _active = a; self.hidden = !a;
-    [self.layer removeAnimationForKey:@"pulse"];
-    if (!a || UIAccessibilityIsReduceMotionEnabled()) return;
-    CABasicAnimation *p = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    p.fromValue = @1; p.toValue = @0.5; p.duration = 0.7; p.autoreverses = YES; p.repeatCount = HUGE_VALF; p.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [self.layer addAnimation:p forKey:@"pulse"];
+    [self.layer removeAnimationForKey:@"breath"];
+    if (!a || UIAccessibilityIsReduceMotionEnabled()) return;   // the ring stays solid; only its glow breathes
+    CABasicAnimation *p = [CABasicAnimation animationWithKeyPath:@"shadowOpacity"];
+    p.fromValue = @(HEARTH_GLOW_MAX); p.toValue = @(HEARTH_GLOW_MIN); p.duration = HEARTH_BREATH_SECONDS / 2; p.autoreverses = YES; p.repeatCount = HUGE_VALF;
+    p.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.layer addAnimation:p forKey:@"breath"];
 }
 @end
 
@@ -199,6 +201,15 @@ static const CGFloat kKnob = 26;
     }
     return self;
 }
+- (instancetype)initWithAction:(NSString *)title detail:(NSString *)detail compact:(BOOL)compact {
+    if (!(self = [self initWithSetting:nil kind:DmItemAction compact:compact])) return nil;
+    _title.textAlignment = NSTextAlignmentNatural; _detail.textAlignment = NSTextAlignmentNatural;
+    [self setActionTitle:title detail:detail];
+    return self;
+}
+- (void)setActionTitle:(NSString *)title detail:(NSString *)detail { _title.text = title; _detail.text = detail; [self setNeedsLayout]; }
+- (void)setInfo:(BOOL)i { _info = i; [self paint]; }
+- (void)setDestructive:(BOOL)d { _destructive = d; [self paint]; }
 // The title and detail of the rows that are not a setting
 - (void)showPlainTitle {
     switch (_kind) {
@@ -207,15 +218,20 @@ static const CGFloat kKnob = 26;
             _title.text = _confirming ? @"Tap again to restore everything" : @"Restore all defaults";
             _detail.text = @"Puts every setting on every page back to its default."; break;
         case DmItemRestart: _title.text = @"Restart now"; _detail.text = @"Closes the game so the changed settings apply on the next start. Progress that was not saved in the game is lost."; break;
-        case DmItemSetting: break;
+        case DmItemSetting: case DmItemAction: break;
     }
 }
 - (void)setConfirming:(BOOL)c { _confirming = c; [self showPlainTitle]; [self paint]; [self setNeedsLayout]; }
 - (void)paint {
     self.layer.backgroundColor = dm_cg(self, DmUI.row);
-    _title.textColor = _kind == DmItemSetting ? DmUI.text : (_kind == DmItemRestart || _confirming ? DmUI.warn : DmUI.accentText);
+    _title.textColor = _kind == DmItemSetting || (_kind == DmItemAction && _info) ? DmUI.text : (_kind == DmItemRestart || _confirming || _destructive ? DmUI.warn : DmUI.accentText);
     _detail.textColor = DmUI.sub; _value.textColor = _locked ? DmUI.sub : DmUI.accentText;
     _note.textColor = _disabled ? DmUI.sub : DmUI.warn;
+    if (!_locked && !_disabled && _scopeNote.length && [_note.text hasPrefix:_scopeNote]) {   // where the value comes from is information, not a warning: only a restart note after it keeps the warning colour
+        NSMutableAttributedString *a = [[NSMutableAttributedString alloc] initWithString:_note.text attributes:@{NSFontAttributeName: _note.font, NSForegroundColorAttributeName: DmUI.warn}];
+        [a addAttribute:NSForegroundColorAttributeName value:DmUI.sub range:NSMakeRange(0, MIN(a.length, _scopeNote.length + 1))];   // with its full stop
+        _note.attributedText = a;
+    }
     for (int i = 0; i < 2; i++) _chev[i].tintColor = DmUI.sub;
     self.alpha = _locked ? 0.62 : 1;
     CGFloat part = _disabled ? 0.45 : 1;   // a disabled row dims what it holds but keeps its note, which says why, fully legible
@@ -225,7 +241,8 @@ static const CGFloat kKnob = 26;
 }
 - (void)showValue:(NSString *)v source:(DmSettingSource)src disabledNote:(NSString *)disabledNote {
     _locked = src == DmSourceEnv; _disabled = disabledNote != nil;
-    _note.text = _locked ? @"Set in env.txt" : (disabledNote ?: _noteText);
+    NSString *note = _scopeNote && _noteText ? [NSString stringWithFormat:@"%@. %@", _scopeNote, _noteText] : (_scopeNote ?: _noteText);
+    _note.text = _locked ? @"Set in env.txt" : (disabledNote ?: note);
     if (_setting.type == DmSettingToggle) { _toggle.on = [v isEqualToString:@"1"]; _value.text = nil; }
     else if (_setting) _value.text = [_setting displayValue:v];
     if (_slider) _slider.value = (v.doubleValue - _setting.min) / (_setting.max - _setting.min);

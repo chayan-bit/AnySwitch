@@ -25,6 +25,7 @@
 #include "dm_input.h"
 #include "front.h"
 #import "DmPadBits.h"
+#import "DmSettings.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
 enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
@@ -107,15 +108,17 @@ static const CGFloat
     K_BAR_CLICK_X = 165,                            // bars mode: L3 / R3 centre from the outer edge (in u): inward of L / R
     K_HUD_W = 64, K_HUD_H = 22,                     // the frame-rate counter's size (front_ios.m)
     K_OVERLAY_SCALE_MAX = 1.35,                     // over the picture (overlay layout) DM_CONTROLS_SCALE stops here: the bottom controls must not reach the top row
-    K_CHORD_S = 0.8;                                // + and - held together this long open the settings screen (dm_gamepad_set_chord)
+    K_CHORD_S = 0.8,                                // + and - held together this long open the settings screen (dm_gamepad_set_chord)
+    K_IDLE_S = 5, K_IDLE_LEVEL = 0.3;               // DM_CONTROLS_IDLE_FADE: after this long without a touch the controls fade to this fraction of their opacity (estimates, judged on the device)
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static CGFloat g_scale = 1, g_opacity = 1;   // dm_gamepad_scale: size of the bottom controls, 1 = the default; dm_gamepad_opacity: how solid every control is
+static BOOL g_idle_fade = YES;               // dm_gamepad_idle_fade
 static void (^g_capture)(uint64_t, int32_t, int32_t);   // main thread: the physical controller's buttons (DMB_* bits) and left stick while captured
 static void (^g_chord)(void);                            // main thread: + and - held together
 static uint64_t g_chord_gen;
 _Static_assert(B_A == DMB_A && B_B == DMB_B && B_X == DMB_X && B_Y == DMB_Y && B_LS == DMB_LS && B_RS == DMB_RS && B_L == DMB_L && B_R == DMB_R && B_ZL == DMB_ZL && B_ZR == DMB_ZR
     && B_PLUS == DMB_PLUS && B_MINUS == DMB_MINUS && B_LEFT == DMB_LEFT && B_UP == DMB_UP && B_RIGHT == DMB_RIGHT && B_DOWN == DMB_DOWN, "DmPadBits.h and the B_* enum must agree");
-static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
+static NSString *const k_layout_key = @"DmPadLayout";   // the single-game app's NSUserDefaults key (1 = 3D, 0 = 2D), moved into the per-game DM_PAD_LAYOUT setting at the first start
 
 @interface DmGamepad : UIView
 @end
@@ -137,6 +140,7 @@ static __weak DmGamepad *g_view;
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     BOOL _bars;                                    // controls live in the letterbox bars (dm_gamepad_layout)
     CGRect _content, _top, _bot;                   // the picture, and the usable parts of the bars above and below it
+    NSTimer *_idle; BOOL _faded;                   // idle fade: the count since the last touch ended, and whether the controls are faded now
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn, *k_idleBar, *k_lineBar, *k_ringBar, *k_textBar;
@@ -165,6 +169,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             k_idleBar = [UIColor colorWithWhite:1 alpha:0.18]; k_lineBar = [UIColor colorWithWhite:1 alpha:0.50]; k_ringBar = [UIColor colorWithWhite:1 alpha:0.10]; k_textBar = [UIColor colorWithWhite:1 alpha:0.9];   // frosted: the bars behind are already blurred
         });
         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
+        _controls.allowsGroupOpacity = NO;   // the idle fade lowers this one layer's opacity: each control multiplies it in, with no off-screen pass for the full-screen layer
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
         _knob = shape(_controls);
         CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
@@ -175,14 +180,21 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
         }
         _swap = shape(_controls); _swapLabel = label(_swap, @"");
-        NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
-        _full = saved ? saved.boolValue : g_profile.pad_full;
+        DmSettings *st = DmSettings.shared; NSString *lay = [st valueForKey:@"DM_PAD_LAYOUT"];
+        NSNumber *old = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+        if (old) {   // the single-game app's choice becomes this game's setting once (an explicit choice in the settings wins)
+            if ([lay isEqualToString:@"auto"] && [st setValue:old.boolValue ? @"3d" : @"2d" forKey:@"DM_PAD_LAYOUT"]) lay = [st valueForKey:@"DM_PAD_LAYOUT"];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:k_layout_key];
+        }
+        _full = [lay isEqualToString:@"auto"] ? g_profile.pad_full : [lay isEqualToString:@"3d"];
         [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+        [nc addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
         [self padsChanged];
         motion_start();
+        [self armIdle];
     }
     return self;
 }
@@ -192,12 +204,17 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     _swapLabel.string = _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
-- (void)setFull:(BOOL)full {   // switch layouts: release every touch first (no key stays held), save, lay out again
+- (void)setFull:(BOOL)full {   // switch layouts: release every touch first (no key stays held), lay out again
     if (full == _full) return;
     [self reset];
     _full = full;
-    [NSUserDefaults.standardUserDefaults setObject:@(full) forKey:k_layout_key];
     [self applyLayout]; [self setNeedsLayout];
+}
+- (void)swapLayout { [self setFull:!_full]; [DmSettings.shared setValue:_full ? @"3d" : @"2d" forKey:@"DM_PAD_LAYOUT"]; }   // the 2D / 3D button: kept as this game's choice
+- (void)settingChanged:(NSNotification *)n {   // the Touch layout row (and the button's own change, which is already shown)
+    if (![n.object isEqual:@"DM_PAD_LAYOUT"]) return;
+    NSString *v = n.userInfo[@"value"];
+    [self setFull:[v isEqualToString:@"auto"] ? g_profile.pad_full : [v isEqualToString:@"3d"]];
 }
 
 // ---- Layout (points; computed inside the safe area) ----
@@ -328,7 +345,20 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     for (int i = 0; i < 16; i++) if (!_game[i]) { _game[i] = t; [_owner setObject:@(C_GAME | (uint64_t)i << 8) forKey:t]; return YES; }
     return NO;
 }
+// Idle fade: the controls fade after K_IDLE_S without a touch, so they stop covering the game's own prompts; any touch brings them back at once (and still acts)
+- (void)fadeTo:(BOOL)faded over:(NSTimeInterval)d {
+    _faded = faded;
+    [CATransaction begin]; [CATransaction setAnimationDuration:d]; _controls.opacity = faded ? K_IDLE_LEVEL : 1; [CATransaction commit];
+}
+- (void)armIdle {   // no touch is held: start counting (a held stick or key never fades)
+    [_idle invalidate]; _idle = nil;
+    if (!g_idle_fade) { if (_faded) [self fadeTo:NO over:0.12]; return; }
+    if (_owner.count) return;
+    __weak DmGamepad *w = self;
+    _idle = [NSTimer scheduledTimerWithTimeInterval:K_IDLE_S repeats:NO block:^(NSTimer *t) { (void)t; [w fadeTo:YES over:0.6]; }];
+}
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    [_idle invalidate]; _idle = nil; if (_faded) [self fadeTo:NO over:0.12];
     BOOL game = NO;
     for (UITouch *t in ts) {
         CGPoint p = [t locationInView:self];
@@ -374,11 +404,13 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     }
     if (game) [self pushGame];
     [self recompute];
-    if (swap) [self setFull:!_full];
+    if (swap) [self swapLayout];
+    [self armIdle];
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; [self armIdle]; }
+- (void)dealloc { [_idle invalidate]; }
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -501,13 +533,17 @@ static void read_pad(GCExtendedGamepad *g) {
         });
     });
 }
-- (void)padsChanged {
+static BOOL pads_attach(void) {   // every connected controller reports to read_pad; NO when none is connected
     BOOL any = NO;
     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
         any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
         read_pad(c.extendedGamepad);
     }
     if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+    return any;
+}
+- (void)padsChanged {
+    BOOL any = pads_attach();
     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
 }
 @end
@@ -518,6 +554,7 @@ void dm_gamepad_scale(float s) {   // main thread: the bottom controls' size (st
     g_scale = fminf(fmaxf(s, K_SCALE_MIN), K_SCALE_MAX); [g_view setNeedsLayout]; }
 CGRect dm_gamepad_hud_frame(void) { return g_view && [g_view inBars] ? [g_view hudFrame] : CGRectNull; }   // the frame-rate counter's place in the bars (CGRectNull: keep the overlay place)
 void dm_gamepad_opacity(float o) { g_opacity = fminf(fmaxf(o, 0.3f), 1.f); [g_view applyOpacity]; }   // main thread: every control's opacity, 0.3...1
+void dm_gamepad_idle_fade(BOOL on) { g_idle_fade = on; [g_view armIdle]; }   // main thread: DM_CONTROLS_IDLE_FADE
 // The settings screen takes the physical controller: while a handler is set the game gets no input (touches are covered by the screen itself), and the handler is called on the main thread with the
 // buttons (DmPadBits.h) and the left stick at once and on every change. NULL gives the controller back
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly)) {
@@ -525,6 +562,15 @@ void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_
     [g_view reset];
     publish();
     if (handler) { pthread_mutex_lock(&g_mu); uint64_t m = g_pad_btn; int32_t lx = g_pad_lx, ly = g_pad_ly; pthread_mutex_unlock(&g_mu); handler(m, lx, ly); }
+}
+// Main thread, once: controllers report even while no game view exists (Hearth's Home takes them through dm_gamepad_set_capture)
+void dm_gamepad_watch(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSNotificationName n in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
+            [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; pads_attach(); }];
+        pads_attach();
+    });
 }
 void dm_gamepad_set_chord(void (^handler)(void)) { g_chord = [handler copy]; }   // main thread: called once when + and - have been held together for 0.8 s
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")

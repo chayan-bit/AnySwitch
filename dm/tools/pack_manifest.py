@@ -4,10 +4,12 @@
 #     dm/host/dm_abi.h, the platforms whose code dylib is present, each module's build id (profile/<module>.fixups.tsv) and the inventory's own count, size and digest
 #   write <root> ... --bundled: a pack inside the per-game IPA (DmIOS.app/pack): the code is embedded in the app's executable (platforms: ios) and there is no inventory, since the app's
 #     code signature seals every file it holds
+#   subset <root> <dest> --platform ios: what a device of that platform needs (for_platform), cloned after the source was verified, then inventoried again
+#     (scripts/push_pack.py signs the code between the two steps)
 #   verify <root>: the numbers still match this tree's dm_abi.h, the inventory is the one the manifest names, and every file is there with its size and digest, nothing missing or extra;
 #     exit 1 naming each difference
 # manifest.json stays small on purpose: the engine parses it before every boot (dm/host/boot.m dm_pack_check), while a pack holds hundreds of thousands of shader files.
-import argparse, hashlib, json, os, re, sys
+import argparse, hashlib, json, os, re, subprocess, sys
 from pathlib import Path
 ABI_H = Path(__file__).resolve().parents[1] / 'host/dm_abi.h'
 ABI_KEYS = {'DM_PACK_FORMAT': None, 'DM_PROFILE_SCHEMA': 'profile_schema', 'DM_CODE_ABI': 'code', 'DM_SHADER_ABI': 'shader'}
@@ -90,13 +92,48 @@ def problems(root):   # every difference between the pack and its manifest, and 
     return out
 
 
+def for_platform(rel, platform):   # a file a device of this platform needs: all but the other platforms' code dylibs and per-platform folders (msl/<p>/, pso/<p>/)
+    parts = rel.split('/')
+    return not any(rel == f'code/{p}.dylib' or parts[1:2] == [p] for p in PLATFORMS if p != platform)
+
+
+def subset(src, dst, platform):
+    """dst = the pack at src as a device of this platform needs it: an APFS clone of the tree (a copy on another volume) without the other platforms' parts,
+    made after the source was verified against its own inventory and this engine. Its inventory is stale until reinventory (the caller may sign the code first)"""
+    src, dst = Path(src), Path(dst)
+    bad = problems(src)
+    if bad: sys.exit('pack_manifest: the pack does not match its manifest:\n  ' + '\n  '.join(bad[:20]))
+    if dst.exists(): sys.exit(f'pack_manifest: {dst} exists')
+    if subprocess.run(['cp', '-c', '-R', str(src), str(dst)]).returncode and subprocess.run(['cp', '-R', str(src), str(dst)]).returncode: sys.exit(f'pack_manifest: cannot copy {src}')
+    for d, _, names in os.walk(dst, topdown=False):
+        for n in names:
+            p = Path(d) / n
+            if not for_platform(p.relative_to(dst).as_posix(), platform): p.unlink()
+        if Path(d) != dst and not any(Path(d).iterdir()): Path(d).rmdir()
+
+
+def reinventory(root, platform):   # files.tsv of the tree as it is now; the manifest keeps its numbers and modules, and names this platform and the new inventory
+    root = Path(root); m = json.loads((root / 'manifest.json').read_text())
+    files = files_under(root); inv = inventory_text(files).encode()
+    (root / INVENTORY).write_bytes(inv)
+    m['platforms'] = [platform] if (root / f'code/{platform}.dylib').is_file() else []
+    m['inventory'] = {'file': INVENTORY, 'files': len(files), 'bytes': sum(s for s, _ in files.values()), 'sha256': hashlib.sha256(inv).hexdigest()}
+    (root / 'manifest.json').write_text(json.dumps(m, indent=1) + '\n')
+    return m
+
+
 def main():
     ap = argparse.ArgumentParser(description='write or verify a game pack\'s manifest.json and file inventory')
     sub = ap.add_subparsers(dest='cmd', required=True)
     w = sub.add_parser('write'); w.add_argument('root'); w.add_argument('--title', required=True); w.add_argument('--chain', default=''); w.add_argument('--display-version', default=''); w.add_argument('--bundled', action='store_true')
     v = sub.add_parser('verify'); v.add_argument('root')
+    u = sub.add_parser('subset'); u.add_argument('root'); u.add_argument('dest'); u.add_argument('--platform', choices=PLATFORMS, required=True)
     a = ap.parse_args(); root = Path(a.root)
     if not root.is_dir(): sys.exit(f'pack_manifest: no pack folder {root}')
+    if a.cmd == 'subset':
+        subset(root, a.dest, a.platform); m = reinventory(a.dest, a.platform)
+        print(f'subset: {a.dest}: {m["inventory"]["files"]} files, platforms {" ".join(m["platforms"]) or "none"}')
+        return
     if a.cmd == 'write':
         m = write(root, a.title, a.chain, a.display_version, a.bundled)
         i = m['inventory']

@@ -21,6 +21,7 @@ void dm_gamepad_reset(void);
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars);
 void dm_gamepad_scale(float s);
 void dm_gamepad_opacity(float o);
+void dm_gamepad_idle_fade(BOOL on);
 void dm_gamepad_shake_g(double g);
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 void dm_gamepad_set_chord(void (^handler)(void));
@@ -45,6 +46,7 @@ static void front_ios_settings(void) {
     mtl_letterbox_set(g_ambient); mtl_ambient_level_set((float)[s doubleForKey:@"DM_AMBIENT_LEVEL"]);
     s.frameTarget = mtl_fps_target();   // Upscaling defaults to Sharp at 30 fps, Bilinear at 60 (DmSettings.m); the target is polled below while the game runs
     mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]);
+    dm_gamepad_idle_fade([s boolForKey:@"DM_CONTROLS_IDLE_FADE"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
     dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
     s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
@@ -74,14 +76,15 @@ static UILabel *front_ios_fps_label(void);
 }
 @end
 
-@interface DmRootVC : UIViewController
+@interface DmGameVC : UIViewController
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
 @property (nonatomic, strong) UIButton *gear;
+@property (nonatomic, strong) UIButton *home;   // HOME on the touch layer: Hearth's Home over the paused game (hearth_home)
 @property (nonatomic, strong) DmSettingsVC *settings;
 @end
-@implementation DmRootVC
+@implementation DmGameVC
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
@@ -104,22 +107,28 @@ static UILabel *front_ios_fps_label(void);
     [self.view addSubview:self.pad];
     if ([DmSettings.shared boolForKey:@"DM_SHOW_FPS"]) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; }   // above the pad, which hides while a controller is connected
     self.gear = [self makeGear]; [self.view addSubview:self.gear];
+    self.home = [self makeRoundButton:@"house.fill" label:@"Home" action:@selector(homePressed)]; [self.view addSubview:self.home];
+    UILongPressGestureRecognizer *lh = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(homeHeld:)]; lh.minimumPressDuration = 0.5; [self.home addGestureRecognizer:lh];   // long HOME: Quick Settings
     [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"," modifierFlags:UIKeyModifierCommand action:@selector(toggleSettings)]];
+    [self addKeyCommand:[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:UIKeyModifierCommand action:@selector(homePressed)]];   // HOME on a keyboard (Cmd+H belongs to the system)
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
-    __weak DmRootVC *w = self; dm_gamepad_set_chord(^{ [w toggleSettings]; });   // + and - held together on a controller
+    __weak DmGameVC *w = self; dm_gamepad_set_chord(^{ [w toggleSettings]; });   // + and - held together on a controller
     // The frame rate target is not known at start: a game that runs at 30 asks for present interval 2, and the host reports 30 once it has held it for a second (hle_nvn.c). The store moves the
     // frame-rate-dependent defaults (Upscaling) and announces the ones that change, which settingChanged: applies like a choice made in the screen
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { (void)t; DmSettings.shared.frameTarget = mtl_fps_target(); }];
 }
-- (UIButton *)makeGear {   // right of the frame-rate counter: a 44 pt target with a 32 pt translucent disc
+- (UIButton *)makeGear { return [self makeRoundButton:@"gearshape.fill" label:@"Settings" action:@selector(toggleSettings)]; }   // right of the frame-rate counter
+- (void)homePressed { void hearth_home(void); [self closeSettings]; hearth_home(); }
+- (void)homeHeld:(UILongPressGestureRecognizer *)g { void hearth_home_long(void); if (g.state != UIGestureRecognizerStateBegan) return; [self closeSettings]; hearth_home_long(); }   // the in-game settings close first: Home takes the controller and the game's focus
+- (UIButton *)makeRoundButton:(NSString *)symbol label:(NSString *)label action:(SEL)action {   // a 44 pt target with a 32 pt translucent disc
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
     UIButtonConfiguration *c = [UIButtonConfiguration plainButtonConfiguration];
-    c.image = [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]];
+    c.image = [UIImage systemImageNamed:symbol withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]];
     c.baseForegroundColor = [UIColor colorWithWhite:1 alpha:0.9];
     c.background.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42]; c.background.cornerRadius = 16; c.background.backgroundInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
     c.background.strokeColor = [UIColor colorWithWhite:1 alpha:0.28]; c.background.strokeWidth = 1;
-    b.configuration = c; b.accessibilityLabel = @"Settings";
-    [b addTarget:self action:@selector(toggleSettings) forControlEvents:UIControlEventTouchUpInside];
+    b.configuration = c; b.accessibilityLabel = label;
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 // The settings screen sits over everything as a child view; while it is up the game is out of focus (the pause hook) and the physical controller belongs to it
@@ -127,7 +136,8 @@ static UILabel *front_ios_fps_label(void);
 - (void)openSettings {
     if (self.settings || !self.game) return;
     DmSettingsVC *vc = [[DmSettingsVC alloc] initWithSettings:DmSettings.shared size:self.view.bounds.size];
-    __weak DmRootVC *w = self; vc.onClose = ^{ [w closeSettings]; };
+    __weak DmGameVC *w = self; vc.onClose = ^{ [w closeSettings]; };
+    void hearth_restart_game(void); vc.onRestart = ^{ hearth_restart_game(); };   // back into this game in a new process, not out to the iPadOS Home Screen
     self.settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
@@ -151,6 +161,7 @@ static UILabel *front_ios_fps_label(void);
     else if ([k isEqualToString:@"DM_CONTROLS_LAYOUT"]) { g_controls_auto = [v isEqualToString:@"auto"]; [self.view setNeedsLayout]; }
     else if ([k isEqualToString:@"DM_CONTROLS_SCALE"]) dm_gamepad_scale(v.floatValue);
     else if ([k isEqualToString:@"DM_CONTROLS_OPACITY"]) dm_gamepad_opacity(v.floatValue);
+    else if ([k isEqualToString:@"DM_CONTROLS_IDLE_FADE"]) dm_gamepad_idle_fade([v isEqualToString:@"1"]);
     else if ([k isEqualToString:@"DM_AMBIENT_LEVEL"]) mtl_ambient_level_set(v.floatValue);
     else if ([k isEqualToString:@"DM_UPSCALE"] || [k isEqualToString:@"DM_UPSCALE_SHARPNESS"]) { DmSettings *s = DmSettings.shared; mtl_upscale_set([[s valueForKey:@"DM_UPSCALE"] isEqualToString:@"sharp"], (float)[s doubleForKey:@"DM_UPSCALE_SHARPNESS"]); }
     else if ([k isEqualToString:@"DM_SHAKE_G"]) dm_gamepad_shake_g(v.doubleValue);
@@ -178,15 +189,21 @@ static UILabel *front_ios_fps_label(void);
         hud = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
     if (self.fps) self.fps.frame = hud;
+    self.home.frame = CGRectMake(floor(b.size.width / 2 - 22), CGRectGetMaxY(UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets)) - 52, 44, 44);   // bottom centre, between the stick and the face buttons
     self.gear.frame = CGRectMake(CGRectGetMaxX(hud) + 4, CGRectGetMidY(hud) - 22, 44, 44);   // the counter's place stays reserved while it is off, so nothing moves when it is switched
 }
-- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot(); }
+- (void)viewDidAppear:(BOOL)a {
+    [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot();
+    // DM_SETTINGS_AT_START=1 (env.txt diagnostics): the settings screen opens by itself once the game shows, for screenshots on a device that is driven without touching the top of the screen
+    static int once; const char *e = getenv("DM_SETTINGS_AT_START");
+    if (!once++ && e && atoi(e)) { __weak DmGameVC *w = self; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [w openSettings]; }); }
+}
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
-UIViewController *front_ios_root(void) { return [DmRootVC new]; }
+UIViewController *front_ios_root(void) { return [DmGameVC new]; }
 
 // Thermal state and screen brightness for the power and present rows every 300 frames (hle_nvn.c; its weak defaults return -1 on the Mac). thermalState: 0 nominal, 1 fair, 2 serious, 3 critical.
 // Brightness is read on the main thread at start and on each change; every change of the thermal state and of Low Power Mode (which lowers the CPU clock) is logged with the time since launch

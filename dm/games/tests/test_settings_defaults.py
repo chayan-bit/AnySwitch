@@ -38,5 +38,13 @@ class SettingsFiles(unittest.TestCase):
                 got = json.loads(f.read_text(encoding='utf-8')).get('defaults', {}).get('DM_FPS_TARGET') if f.exists() else None
                 self.assertEqual(got, target)   # a profile without fps_target keeps the registry default (0, "Game decides")
 
+    def test_console_mode_default_follows_the_profile(self):
+        for g in sorted(GAMES.glob('*/game.tsv')):
+            handheld = profile_value(g.parent, 'op_mode') == 'handheld'
+            f = g.parent / 'settings.json'
+            with self.subTest(game=g.parent.name):
+                got = json.loads(f.read_text(encoding='utf-8')).get('defaults', {}).get('DM_OPMODE') if f.exists() else None
+                self.assertEqual(got, '0' if handheld else None)   # Docked (the registry default) unless the profile runs the game handheld
+
 
 if __name__ == '__main__': unittest.main()

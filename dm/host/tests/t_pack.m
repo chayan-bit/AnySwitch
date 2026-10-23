@@ -41,11 +41,13 @@ static int require_status(void) {   // dm_pack_require in a child: its exit stat
     int st; waitpid(p, &st, 0);
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
+static int g_rc;   // the last expect's reason code
 static void expect(const char *name, const char *want) {   // want NULL: bootable
     char why[1024] = ""; n++;
     int rc = dm_pack_check(root, why, sizeof why), st = require_status();
-    int ok = want ? rc == 1 && strstr(why, want) && st == DM_EXIT_PACK : rc == 0 && st == 0;
+    int ok = want ? rc >= DM_PACK_NOT_PACK && rc <= DM_PACK_MISSING && strstr(why, want) && st == DM_EXIT_PACK : rc == 0 && st == 0;
     if (!ok) fails++;
+    g_rc = rc;
     printf("%s %s: rc %d, exit %d, \"%s\"\n", ok ? "✓" : "✗", name, rc, st, why);
 }
 
@@ -97,7 +99,7 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof p, "%s/other.dylib", tmp); dylib(p, DM_CODE_ABI, "0100000000000000");
 
     valid_pack(); expect("correct pack", NULL);
-    valid_pack(); manifest(DM_PACK_FORMAT + 1, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, title); expect("pack format + 1", "pack format 2, this engine 1");
+    valid_pack(); manifest(DM_PACK_FORMAT + 1, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, title); expect("pack format + 1", "pack format 2, this engine 1"); check("reason: a stale pack is DM_PACK_REBUILD", g_rc == DM_PACK_REBUILD, NULL);
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA + 1, DM_CODE_ABI, DM_SHADER_ABI, title); expect("profile schema + 1", "profile schema 2, this engine 1: re-run build_ipa_from_nsp.py --pack (profile)");
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI + 1, DM_SHADER_ABI, title); expect("code ABI + 1", "code ABI 2, this engine 1: re-run build_ipa_from_nsp.py --pack (rewrite stage)");
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI + 1, title); expect("shader ABI + 1", "shader ABI 2, this engine 1: re-run build_ipa_from_nsp.py --pack (shader stages)");
@@ -118,10 +120,10 @@ int main(int argc, char **argv) {
     valid_pack(); sh("rm '%s/code/macos.dylib'", root); expect("no dylib, nothing embedded", "no code/macos.dylib (this platform's part) and this executable embeds no code");
     char other[1100]; snprintf(other, sizeof other, "%s/other.dylib", tmp);
     valid_pack(); setenv("DM_CODE", other, 1); expect("DM_CODE set by the caller is the code checked", "other.dylib is for title 0100000000000000"); unsetenv("DM_CODE");
-    valid_pack(); sh("rm -r '%s/msl/macos'", root); expect("no shaders", "no msl/macos");
+    valid_pack(); sh("rm -r '%s/msl/macos'", root); expect("no shaders", "no msl/macos"); check("reason: a missing part is DM_PACK_MISSING", g_rc == DM_PACK_MISSING, NULL);
     valid_pack(); sh("rm '%s/romfs.dmstore'", root); expect("no RomFS store", "no romfs.dmstore");
     valid_pack(); sh("rm '%s/romfs.dmstore'", root); setenv("DM_ROMFS", "/caller/romfs.dmstore", 1); expect("no RomFS store, DM_ROMFS set by the caller", NULL); unsetenv("DM_ROMFS");
-    valid_pack(); sh("rm '%s/manifest.json'", root); expect("no manifest", "no manifest.json");
+    valid_pack(); sh("rm '%s/manifest.json'", root); expect("no manifest", "no manifest.json"); check("reason: no manifest is DM_PACK_NOT_PACK", g_rc == DM_PACK_NOT_PACK, NULL);
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, "0100000000000000"); sh("cp '%s/other.dylib' '%s/code/macos.dylib'", tmp, root);
     expect("profile of another title", "profile/game.json is for title");
     valid_pack(); sh("sed -i '' 's/\"schema\": *[0-9]*/\"schema\": 999/' '%s/profile/game.json'", root); expect("broken profile", "profile: game.json schema 999");

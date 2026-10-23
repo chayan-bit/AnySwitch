@@ -21,7 +21,7 @@
 - (void)paint {
     BOOL hot = _primary && !_dimmed;
     self.layer.backgroundColor = dm_cg(self, hot ? DmUI.accent : DmUI.row);
-    _label.textColor = hot ? [UIColor colorWithRed:0.04 green:0.15 blue:0.19 alpha:1] : (_primary ? DmUI.sub : DmUI.text);   // dark ink on the cyan fill in both styles
+    _label.textColor = hot ? [UIColor colorWithRed:0.04 green:0.15 blue:0.19 alpha:1] : (_primary ? DmUI.sub : DmUI.text);   // dark ink on the amber fill in both styles
 }
 - (void)setDimmed:(BOOL)d { _dimmed = d; [self paint]; }
 - (void)setHighlighted:(BOOL)h { [super setHighlighted:h]; self.alpha = h ? 0.7 : 1; }

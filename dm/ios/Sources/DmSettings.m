@@ -5,6 +5,7 @@ NSNotificationName const DmSettingDidChangeNotification = @"DmSettingDidChange";
 
 static NSString *fmt(double v) { return [NSString stringWithFormat:@"%g", round(v * 10000) / 10000]; }
 static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8String); }
+static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
 
 @interface DmSection ()
 - (void)keepOnly:(NSArray<DmSetting *> *)k;
@@ -13,7 +14,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
 @implementation DmSetting {
     NSString *_key, *_plistKey, *_label, *_detail, *_suffix, *_def;
     NSArray<NSDictionary *> *_options; NSDictionary<NSString *, NSString *> *_defaultAtFps; BOOL _exportDefault;
-    DmSettingType _type; double _min, _max, _step, _scale; BOOL _restart; NSInteger _decimals; NSUInteger _maxLength, _maxBytes; NSString *_requires, *_enabledWhenKey, *_enabledEquals, *_enabledNotEquals;
+    DmSettingType _type; DmSettingScope _scope; double _min, _max, _step, _scale; BOOL _restart; NSInteger _decimals; NSUInteger _maxLength, _maxBytes; NSString *_requires, *_enabledWhenKey, *_enabledEquals, *_enabledNotEquals;
 }
 + (instancetype)settingFromDictionary:(NSDictionary *)d error:(NSString **)err {
     DmSetting *s = [DmSetting new];
@@ -23,6 +24,10 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     if (![label isKindOfClass:NSString.class] || !label.length) FAIL(@"no label");
     s->_key = key; s->_label = label; s->_plistKey = d[@"plistKey"]; s->_detail = d[@"detail"]; s->_restart = [d[@"apply"] isEqualToString:@"restart"];
     if ([d[@"requires"] isKindOfClass:NSString.class] && [d[@"requires"] length]) s->_requires = d[@"requires"];
+    id sc = d[@"scope"] ?: @"system";
+    NSNumber *scope = [sc isKindOfClass:NSString.class] ? @{@"system": @(DmScopeSystem), @"game": @(DmScopeGame), @"both": @(DmScopeBoth)}[sc] : nil;
+    if (!scope) FAIL(@"scope must be system, game or both");
+    s->_scope = scope.integerValue;
     id when = d[@"enabledWhen"];
     if (when) {
         BOOL ok = [when isKindOfClass:NSDictionary.class]; NSString *wk = ok ? when[@"key"] : nil, *eq = ok ? when[@"equals"] : nil, *ne = ok ? when[@"notEquals"] : nil;
@@ -148,11 +153,12 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
 
 @implementation DmSettings {
     NSArray<DmSection *> *_sections; NSMutableDictionary<NSString *, DmSetting *> *_byKey;
-    NSString *_path; NSMutableDictionary<NSString *, NSString *> *_user, *_envLock, *_launch, *_gameDef; int _frameTarget;
-    void (^_setEnv)(NSString *, NSString *); id (^_plist)(NSString *);
+    NSString *_path, *_gameId; NSMutableDictionary<NSString *, NSString *> *_user, *_game, *_envLock, *_launch, *_gameDef; int _frameTarget;   // _user: the system layer, _game: this game's layer
+    void (^_setEnv)(NSString *, NSString *); id (^_plist)(NSString *); BOOL _quiet;   // _quiet: a store of a game that is not running (no notifications)
+    __weak DmSettings *_peer;   // the store sharing this one's system layer (linkSystemLayer:)
 }
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes {
-    NSString *d = @"Draws the game at a multiple of the Switch's resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.";
+    NSString *d = @"Draws the game at a multiple of its original resolution for a sharper picture. Higher settings use more memory and battery and can lower the frame rate.";
     return bytes > 8ull << 30 ? d : [d stringByAppendingString:@" This device has 8 GB of memory or less: at 2x, some of the picture may stay at 1x when memory runs short, and the game can close."];
 }
 + (NSArray<NSDictionary *> *)builtinSections {
@@ -165,7 +171,7 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
     for (NSArray *l in languages) [langOptions addObject:@{@"value": l[0], @"label": l[1]}];
     NSMutableDictionary *ambient = [slider(@"DM_AMBIENT_LEVEL", @"DMAmbientLevel", @"Ambient brightness", @"How bright the blurred picture in the bars is.", 0.2, 1.0, 0.05, @"0.5") mutableCopy];
     ambient[@"enabledWhen"] = @{@"key": @"DM_LETTERBOX", @"notEquals": @"black"};   // black bars have no picture in them to brighten
-    return @[
+    return withScopes(@[
         @{@"id": @"display", @"title": @"Display", @"icon": @"display", @"settings": @[
             @{@"key": @"DM_LETTERBOX", @"plistKey": @"DMLetterbox", @"label": @"Bars around the picture", @"type": @"choice", @"default": @"ambient",
               @"detail": @"Ambient fills the bars with a soft blurred copy of the picture. Black leaves them plain black.",
@@ -181,13 +187,21 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"detail": @"Draws the 3D picture at a fraction of the game's own size, which runs cooler and smoother. 100% keeps the game's own size and its dynamic resolution."},
             @{@"key": @"DM_INTERNAL_RES", @"plistKey": @"DMInternalRes", @"label": @"Internal resolution", @"type": @"choice", @"default": @"1", @"apply": @"restart", @"requires": @"internalres",
               @"detail": [self internalResDetailForMemory:NSProcessInfo.processInfo.physicalMemory],
-              @"options": @[@{@"value": @"1", @"label": @"1x (Switch)", @"aliases": @[@"1.0"]}, @{@"value": @"1.5", @"label": @"1.5x"}, @{@"value": @"2", @"label": @"2x", @"aliases": @[@"2.0"]}]}]},
+              @"options": @[@{@"value": @"1", @"label": @"1x (original)", @"aliases": @[@"1.0"]}, @{@"value": @"1.5", @"label": @"1.5x"}, @{@"value": @"2", @"label": @"2x", @"aliases": @[@"2.0"]}]},
+            @{@"key": @"DM_OPMODE", @"label": @"Console mode", @"type": @"choice", @"default": @"1", @"apply": @"restart", @"exportDefault": @YES,   // the host's own default is the game profile's op_mode; a game that needs Handheld says so in its pack defaults
+              @"detail": @"Docked draws the game at its larger docked resolution. Handheld draws it at its portable resolution, which saves power and runs cooler. Auto is Docked while an external display is connected, else Handheld.",
+              @"options": @[@{@"value": @"auto", @"label": @"Auto"}, @{@"value": @"0", @"label": @"Handheld", @"aliases": @[@"handheld"]}, @{@"value": @"1", @"label": @"Docked", @"aliases": @[@"docked", @"console"]}]}]},
         @{@"id": @"controls", @"title": @"Controls", @"icon": @"gamecontroller", @"settings": @[
             @{@"key": @"DM_CONTROLS_LAYOUT", @"plistKey": @"DMControlsLayout", @"label": @"Touch controls", @"type": @"choice", @"default": @"auto",
               @"detail": @"Auto puts the controls in the bars around the picture when the bars are tall enough. Overlay keeps them over the picture.",
               @"options": @[@{@"value": @"auto", @"label": @"Auto"}, @{@"value": @"overlay", @"label": @"Overlay", @"aliases": @[@"0"]}]},
             slider(@"DM_CONTROLS_SCALE", @"DMControlsScale", @"Controls size", @"Size of the stick, the A, B, X, Y keys and the D-pad. Bigger controls reach up over the picture.", 0.75, 2.5, 0.05, @"1"),
             slider(@"DM_CONTROLS_OPACITY", @"DMControlsOpacity", @"Controls opacity", @"How see-through the touch controls are.", 0.3, 1.0, 0.05, @"1"),
+            @{@"key": @"DM_CONTROLS_IDLE_FADE", @"label": @"Fade when idle", @"type": @"toggle", @"default": @"1",
+              @"detail": @"Fades the touch controls after a few seconds without a touch, so they do not cover the game's own prompts. A touch brings them back."},
+            @{@"key": @"DM_PAD_LAYOUT", @"label": @"Touch layout", @"type": @"choice", @"default": @"auto",
+              @"detail": @"2D shows the buttons a 2D game needs. 3D adds the D-pad, the right stick and the stick buttons. Game's choice uses the layout the game starts in. The 2D / 3D button over the game switches it too.",
+              @"options": @[@{@"value": @"auto", @"label": @"Game's choice"}, @{@"value": @"2d", @"label": @"2D"}, @{@"value": @"3d", @"label": @"3D"}]},
             @{@"key": @"DM_SHAKE_G", @"label": @"Shake sensitivity", @"type": @"slider", @"min": @0.5, @"max": @4.0, @"step": @0.1, @"scale": @1, @"suffix": @" G", @"default": @"1.5",
               @"detail": @"How hard the device has to be shaken to shake the controller. A lower number reacts to a gentler shake."},
             @{@"key": @"DM_VIBRATION", @"label": @"Vibration", @"type": @"toggle", @"default": @"1", @"requires": @"haptics",
@@ -209,7 +223,34 @@ static void say(NSString *m) { fprintf(stderr, "[dm] settings: %s\n", m.UTF8Stri
               @"detail": @"The language the game starts in, when it has it. The game reads it once at start."},
             @{@"key": @"DM_NICK", @"label": @"Player name", @"type": @"text", @"default": @"Player", @"maxLength": @32, @"maxBytes": @32, @"apply": @"restart",
               @"detail": @"The name the game shows for the player, up to 32 characters."}]},
-    ];
+        @{@"id": @"appearance", @"title": @"Appearance", @"icon": @"circle.lefthalf.filled", @"settings": @[
+            @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",
+              @"options": @[@{@"value": @"system", @"label": @"Same as the iPad"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
+              @"detail": @"Light or dark menus, or follow the iPad's own appearance."}]},
+    ]);
+}
+// Where each built-in entry's player choice lives (docs/settings.md); an entry not named here is system
++ (NSDictionary<NSString *, NSString *> *)builtinScopes {
+    return @{@"DM_LETTERBOX": @"both", @"DM_UPSCALE": @"both", @"DM_UPSCALE_SHARPNESS": @"both", @"DM_RENDER_SCALE": @"game", @"DM_INTERNAL_RES": @"game", @"DM_OPMODE": @"both",
+             @"DM_CONTROLS_LAYOUT": @"both", @"DM_PAD_LAYOUT": @"game", @"DM_VIBRATION": @"both", @"DM_FPS_TARGET": @"game", @"DM_PSO_FLEX": @"game", @"DM_LANG": @"both"};
+}
+static NSArray<NSDictionary *> *withScope(NSArray<NSDictionary *> *sections, NSString *(^scopeOf)(NSDictionary *entry)) {   // copies with "scope" set on the entries scopeOf names one for
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSDictionary *sec in sections) {
+        if (![sec isKindOfClass:NSDictionary.class] || ![sec[@"settings"] isKindOfClass:NSArray.class]) { [out addObject:sec]; continue; }
+        NSMutableArray *list = [NSMutableArray array];
+        for (NSDictionary *e in sec[@"settings"]) {
+            NSString *sc = [e isKindOfClass:NSDictionary.class] ? scopeOf(e) : nil;
+            if (!sc) { [list addObject:e]; continue; }
+            NSMutableDictionary *m = [e mutableCopy]; m[@"scope"] = sc; [list addObject:m];
+        }
+        NSMutableDictionary *m = [sec mutableCopy]; m[@"settings"] = list; [out addObject:m];
+    }
+    return out;
+}
+static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections) {
+    NSDictionary *t = [DmSettings builtinScopes];
+    return withScope(sections, ^NSString *(NSDictionary *e) { id k = e[@"key"]; return [k isKindOfClass:NSString.class] ? t[k] : nil; });
 }
 static NSDictionary *gameFile(NSString *path) {
     NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -222,29 +263,61 @@ static NSDictionary *gameFile(NSString *path) {
     NSDictionary *j = gameFile(path); if (!j) return @[];
     if (j[@"sections"] == nil) return @[];   // a file may hold only "defaults"
     if (![j[@"sections"] isKindOfClass:NSArray.class]) { say([NSString stringWithFormat:@"%@: \"sections\" is not an array", path.lastPathComponent]); return @[]; }
-    return j[@"sections"];
+    return withScope(j[@"sections"], ^NSString *(NSDictionary *e) { return e[@"scope"] ? nil : @"game"; });   // a game's own rows are per game unless they say otherwise
 }
 + (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path {
     NSDictionary *j = gameFile(path); if (!j || j[@"defaults"] == nil) return @{};
     if (![j[@"defaults"] isKindOfClass:NSDictionary.class]) { say([NSString stringWithFormat:@"%@: \"defaults\" is not an object", path.lastPathComponent]); return @{}; }
     return j[@"defaults"];
 }
-+ (instancetype)shared {
-    static DmSettings *s; static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        NSString *game = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"pack/profile/settings.json"];
-        NSMutableArray *secs = [[DmSettings builtinSections] mutableCopy];
-        [secs addObjectsFromArray:[DmSettings gameSectionsFromFile:game]];
-        s = [[DmSettings alloc] initWithSections:secs gameDefaults:[DmSettings gameDefaultsFromFile:game] caps:nil storePath:[doc stringByAppendingPathComponent:@"settings.json"]
-            env:^NSString *(NSString *k) { const char *e = getenv(k.UTF8String); return e && *e ? @(e) : nil; }
-            setEnv:^(NSString *k, NSString *v) { if (v) setenv(k.UTF8String, v.UTF8String, 1); else unsetenv(k.UTF8String); }
-            plist:^id(NSString *k) { id p = [NSBundle.mainBundle objectForInfoDictionaryKey:k]; return [p isKindOfClass:NSString.class] && [p hasPrefix:@"$"] ? nil : p; }];   // xcodegen leaves an unset ${VAR} as it is
-    });
+static NSString *g_game_id, *g_pack_root;   // the launched game and its pack (Hearth); nil = no game: the shared store is the system store
+static BOOL g_shared_made;
+static __weak DmSettings *g_shared_store, *g_system_store;   // linked once both exist
+void dm_settings_set_game(NSString *titleId, NSString *root) {
+    if (g_shared_made) say(@"[RED] dm_settings_set_game after the shared store was made: it stays the store it was");
+    g_game_id = titleId.copy; g_pack_root = root.copy;
+}
+// A store over Documents/settings.json and the process environment; live = it exports to the environment and announces changes (the running game's, or the system store when none runs)
+static DmSettings *app_store(NSString *gameId, NSString *packRoot, BOOL live) {
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *game = gameId ? [packRoot stringByAppendingPathComponent:@"profile/settings.json"] : nil;
+    NSMutableArray *secs = [[DmSettings builtinSections] mutableCopy];
+    if (game) [secs addObjectsFromArray:[DmSettings gameSectionsFromFile:game]];
+    DmSettings *s = [[DmSettings alloc] initWithSections:secs gameDefaults:game ? [DmSettings gameDefaultsFromFile:game] : nil caps:nil gameId:gameId storePath:[doc stringByAppendingPathComponent:@"settings.json"]
+        env:^NSString *(NSString *k) { const char *e = getenv(k.UTF8String); return e && *e ? @(e) : nil; }
+        setEnv:live ? ^(NSString *k, NSString *v) { if (v) setenv(k.UTF8String, v.UTF8String, 1); else unsetenv(k.UTF8String); } : ^(NSString *k, NSString *v) { (void)k; (void)v; }
+        plist:^id(NSString *k) { id p = [NSBundle.mainBundle objectForInfoDictionaryKey:k]; return [p isKindOfClass:NSString.class] && [p hasPrefix:@"$"] ? nil : p; }];   // xcodegen leaves an unset ${VAR} as it is
+    s->_quiet = !live;
     return s;
 }
++ (instancetype)shared {
+    static DmSettings *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ g_shared_made = YES; s = app_store(g_game_id, g_pack_root, YES); g_shared_store = s; [g_system_store linkSystemLayer:s]; });
+    return s;
+}
+// Its own store, never the shared one: Home reads it before a game is launched in this process, and the shared store must become that game's.
+// It neither exports nor announces itself; it is linked to the shared store (linkSystemLayer:), so a change made on Home reaches the running game through the game's store
++ (instancetype)systemStore {
+    static DmSettings *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = app_store(nil, nil, NO); g_system_store = s; [g_shared_store linkSystemLayer:s]; });
+    return s;
+}
++ (instancetype)storeForGame:(NSString *)titleId packRoot:(NSString *)root {
+    return [titleId isEqualToString:g_game_id] ? [self shared] : app_store(titleId, root, NO);
+}
 - (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections storePath:(NSString *)path env:(NSString *(^)(NSString *))env setEnv:(void (^)(NSString *, NSString *))setEnv plist:(id (^)(NSString *))plist {
-    return [self initWithSections:sections gameDefaults:nil caps:nil storePath:path env:env setEnv:setEnv plist:plist];
+    return [self initWithSections:sections gameDefaults:nil caps:nil gameId:nil storePath:path env:env setEnv:setEnv plist:plist];
+}
+- (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *))caps storePath:(NSString *)path env:(NSString *(^)(NSString *))env setEnv:(void (^)(NSString *, NSString *))setEnv plist:(id (^)(NSString *))plist {
+    return [self initWithSections:sections gameDefaults:gameDefaults caps:caps gameId:nil storePath:path env:env setEnv:setEnv plist:plist];
+}
+// The file as {"system": {...}, "games": {...}}: version 2 as it is, a version 1 file's "values" as the system layer, anything else empty
+static NSDictionary *read_store(NSString *path) {
+    NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
+    NSDictionary *j = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![j isKindOfClass:NSDictionary.class]) return @{};
+    if ([j[@"version"] isKindOfClass:NSNumber.class] && [j[@"version"] intValue] >= 2) return j;
+    return [j[@"values"] isKindOfClass:NSDictionary.class] ? @{@"system": j[@"values"]} : @{};
 }
 // Sections that share an id become one page: the first one's title and icon, the entries of all of them in order
 static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
@@ -258,9 +331,9 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
     }
     return out;
 }
-- (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *))caps storePath:(NSString *)path env:(NSString *(^)(NSString *))env setEnv:(void (^)(NSString *, NSString *))setEnv plist:(id (^)(NSString *))plist {
+- (instancetype)initWithSections:(NSArray<NSDictionary *> *)sections gameDefaults:(NSDictionary<NSString *, id> *)gameDefaults caps:(BOOL (^)(NSString *))caps gameId:(NSString *)gameId storePath:(NSString *)path env:(NSString *(^)(NSString *))env setEnv:(void (^)(NSString *, NSString *))setEnv plist:(id (^)(NSString *))plist {
     if (!(self = [super init])) return nil;
-    _path = path; _setEnv = [setEnv copy]; _plist = [plist copy]; _capabilities = [caps copy]; _byKey = [NSMutableDictionary dictionary]; _user = [NSMutableDictionary dictionary]; _envLock = [NSMutableDictionary dictionary]; _launch = [NSMutableDictionary dictionary]; _gameDef = [NSMutableDictionary dictionary];
+    _path = path; _gameId = gameId.copy; _setEnv = [setEnv copy]; _plist = [plist copy]; _capabilities = [caps copy]; _byKey = [NSMutableDictionary dictionary]; _user = [NSMutableDictionary dictionary]; _game = [NSMutableDictionary dictionary]; _envLock = [NSMutableDictionary dictionary]; _launch = [NSMutableDictionary dictionary]; _gameDef = [NSMutableDictionary dictionary];
     NSMutableArray *secs = [NSMutableArray array];
     for (NSDictionary *d in mergeById(sections)) {
         DmSection *s = [DmSection sectionFromDictionary:d]; if (!s) { say([NSString stringWithFormat:@"skipped section %@", d[@"id"]]); continue; }
@@ -275,19 +348,24 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
         if (n) _gameDef[k] = n; else say([NSString stringWithFormat:@"ignoring the game default of %@", k]);
     }
     for (DmSetting *st in _byKey.allValues) { NSString *e = env(st.key); NSString *n = e ? [st normalized:e] : nil; if (n) _envLock[st.key] = n; else if (e) say([NSString stringWithFormat:@"ignoring %@=%@ from the environment: not a valid value", st.key, e]); }
-    NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
-    NSDictionary *j = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    if ([j isKindOfClass:NSDictionary.class] && [j[@"values"] isKindOfClass:NSDictionary.class]) for (NSString *k in j[@"values"]) {
-        DmSetting *st = _byKey[k]; NSString *n = st ? [st normalized:j[@"values"][k]] : nil;
-        if (n) _user[k] = n; else say([NSString stringWithFormat:@"ignoring %@ in %@", k, path.lastPathComponent]);
-    }
+    NSDictionary *f = read_store(path), *games = [f[@"games"] isKindOfClass:NSDictionary.class] ? f[@"games"] : nil;
+    [self load:f[@"system"] into:_user from:path];
+    if (_gameId) [self load:games[_gameId] into:_game from:path];
     for (DmSetting *st in _byKey.allValues) _launch[st.key] = [self valueForKey:st.key];
     return self;
 }
+- (void)load:(NSDictionary *)layer into:(NSMutableDictionary<NSString *, NSString *> *)into from:(NSString *)path {
+    if (![layer isKindOfClass:NSDictionary.class]) return;
+    for (NSString *k in layer) {
+        DmSetting *st = [k isKindOfClass:NSString.class] ? _byKey[k] : nil; NSString *n = st ? [st normalized:layer[k]] : nil;
+        if (n) into[k] = n; else say([NSString stringWithFormat:@"ignoring %@ in %@", k, path.lastPathComponent]);
+    }
+}
+- (BOOL)inGameLayer:(DmSetting *)s { return _gameId && s.scope != DmScopeSystem; }   // where this store keeps the player's choice of s
 - (DmSetting *)settingForKey:(NSString *)key { return _byKey[key]; }
 - (BOOL)isAvailable:(DmSetting *)s { return !s.requires.length || !_capabilities || _capabilities(s.requires); }
 - (NSArray<DmSetting *> *)visibleSettingsInSection:(DmSection *)sec {
-    NSMutableArray *out = [NSMutableArray array]; for (DmSetting *s in sec.settings) if ([self isAvailable:s]) [out addObject:s]; return out;
+    NSMutableArray *out = [NSMutableArray array]; for (DmSetting *s in sec.settings) if ([self isAvailable:s] && (_gameId || s.scope != DmScopeGame)) [out addObject:s]; return out;
 }
 - (NSArray<DmSection *> *)visibleSections {
     NSMutableArray *out = [NSMutableArray array]; for (DmSection *s in _sections) if ([self visibleSettingsInSection:s].count) [out addObject:s]; return out;
@@ -306,14 +384,19 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (DmSettingSource)sourceForKey:(NSString *)key {
     DmSetting *s = _byKey[key]; if (!s) return DmSourceDefault;
     if (_envLock[key]) return DmSourceEnv;
-    if (_user[key]) return DmSourceUser;
+    if ([self inGameLayer:s] && _game[key]) return DmSourceGame;
+    if (_user[key]) return DmSourceUser;   // a game entry's system value only comes from a version 1 file, the single game's choice then
     if (s.plistKey.length && [s normalized:_plist(s.plistKey)]) return DmSourcePlist;
     return DmSourceDefault;
 }
+- (NSString *)systemValueForKey:(NSString *)key { return _user[key] ?: [self defaultValueForKey:key]; }   // the plist counts as part of the default here
+- (BOOL)followsSystem:(DmSetting *)s { return _gameId && s.scope == DmScopeBoth && !_game[s.key]; }
+- (void)useSystemForKey:(NSString *)key { DmSetting *s = _byKey[key]; if (s && [self inGameLayer:s]) [self dropKeys:@[key]]; }
 - (NSString *)valueForKey:(NSString *)key {
     DmSetting *s = _byKey[key]; if (!s) return nil;
     switch ([self sourceForKey:key]) {
         case DmSourceEnv: return _envLock[key];
+        case DmSourceGame: return _game[key];
         case DmSourceUser: return _user[key];
         case DmSourcePlist: return [s normalized:_plist(s.plistKey)];
         default: return [self defaultValueForKey:key];
@@ -337,31 +420,53 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 }
 - (BOOL)boolForKey:(NSString *)key { return [[self valueForKey:key] isEqualToString:@"1"]; }
 - (double)doubleForKey:(NSString *)key { return [self valueForKey:key].doubleValue; }
-- (void)persist {
-    NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"values": _user} options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
+// Writes these keys' current choices into the file on disk, each into the layer this store keeps it in, leaving every other key there as it is
+- (void)persist:(NSArray<NSString *> *)keys {
+    NSDictionary *f = read_store(_path);
+    NSMutableDictionary *sys = [f[@"system"] isKindOfClass:NSDictionary.class] ? [f[@"system"] mutableCopy] : [NSMutableDictionary dictionary];
+    NSMutableDictionary *games = [f[@"games"] isKindOfClass:NSDictionary.class] ? [f[@"games"] mutableCopy] : [NSMutableDictionary dictionary];
+    NSMutableDictionary *mine = _gameId && [games[_gameId] isKindOfClass:NSDictionary.class] ? [games[_gameId] mutableCopy] : [NSMutableDictionary dictionary];
+    for (NSString *k in keys) { BOOL g = [self inGameLayer:_byKey[k]]; (g ? mine : sys)[k] = (g ? _game : _user)[k]; }   // nil removes
+    if (_gameId) { if (mine.count) games[_gameId] = mine; else [games removeObjectForKey:_gameId]; }
+    NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"version": @2, @"system": sys, @"games": games} options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     NSError *e = nil; if (!d || ![d writeToFile:_path options:NSDataWritingAtomic error:&e]) say([NSString stringWithFormat:@"[RED] could not write %@: %@", _path.lastPathComponent, e.localizedDescription]);
+    for (NSString *k in keys) if (![self inGameLayer:_byKey[k]]) [_peer peerSystemValue:_user[k] forKey:k];   // every change of the system layer passes here
 }
-- (void)announce:(NSString *)key { NSString *v = [self valueForKey:key]; _setEnv(key, v); [NSNotificationCenter.defaultCenter postNotificationName:DmSettingDidChangeNotification object:key userInfo:@{@"value": v}]; }
+- (void)linkSystemLayer:(DmSettings *)other { if (other == self) return; _peer = other; other->_peer = self; }
+// The peer's system layer changed for key (v nil: no choice): take it, and when this store's effective value changes with it, export and announce it here
+- (void)peerSystemValue:(NSString *)v forKey:(NSString *)key {
+    if (!_byKey[key]) return;
+    NSString *before = [self valueForKey:key];
+    if (v) _user[key] = v; else [_user removeObjectForKey:key];
+    if (![before isEqualToString:[self valueForKey:key]]) [self announce:key];
+}
+- (void)announce:(NSString *)key {
+    NSString *v = [self valueForKey:key]; _setEnv(key, v);
+    if (!_quiet) [NSNotificationCenter.defaultCenter postNotificationName:DmSettingDidChangeNotification object:key userInfo:@{@"value": v}];
+}
 - (BOOL)setValue:(NSString *)value forKey:(NSString *)key {
     DmSetting *s = _byKey[key]; NSString *n = s ? [s normalized:value] : nil;
-    if (!n || _envLock[key]) return NO;
-    if (!s.defaultAtFps && [n isEqualToString:[self defaultValueForKey:key]]) {   // the default again: no explicit copy of it, so a later change of the default still applies (not for a default that moves with the frame rate target: the choice is kept)
-        if (_user[key]) { [_user removeObjectForKey:key]; [self persist]; [self announce:key]; }
+    if (!n || _envLock[key] || (!_gameId && s.scope == DmScopeGame)) return NO;
+    BOOL g = [self inGameLayer:s]; NSMutableDictionary *layer = g ? _game : _user;
+    // The value it would have without this choice again (a game: its system value; the system: the default): no explicit copy, so a later change of what it falls back to still applies
+    // (not for a default that moves with the frame rate target: the choice is kept)
+    if (!s.defaultAtFps && [n isEqualToString:g ? [self systemValueForKey:key] : [self defaultValueForKey:key]]) {
+        if (layer[key]) { [layer removeObjectForKey:key]; [self persist:@[key]]; [self announce:key]; }
         return YES;
     }
-    if ([_user[key] isEqualToString:n]) return YES;
-    _user[key] = n; [self persist]; [self announce:key];
+    if ([layer[key] isEqualToString:n]) return YES;
+    layer[key] = n; [self persist:@[key]]; [self announce:key];
     return YES;
 }
-- (void)dropKeys:(NSArray<NSString *> *)keys {   // forgets the user's choices of these keys, stores once, announces each key the environment does not set
+- (void)dropKeys:(NSArray<NSString *> *)keys {   // forgets the user's choices of these keys (each from the layer this store keeps it in), stores once, announces each key the environment does not set
     NSMutableArray *gone = [NSMutableArray array];
-    for (NSString *k in keys) if (_user[k]) { [_user removeObjectForKey:k]; [gone addObject:k]; }
+    for (NSString *k in keys) { NSMutableDictionary *layer = [self inGameLayer:_byKey[k]] ? _game : _user; if (layer[k]) { [layer removeObjectForKey:k]; [gone addObject:k]; } }
     if (!gone.count) return;
-    [self persist];
+    [self persist:gone];
     for (NSString *k in [gone sortedArrayUsingSelector:@selector(compare:)]) if (!_envLock[k]) [self announce:k];
 }
 - (void)resetSection:(DmSection *)sec { [self dropKeys:[sec.settings valueForKey:@"key"]]; }
-- (void)resetAll { [self dropKeys:_user.allKeys]; }
+- (void)resetAll { [self dropKeys:_byKey.allKeys]; }
 - (BOOL)restartPending {
     for (DmSetting *s in _byKey.allValues) if (s.restart && ![[self valueForKey:s.key] isEqualToString:_launch[s.key]]) return YES;
     return NO;
@@ -369,7 +474,7 @@ static NSArray<NSDictionary *> *mergeById(NSArray<NSDictionary *> *sections) {
 - (void)applyToEnvironment {
     for (DmSetting *s in _byKey.allValues) {
         DmSettingSource src = [self sourceForKey:s.key];
-        if (src == DmSourceUser || src == DmSourcePlist || (src == DmSourceDefault && (_gameDef[s.key] || s.exportDefault))) _setEnv(s.key, [self valueForKey:s.key]);   // a registry default is the code's own default and is not exported, unless the entry says its code defaults to something else (exportDefault)
+        if (src == DmSourceUser || src == DmSourceGame || src == DmSourcePlist || (src == DmSourceDefault && (_gameDef[s.key] || s.exportDefault))) _setEnv(s.key, [self valueForKey:s.key]);   // a registry default is the code's own default and is not exported, unless the entry says its code defaults to something else (exportDefault)
     }
 }
 @end
@@ -380,6 +485,10 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
     NSMutableArray *h = [NSMutableArray array];
     if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
     if (kind == DmFocusEditor) return @[];   // the editor panel has its own Cancel and Save buttons; a footer would sit behind the soft keyboard
+    if (kind == DmFocusHomeGame) return @[@[@"A", @"Start"], @[@"+", @"Options"]];   // Home has no Back: B does nothing there
+    if (kind == DmFocusHomeBlocked) return @[@[@"A", @"Details"], @[@"+", @"Options"]];
+    if (kind == DmFocusHomeButton) return @[@[@"A", @"Open"]];
+    if (kind == DmFocusHomeRunning) return @[@[@"A", @"Resume"], @[@"X", @"Close"], @[@"+", @"Options"]];
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;
@@ -388,7 +497,8 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
         case DmFocusRestore: [h addObject:@[@"A", @"Restore"]]; break;
         case DmFocusRestoreAll: [h addObject:@[@"A", armed ? @"Confirm" : @"Restore"]]; break;
         case DmFocusRestart: [h addObject:@[@"A", @"Restart"]]; break;
-        case DmFocusCategory: case DmFocusEditor: break;
+        case DmFocusAction: [h addObject:@[@"A", armed ? @"Confirm" : @"Select"]]; break;
+        default: break;
     }
     [h addObject:@[@"B", @"Back"]]; [h addObject:@[@"L R", @"Category"]];
     return h;

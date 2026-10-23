@@ -1,4 +1,4 @@
-// The text editor of the settings screen: a panel in the screen's own style (same fonts, colours and cyan focus border) over a dimmed scrim, with a live n/limit counter,
+// The text editor of the settings screen: a panel in the screen's own style (same fonts, colours and amber focus ring) over a dimmed scrim, with a live n/limit counter,
 // a visible refusal when the limit is hit or the text is empty, and Cancel / Save buttons. The system keyboard (or a hardware one: Return saves, Escape cancels) types into it.
 #import <UIKit/UIKit.h>
 #import "DmSettings.h"

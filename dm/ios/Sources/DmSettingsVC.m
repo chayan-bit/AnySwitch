@@ -1,24 +1,44 @@
-// The settings screen (see DmSettingsVC.h). Two focus levels: the category list and the rows of the chosen category; one cyan border per level, moved with a short animation.
+// The settings screen (see DmSettingsVC.h). Two focus levels: the category list and the rows of the chosen category; one amber focus ring per level, moved with a short animation.
 // All data comes from DmSettings (the registry): the screen knows no setting by name.
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
 #import "DmSettingsEditor.h"
 #import "DmPadBits.h"
+#import "DmRepeat.h"
 
 static void on_trait(UIView *v, void (^apply)(void));
 typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight };
 
+@implementation DmPageItem
++ (instancetype)info:(NSString *)t detail:(NSString *)d { DmPageItem *i = [self new]; i.title = t; i.detail = d; return i; }
++ (instancetype)action:(NSString *)t detail:(NSString *)d run:(void (^)(void))r { DmPageItem *i = [self info:t detail:d]; i.run = r; return i; }
+@end
+@implementation DmPage
++ (instancetype)section:(DmSection *)s { DmPage *p = [self new]; p->_section = s; p->_title = s.title; p->_icon = s.icon; return p; }
++ (instancetype)page:(NSString *)title icon:(NSString *)symbol items:(NSArray<DmPageItem *> *(^)(void))items { DmPage *p = [self new]; p->_title = title; p->_icon = symbol; p->_items = [items copy]; return p; }
++ (NSArray<DmPage *> *)pagesOf:(DmSettings *)st gameRowsOnly:(BOOL)gameOnly {
+    NSMutableArray *out = [NSMutableArray array];
+    for (DmSection *s in st.visibleSections) {
+        BOOL any = !gameOnly; for (DmSetting *x in [st visibleSettingsInSection:s]) if (x.scope != DmScopeSystem) any = YES;
+        if (!any) continue;
+        DmPage *p = [self section:s]; p->_gameRowsOnly = gameOnly; [out addObject:p];
+    }
+    return out;
+}
+@end
+
 @implementation DmSettingsVC {
-    DmSettings *_settings; BOOL _compact; NSArray<DmSection *> *_secs; BOOL _editing, _armed;   // _secs: the pages this build has; _editing: the text editor is up; _armed: restore-all waits for a second tap
+    DmSettings *_settings; BOOL _compact; NSArray<DmPage *> *_shown; BOOL _editing, _armed;   // _shown: the categories; _editing: the text editor is up; _armed: restore-all or an action waits for a second press
+    NSArray<DmPageItem *> *_items; DmRowView *_armedRow;   // an item page's items (row i is item i); the action row waiting for its second press
     DmEditorView *_editor; BOOL _editB;   // _editB: the controller's B is held (it cancels the editor once released)
     NSInteger _section, _row; BOOL _inPane;
     NSMutableArray<DmCategoryView *> *_cats; NSMutableArray<DmRowView *> *_rows; BOOL _hasRestartRow;
     UILabel *_head, *_paneTitle; UIButton *_close; UIView *_catBox, *_panel, *_clip; UIScrollView *_scroll; DmHintBar *_hints;
     DmFocusView *_catRing, *_rowRing;
-    uint64_t _prev; BOOL _baselined; Dir _held; NSTimer *_repeat; NSArray *_shownHints;
+    uint64_t _prev; BOOL _baselined; DmRepeat *_repeat; NSArray *_shownHints;
 }
 - (instancetype)initWithSettings:(DmSettings *)s size:(CGSize)size {
-    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _secs = s.visibleSections; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; }
+    if ((self = [super initWithNibName:nil bundle:nil])) { _settings = s; _compact = MIN(size.width, size.height) < 500; _rows = [NSMutableArray array]; _cats = [NSMutableArray array]; _repeat = [DmRepeat new]; }
     return self;
 }
 - (NSInteger)section { return _section; }
@@ -29,7 +49,8 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
 - (void)viewDidLoad {
     [super viewDidLoad];
     UIView *v = self.view; v.backgroundColor = DmUI.bg;
-    _head = [UILabel new]; _head.text = @"Settings"; _head.font = [DmUI font:_compact ? 22 : 34 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
+    _shown = self.pages ?: [DmPage pagesOf:_settings gameRowsOnly:NO];
+    _head = [UILabel new]; _head.text = self.heading ?: @"Settings"; _head.font = [DmUI font:_compact ? 22 : 34 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
     _close = [UIButton buttonWithType:UIButtonTypeSystem];
     [_close setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:_compact ? 14 : 17 weight:UIImageSymbolWeightBold]] forState:UIControlStateNormal];
     _close.tintColor = DmUI.sub; _close.layer.cornerRadius = 22; _close.accessibilityLabel = @"Close settings";
@@ -43,49 +64,75 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     for (UIView *s in @[_head, _close, _catBox, _panel, _hints]) [v addSubview:s];
     [_panel addSubview:_paneTitle]; [_panel addSubview:_clip]; [_clip addSubview:_scroll];
     [_scroll addSubview:_rowRing];
-    for (NSUInteger i = 0; i < _secs.count; i++) {
-        DmSection *s = _secs[i];
-        DmCategoryView *c = [[DmCategoryView alloc] initWithTitle:s.title icon:s.icon compact:_compact]; c.tag = (NSInteger)i;
-        [c addTarget:self action:@selector(categoryTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [_catBox addSubview:c]; [_cats addObject:c];
-    }
-    [_catBox addSubview:_catRing];
+    [self buildCategories];
     __weak DmSettingsVC *w = self;
     on_trait(self.view, ^{ DmSettingsVC *s = w; s->_panel.layer.backgroundColor = [DmUI.panel resolvedColorWithTraitCollection:s.view.traitCollection].CGColor; s->_close.backgroundColor = DmUI.row; });
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshRows) name:DmSettingDidChangeNotification object:nil];
     [self rebuildRows];
     [self updateFocus:NO];
 }
+- (void)buildCategories {
+    for (NSUInteger i = 0; i < _shown.count; i++) {
+        DmPage *p = _shown[i];
+        DmCategoryView *c = [[DmCategoryView alloc] initWithTitle:p.title icon:p.icon compact:_compact]; c.tag = (NSInteger)i;
+        [c addTarget:self action:@selector(categoryTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [_catBox addSubview:c]; [_cats addObject:c];
+    }
+    [_catBox addSubview:_catRing];
+}
+- (void)reloadPages {
+    if (!self.isViewLoaded) return;
+    NSString *was = _section < (NSInteger)_shown.count ? _shown[(NSUInteger)_section].title : nil;
+    for (DmCategoryView *c in _cats) [c removeFromSuperview];
+    [_cats removeAllObjects];
+    _shown = self.pages ?: [DmPage pagesOf:_settings gameRowsOnly:NO];
+    [self buildCategories];
+    for (NSUInteger i = 0; i < _shown.count; i++) if ([_shown[i].title isEqualToString:was]) _section = (NSInteger)i;   // the same page where it still exists
+    _section = MIN(MAX(_section, 0), (NSInteger)_shown.count - 1);
+    [self rebuildRows]; [self.view setNeedsLayout]; [self.view layoutIfNeeded]; [self updateFocus:NO];
+}
 // a block run now and when the light / dark style changes
 static void on_trait(UIView *v, void (^apply)(void)) {
     apply();
     [v registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withHandler:^(__kindof id<UITraitEnvironment> e, UITraitCollection *p) { (void)e; (void)p; apply(); }];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat invalidate]; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self becomeFirstResponder]; }
 
-- (DmSection *)currentSection { return _secs[(NSUInteger)_section]; }
+- (DmPage *)currentPage { return _shown[(NSUInteger)_section]; }
+- (DmSection *)currentSection { return self.currentPage.section; }
 - (void)rebuildRows {
     for (DmRowView *r in _rows) [r removeFromSuperview];
     [_rows removeAllObjects];
     _hasRestartRow = _settings.restartPending;
     void (^add)(DmRowView *) = ^(DmRowView *r) {
         UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(rowTapped:)]; [r addGestureRecognizer:t];
+        if (self->_settings.gameId && r.setting.scope == DmScopeBoth) [r addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowHeld:)]];
         [self->_scroll insertSubview:r belowSubview:self->_rowRing]; [self->_rows addObject:r];
     };
-    if (_hasRestartRow) add([[DmRowView alloc] initWithSetting:nil kind:DmItemRestart compact:_compact]);
-    for (DmSetting *s in [_settings visibleSettingsInSection:self.currentSection]) {
-        DmRowView *r = [[DmRowView alloc] initWithSetting:s kind:DmItemSetting compact:_compact]; add(r);
-        if (r.slider) [r.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+    DmPage *pg = self.currentPage; _items = nil; _armedRow = nil;
+    if (pg.section) {
+        if (_hasRestartRow) add([[DmRowView alloc] initWithSetting:nil kind:DmItemRestart compact:_compact]);
+        for (DmSetting *s in [_settings visibleSettingsInSection:pg.section]) {
+            if (pg.gameRowsOnly && s.scope == DmScopeSystem) continue;   // a game's Options: only what can differ per game
+            DmRowView *r = [[DmRowView alloc] initWithSetting:s kind:DmItemSetting compact:_compact]; add(r);
+            if (r.slider) [r.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+        }
+        add([[DmRowView alloc] initWithSetting:nil kind:DmItemReset compact:_compact]);
+        if (!pg.gameRowsOnly) add([[DmRowView alloc] initWithSetting:nil kind:DmItemResetAll compact:_compact]);   // in a game's Options it would reach the system settings too
+    } else {
+        _items = pg.items ? pg.items() : @[];
+        if (!_items.count) _items = @[[DmPageItem info:@"Nothing here yet" detail:nil]];
+        for (DmPageItem *it in _items) { DmRowView *r = [[DmRowView alloc] initWithAction:it.title detail:it.detail compact:_compact]; r.info = !it.run; r.destructive = it.destructive; add(r); }
     }
-    add([[DmRowView alloc] initWithSetting:nil kind:DmItemReset compact:_compact]);
-    add([[DmRowView alloc] initWithSetting:nil kind:DmItemResetAll compact:_compact]);
     _armed = NO;
-    _paneTitle.text = self.currentSection.title;
+    _paneTitle.text = pg.title;
     _row = MIN(MAX(_row, 0), (NSInteger)_rows.count - 1);
     [self refreshRows]; [self layoutPane];
 }
 - (void)refreshRows {
+    for (DmRowView *r in _rows) if (r.setting) r.scopeNote = !_settings.gameId || r.setting.scope != DmScopeBoth ? nil
+        : [_settings followsSystem:r.setting] ? @"System setting" : @"This game only, hold to use the system setting";
     for (DmRowView *r in _rows) if (r.setting) [r showValue:[_settings valueForKey:r.setting.key] source:[_settings sourceForKey:r.setting.key] disabledNote:[_settings disabledNote:r.setting]];
     if (_settings.restartPending != _hasRestartRow) {   // a restart-only setting changed: the restart row appears (keep the focus on the same setting)
         NSString *key = _row < (NSInteger)_rows.count ? _rows[(NSUInteger)_row].setting.key : nil;
@@ -132,7 +179,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 
 - (void)updateFocus:(BOOL)animated {
     if (_cats.count == 0 || _rows.count == 0) return;
-    if (_armed && (!_inPane || _rows[(NSUInteger)_row].kind != DmItemResetAll)) [self disarm];   // moving away takes the restore-all confirmation back
+    if (_armed && (!_inPane || (_rows[(NSUInteger)_row].kind != DmItemResetAll && _rows[(NSUInteger)_row] != _armedRow))) [self disarm];   // moving away takes the confirmation back
     for (DmCategoryView *c in _cats) { c.chosen = c.tag == _section; c.paneFocused = _inPane; }
     void (^place)(void) = ^{
         self->_catRing.frame = CGRectInset(self->_cats[(NSUInteger)self->_section].frame, -3, -3);
@@ -153,6 +200,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
             case DmItemReset: k = DmFocusRestore; break;
             case DmItemResetAll: k = DmFocusRestoreAll; break;
             case DmItemRestart: k = DmFocusRestart; break;
+            case DmItemAction: k = r.info ? DmFocusInfo : DmFocusAction; break;
             case DmItemSetting:
                 switch (r.setting.type) { case DmSettingToggle: k = DmFocusToggle; break; case DmSettingChoice: k = DmFocusChoice; break; case DmSettingSlider: k = DmFocusSlider; break; case DmSettingText: k = DmFocusText; break; }
                 break;
@@ -178,8 +226,9 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 - (void)restart { if (self.onRestart) self.onRestart(); else exit(0); }   // the choices are stored already; the player starts the app again
 - (void)setRow:(DmRowView *)r value:(NSString *)v {
     if (r.disabled || ![_settings setValue:v forKey:r.setting.key]) { [r shake]; return; }
-    [self refreshRows];
+    [self refreshRows]; [self changed];
 }
+- (void)changed { if (self.onChange) self.onChange(); }
 - (void)adjust:(DmRowView *)r by:(int)dir {   // left / right on a row (dir -1 / +1)
     DmSetting *s = r.setting; NSString *cur = [_settings valueForKey:s.key];
     switch (s.type) {
@@ -193,14 +242,36 @@ static void on_trait(UIView *v, void (^apply)(void)) {
         case DmSettingText: break;   // edited in the editor (A / tap)
     }
 }
-- (void)disarm { if (_armed) { _armed = NO; for (DmRowView *r in _rows) if (r.kind == DmItemResetAll) r.confirming = NO; [self layoutPane]; [self updateHints]; } }
+- (void)disarm {
+    if (!_armed) return;
+    _armed = NO; for (DmRowView *r in _rows) if (r.kind == DmItemResetAll) r.confirming = NO;
+    NSUInteger i = _armedRow ? [_rows indexOfObject:_armedRow] : NSNotFound;
+    if (i < _items.count) { [_armedRow setActionTitle:_items[i].title detail:_items[i].detail]; _armedRow.confirming = NO; }
+    _armedRow = nil; [self layoutPane]; [self updateHints];
+}
+- (void)runItem:(DmRowView *)r {   // an item page's row: information does nothing; an action may ask for a second press first
+    NSUInteger i = [_rows indexOfObject:r]; DmPageItem *it = i < _items.count ? _items[i] : nil;
+    if (!it.run) return;
+    if (it.confirmTitle && r != _armedRow) {
+        [self disarm]; _armed = YES; _armedRow = r; [r setActionTitle:it.confirmTitle detail:it.detail]; r.confirming = YES; [self layoutPane]; [self updateHints]; return;
+    }
+    [self disarm];
+    void (^run)(void) = it.run; run();
+    if (self.view.window && _section < (NSInteger)_shown.count && !self.currentPage.section) {   // the page shows what changed (the action may have reloaded the pages already)
+        NSInteger keep = _row; [self rebuildRows]; _row = MIN(keep, (NSInteger)_rows.count - 1); [self updateFocus:NO];
+    }
+}
 - (void)activate:(DmRowView *)r {   // A / tap
-    if (r.kind != DmItemResetAll) [self disarm];
+    if (r.kind != DmItemResetAll && r != _armedRow) [self disarm];
     switch (r.kind) {
-        case DmItemReset: [_settings resetSection:self.currentSection]; [self refreshRows]; break;
+        case DmItemReset:
+            if (self.currentPage.gameRowsOnly) { for (DmRowView *x in _rows) if (x.setting) [_settings useSystemForKey:x.setting.key]; }   // a game's Options: drops this game's own choices on the page, touches nothing of the system's
+            else [_settings resetSection:self.currentSection];
+            [self refreshRows]; [self changed]; break;
         case DmItemResetAll:
             if (!_armed) { _armed = YES; r.confirming = YES; [self layoutPane]; [self updateHints]; break; }   // a second A or tap restores everything
-            [_settings resetAll]; _armed = NO; r.confirming = NO; [self refreshRows]; [self updateHints]; break;
+            [_settings resetAll]; _armed = NO; r.confirming = NO; [self refreshRows]; [self updateHints]; [self changed]; break;
+        case DmItemAction: [self runItem:r]; break;
         case DmItemRestart: [self restart]; break;
         case DmItemSetting:
             if (r.setting.type == DmSettingToggle) [self setRow:r value:[[_settings valueForKey:r.setting.key] isEqualToString:@"1"] ? @"0" : @"1"];
@@ -220,7 +291,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     __weak DmSettingsVC *w = self; __weak DmRowView *wr = r;
     e.onSave = ^(NSString *text) {
         DmSettingsVC *me = w; DmRowView *row = wr; if (!me) return;
-        if (![me->_settings setValue:text forKey:s.key]) [row shake]; else [me refreshRows];
+        if (![me->_settings setValue:text forKey:s.key]) [row shake]; else { [me refreshRows]; [me changed]; }
         [me textEditorClosed];
     };
     e.onCancel = ^{ [w textEditorClosed]; };
@@ -248,6 +319,11 @@ static void on_trait(UIView *v, void (^apply)(void)) {
 #pragma mark - Touch
 
 - (void)categoryTapped:(DmCategoryView *)c { [self selectSection:c.tag focusPane:NO row:0]; }
+- (void)rowHeld:(UILongPressGestureRecognizer *)g {   // Use system setting: drops this game's own choice of the row
+    DmRowView *r = (DmRowView *)g.view;
+    if (g.state != UIGestureRecognizerStateBegan || !r.setting || [_settings followsSystem:r.setting] || [_settings sourceForKey:r.setting.key] == DmSourceEnv) return;
+    [_settings useSystemForKey:r.setting.key]; [self refreshRows]; [self changed];
+}
 - (void)rowTapped:(UITapGestureRecognizer *)g {
     DmRowView *r = (DmRowView *)g.view; NSUInteger i = [_rows indexOfObject:r]; if (i == NSNotFound) return;
     if (r.slider && CGRectContainsPoint(CGRectInset(r.slider.frame, 0, -10), [g locationInView:r])) return;
@@ -269,18 +345,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     if (m & 1ull << DMB_RIGHT || lx > 20000) return DirRight;
     return DirNone;
 }
-- (void)stopRepeat { [_repeat invalidate]; _repeat = nil; _held = DirNone; }
-- (void)startRepeat:(Dir)d {
-    [self stopRepeat]; _held = d;
-    __weak DmSettingsVC *w = self; __block void (^tick)(NSTimeInterval);
-    tick = ^(NSTimeInterval after) {
-        DmSettingsVC *s = w; if (!s) return;
-        s->_repeat = [NSTimer scheduledTimerWithTimeInterval:after repeats:NO block:^(NSTimer *t) {
-            DmSettingsVC *s2 = w; if (!s2 || s2->_held != d) { tick = nil; return; }
-            [s2 step:d]; tick(s2->_inPane && (d == DirLeft || d == DirRight) ? 0.07 : 0.15);
-        }];
-    };
-    tick(0.4);
+- (void)startRepeat:(Dir)d {   // sliders and choices change faster than the focus moves
+    __weak DmSettingsVC *w = self;
+    [_repeat hold:d step:^NSTimeInterval { DmSettingsVC *s = w; [s step:d]; return s && s->_inPane && (d == DirLeft || d == DirRight) ? 0.07 : DM_REPEAT_NEXT; }];
 }
 - (void)padState:(uint64_t)m lx:(int32_t)lx ly:(int32_t)ly {
     if (_editing) {   // the text editor is up: the controller does nothing but B, which cancels it once released
@@ -288,9 +355,9 @@ static Dir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     }
     Dir d = dir_of(m, lx, ly);
     uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_L | 1ull << DMB_R | 1ull << DMB_ZL | 1ull << DMB_ZR);
-    if (!_baselined) { _baselined = YES; _prev = want; _held = d; return; }   // what is held when the screen opens (the chord's buttons, a direction) does nothing until it is released
+    if (!_baselined) { _baselined = YES; _prev = want; if (d != DirNone) [_repeat hold:d step:nil]; return; }   // what is held when the screen opens (the chord's buttons, a direction) does nothing until it is released
     uint64_t up = want & ~_prev; _prev = want;
-    if (d != _held) { [self stopRepeat]; if (d != DirNone) { [self step:d]; [self startRepeat:d]; } }
+    if (d != (Dir)_repeat.held) { [_repeat stop]; if (d != DirNone) { [self step:d]; [self startRepeat:d]; } }
     if (up & 1ull << DMB_A) [self accept];
     if (up & 1ull << DMB_B) [self back];
     if (up & (1ull << DMB_L | 1ull << DMB_ZL)) [self page:-1];

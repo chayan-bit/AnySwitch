@@ -15,10 +15,10 @@
 #define PLATFORM (TARGET_OS_IPHONE ? "ios" : "macos")
 #define REBUILD "re-run build_ipa_from_nsp.py --pack"
 
-static int fail(char *why, size_t n, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
-static int fail(char *why, size_t n, const char *fmt, ...) {
+static int fail(int reason, char *why, size_t n, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
+static int fail(int reason, char *why, size_t n, const char *fmt, ...) {   // reason: boot.h DM_PACK_*
     va_list a; va_start(a, fmt); vsnprintf(why, n, fmt, a); va_end(a);
-    return 1;
+    return reason;
 }
 
 static int whole(id v) {   // a JSON whole number, else -1
@@ -67,30 +67,30 @@ static int embedded_info(char *out, size_t n) {
 
 static int check(NSString *r, char *why, size_t n) {
     NSData *d = [NSData dataWithContentsOfFile:[r stringByAppendingPathComponent:@"manifest.json"]];
-    if (!d) return fail(why, n, "pack %s: no manifest.json, not a game pack: %s", r.UTF8String, REBUILD);
+    if (!d) return fail(DM_PACK_NOT_PACK, why, n, "pack %s: no manifest.json, not a game pack: %s", r.UTF8String, REBUILD);
     NSDictionary *m = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-    if (![m isKindOfClass:NSDictionary.class]) return fail(why, n, "pack %s: manifest.json is not a JSON object: %s", r.UTF8String, REBUILD);
+    if (![m isKindOfClass:NSDictionary.class]) return fail(DM_PACK_NOT_PACK, why, n, "pack %s: manifest.json is not a JSON object: %s", r.UTF8String, REBUILD);
     NSString *tid = m[@"title_id"];
     if (![tid isKindOfClass:NSString.class] || [tid rangeOfString:@"^[0-9A-F]{16}$" options:NSRegularExpressionSearch].location == NSNotFound)
-        return fail(why, n, "pack %s: manifest.json has no title_id (16 uppercase hex digits): %s", r.UTF8String, REBUILD);
+        return fail(DM_PACK_NOT_PACK, why, n, "pack %s: manifest.json has no title_id (16 uppercase hex digits): %s", r.UTF8String, REBUILD);
     const char *id = tid.UTF8String;
     // The four numbers, the pack format first: it decides how the rest of the manifest reads
     int fmt = whole(m[@"format"]);
-    if (fmt != DM_PACK_FORMAT) return fail(why, n, "pack %s: pack format %d, this engine %d: %s", id, fmt, DM_PACK_FORMAT, REBUILD);
+    if (fmt != DM_PACK_FORMAT) return fail(DM_PACK_REBUILD, why, n, "pack %s: pack format %d, this engine %d: %s", id, fmt, DM_PACK_FORMAT, REBUILD);
     NSDictionary *abi = m[@"abi"];
-    if (![abi isKindOfClass:NSDictionary.class]) return fail(why, n, "pack %s: manifest.json has no abi object: %s", id, REBUILD);
+    if (![abi isKindOfClass:NSDictionary.class]) return fail(DM_PACK_REBUILD, why, n, "pack %s: manifest.json has no abi object: %s", id, REBUILD);
     static const struct { const char *key, *what, *stage; int want; } nums[] = {
         {"profile_schema", "profile schema", "profile", DM_PROFILE_SCHEMA}, {"code", "code ABI", "rewrite stage", DM_CODE_ABI}, {"shader", "shader ABI", "shader stages", DM_SHADER_ABI}};
     for (size_t i = 0; i < sizeof nums / sizeof *nums; i++) {
         int v = whole(abi[@(nums[i].key)]);
-        if (v != nums[i].want) return fail(why, n, "pack %s: %s %d, this engine %d: %s (%s)", id, nums[i].what, v, nums[i].want, REBUILD, nums[i].stage);
+        if (v != nums[i].want) return fail(DM_PACK_REBUILD, why, n, "pack %s: %s %d, this engine %d: %s (%s)", id, nums[i].what, v, nums[i].want, REBUILD, nums[i].stage);
     }
     // This platform's parts. The game files: the pack's chunk store, or DM_ROMFS when the caller set it (the app's Documents/romfs.dmstore, installed beside an IPA)
     NSFileManager *fm = NSFileManager.defaultManager;
     char code[32], msl[32]; snprintf(code, sizeof code, "code/%s.dylib", PLATFORM); snprintf(msl, sizeof msl, "msl/%s", PLATFORM);
     const char *parts[] = {"profile/game.json", msl, getenv("DM_ROMFS") ? NULL : "romfs.dmstore"};
     for (size_t i = 0; i < sizeof parts / sizeof *parts; i++)
-        if (parts[i] && ![fm fileExistsAtPath:[r stringByAppendingPathComponent:@(parts[i])]]) return fail(why, n, "pack %s: no %s (this platform's part): %s", id, parts[i], REBUILD);
+        if (parts[i] && ![fm fileExistsAtPath:[r stringByAppendingPathComponent:@(parts[i])]]) return fail(DM_PACK_MISSING, why, n, "pack %s: no %s (this platform's part): %s", id, parts[i], REBUILD);
     // The code and its own stamp (the manifest can go stale, the signed binary cannot): DM_CODE when the caller set it, else the pack's code/<platform>.dylib, else the code this
     // executable embeds (a pack bundled in the per-game IPA)
     char info[1024], cname[1100]; int cabi = -1; char ctitle[17] = "";
@@ -98,16 +98,16 @@ static int check(NSString *r, char *why, size_t n) {
     snprintf(cname, sizeof cname, "%s", getenv("DM_CODE") ?: code);
     if (getenv("DM_CODE") || [fm fileExistsAtPath:cpath]) {
         if (!dylib_info(cpath.fileSystemRepresentation, info, sizeof info))
-            return fail(why, n, "pack %s: %s has no __dminfo, not a code dylib from gen_embed.py: %s (rewrite stage)", id, cname, REBUILD);
+            return fail(DM_PACK_REBUILD, why, n, "pack %s: %s has no __dminfo, not a code dylib from gen_embed.py: %s (rewrite stage)", id, cname, REBUILD);
     } else if (embedded_info(info, sizeof info)) snprintf(cname, sizeof cname, "the code in this executable");
-    else return fail(why, n, "pack %s: no %s (this platform's part) and this executable embeds no code: %s", id, code, REBUILD);
+    else return fail(DM_PACK_REBUILD, why, n, "pack %s: no %s (this platform's part) and this executable embeds no code: %s", id, code, REBUILD);
     for (char *l = info; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) { sscanf(l, "code_abi %d", &cabi); sscanf(l, "title %16[0-9A-Fa-f]", ctitle); }
-    if (cabi != DM_CODE_ABI) return fail(why, n, "pack %s: %s code ABI %d, this engine %d: %s (rewrite stage)", id, cname, cabi, DM_CODE_ABI, REBUILD);
-    if (strcasecmp(ctitle, id)) return fail(why, n, "pack %s: %s is for title %s: %s", id, cname, ctitle, REBUILD);
+    if (cabi != DM_CODE_ABI) return fail(DM_PACK_REBUILD, why, n, "pack %s: %s code ABI %d, this engine %d: %s (rewrite stage)", id, cname, cabi, DM_CODE_ABI, REBUILD);
+    if (strcasecmp(ctitle, id)) return fail(DM_PACK_REBUILD, why, n, "pack %s: %s is for title %s: %s", id, cname, ctitle, REBUILD);
     // The profile parses (every key checked) and is this title's
     struct dm_profile p = {0}; char pw[512];   // ponytail: the parsed strings are not freed (a few hundred bytes per check), free them if a menu ever checks packs in a loop
-    if (dm_profile_parse([r stringByAppendingPathComponent:@"profile"].fileSystemRepresentation, &p, pw, sizeof pw)) return fail(why, n, "pack %s: profile: %s: %s (profile)", id, pw, REBUILD);
-    if (strcasecmp(p.id, id)) return fail(why, n, "pack %s: profile/game.json is for title %s: %s", id, p.id, REBUILD);
+    if (dm_profile_parse([r stringByAppendingPathComponent:@"profile"].fileSystemRepresentation, &p, pw, sizeof pw)) return fail(DM_PACK_REBUILD, why, n, "pack %s: profile: %s: %s (profile)", id, pw, REBUILD);
+    if (strcasecmp(p.id, id)) return fail(DM_PACK_REBUILD, why, n, "pack %s: profile/game.json is for title %s: %s", id, p.id, REBUILD);
     return 0;
 }
 

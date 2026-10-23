@@ -2,3 +2,10 @@ t_settings
 t_settings.dSYM/
 t_haptics
 t_haptics.dSYM/
+t_library
+t_library.dSYM/
+t_home_focus
+t_home_focus.dSYM/
+t_library.profile/
+t_import
+t_import.dSYM/

@@ -1052,20 +1052,23 @@ static _Atomic uint64_t g_nvn_ns;   // Host time spent in submit / present this 
 // on=1: subsequent submits / presents block until on=0; before returning, wait for in-progress submit / present calls to exit and for all in-flight GPU work to complete (iOS requires no GPU work in the background).
 static pthread_mutex_t g_susp_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_susp_cv = PTHREAD_COND_INITIALIZER;
-static int g_susp, g_inflight_api;
+static unsigned g_susp; static int g_inflight_api;   // g_susp: the suspend reasons that hold (dm_gfx_suspend_for); the gate is closed while any does
 __thread _Atomic int dm_host_work;   // see hle.h (defined here: the graphics unit tests compile this file but not hle_thread.c)
 static void gfx_enter(void) { pthread_mutex_lock(&g_susp_mu); while (g_susp) pthread_cond_wait(&g_susp_cv, &g_susp_mu); g_inflight_api++; pthread_mutex_unlock(&g_susp_mu); dm_host_work++; }
 static void gfx_leave(void) { dm_host_work--; pthread_mutex_lock(&g_susp_mu); g_inflight_api--; pthread_cond_broadcast(&g_susp_cv); pthread_mutex_unlock(&g_susp_mu); }
 void dm_gfx_enter(void) { gfx_enter(); }   // the same gate for the Vulkan layer's submits and presents (dm/gfx/vk)
 void dm_gfx_leave(void) { gfx_leave(); }
 __attribute__((weak)) void dm_vk_drain(void) {}   // dm/gfx/vk/hle_vk.m: wait for the Vulkan layer's queue (the graphics unit tests do not link it)
-void dm_gfx_suspend(int on) {
+void dm_gfx_suspend(int on) { dm_gfx_suspend_for(0, on); }
+void dm_gfx_suspend_for(int reason, int on) {
     pthread_mutex_lock(&g_susp_mu);
-    g_susp = on != 0;
+    unsigned was = g_susp; if (on) g_susp |= 1u << reason; else g_susp &= ~(1u << reason);
     if (on) while (g_inflight_api) pthread_cond_wait(&g_susp_cv, &g_susp_mu);
-    else pthread_cond_broadcast(&g_susp_cv);
-    pthread_mutex_unlock(&g_susp_mu);
-    if (on) { dm_vk_drain(); mtl_drain(); LOG("[nvn] graphics suspended: in-flight GPU work drained"); } else LOG("[nvn] graphics resumed");   // the Vulkan queue first: presents on the NVN queue wait for its frames
+    else if (!g_susp) pthread_cond_broadcast(&g_susp_cv);
+    unsigned now = g_susp; pthread_mutex_unlock(&g_susp_mu);
+    if (on && !was) { dm_vk_drain(); mtl_drain(); LOG("[nvn] graphics suspended (reason %d): in-flight GPU work drained", reason); }   // the Vulkan queue first: presents on the NVN queue wait for its frames
+    else if (!on && was && !now) LOG("[nvn] graphics resumed (reason %d)", reason);
+    else if (was != now) LOG("[nvn] graphics stay suspended (reason %d %s, reasons now %#x)", reason, on ? "added" : "lifted", now);
 }
 // One submission at a time: the Metal replay keeps one command buffer and one upload batch for the submission in progress (nvn_mtl.m g_cb). Fire Emblem: Three Houses initializes two queues and
 // submits on both from two threads; the second submission arrived while the first was replaying and the host stopped with "submit re-entered" at the ninth frame. NVN orders work on different queues only

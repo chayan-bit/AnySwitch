@@ -67,7 +67,7 @@ uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance
 int dm_detclock_enabled(void);
 void dm_guest_clock_advanced(void);
 void guest_clock_freeze(int on);
-void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
+void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard, DM_SUSPEND_HOME Home); see hle_os.c
 void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
 void dm_guest_frame_tick(void);        // Called on every present (hle_nvn.c): when DM_DETCLOCK is on, advances the guest clock by one fixed step
 uint64_t dm_nvn_frame_count(void);
@@ -92,7 +92,11 @@ void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // Re
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // Get the registered resource count callback (null if not registered)
 void dm_guest_write_prepare(void *addr, size_t len);
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
-void dm_gfx_suspend(int on);
+// Suspending the game has independent reasons; each piece (guest clock, audio, graphics gate) stays suspended while any reason holds. 0 is the front end's own (background, audio
+// interruption, shutdown), DM_SUSPEND_HOME is Hearth's Home over the game (dm_home_suspend, hle_oe.c), so a background round trip under Home cannot wake the game
+#define DM_SUSPEND_HOME 3
+void dm_gfx_suspend(int on);                     // the front end's reason (0)
+void dm_gfx_suspend_for(int reason, int on);      // the gate stays closed while any reason holds
 void dm_gfx_enter(void); void dm_gfx_leave(void);   // hle_nvn.c: the gate dm_gfx_suspend closes, for graphics layers other than NVN (dm/gfx/vk)
 void dm_gfx_shot_at(long k, const char *path);
 void dm_shot_written(const char *path, int ok);   // The graphics side finished writing a screenshot to disk (diag.c: DM_TICK_HOLD=E:SHOT unfreezes on this)
