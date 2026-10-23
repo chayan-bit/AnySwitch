@@ -11,6 +11,7 @@ NSString *hearth_state_line(HearthGame *g) {
         case DM_PACK_REBUILD: return @"Rebuild needed";
         case DM_PACK_MISSING: return @"Incomplete";
         case HEARTH_NEEDS_SIGNING: return @"Needs signing";
+        case HEARTH_IMPORTING: return @"Importing";
         default: return @"Not a game";
     }
 }
@@ -30,7 +31,7 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 #define STATE_H 44.0   // room below it for the state line
 
 @implementation HearthTile {
-    UIImageView *_image; UILabel *_name, *_state;
+    UIImageView *_image; UILabel *_name, *_state; CAShapeLayer *_ring;
 }
 + (CGFloat)nameHeight { return NAME_H; }
 + (CGFloat)stateHeight { return STATE_H; }
@@ -56,12 +57,26 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     _state.text = hearth_state_line(g); _state.font = [DmUI font:19 weight:UIFontWeightSemibold]; _state.textColor = DmUI.warn; _state.textAlignment = NSTextAlignmentCenter;
     for (UIView *v in @[_art, _name, _state]) [self addSubview:v];
     if (g.reason) _image.alpha = 0.45;   // a game that cannot start stays in the row, dimmed, and says why
+    if (g.reason == HEARTH_IMPORTING) {   // the import's progress: an amber ring around the middle of the art
+        CGFloat r = size * 0.18;
+        _ring = [CAShapeLayer layer]; _ring.frame = _art.bounds; _ring.fillColor = UIColor.clearColor.CGColor; _ring.lineWidth = 8; _ring.lineCap = kCALineCapRound;
+        _ring.path = [UIBezierPath bezierPathWithArcCenter:CGPointMake(size / 2, size / 2) radius:r startAngle:-M_PI_2 endAngle:3 * M_PI_2 clockwise:YES].CGPath;
+        _ring.strokeEnd = 0; [_art.layer addSublayer:_ring];
+        __weak HearthTile *w = self; dm_on_style(self, ^{ HearthTile *s = w; s->_ring.strokeColor = DmUI.accent.CGColor; });
+        _state.textColor = DmUI.accentText;
+    }
     self.isAccessibilityElement = YES; self.accessibilityLabel = g.name; self.accessibilityValue = hearth_state_line(g); self.accessibilityTraits = UIAccessibilityTraitButton;
     return self;
 }
 - (void)setPlaying:(BOOL)p {
     _playing = p;
     _state.text = p ? @"Playing" : hearth_state_line(_game); _state.textColor = p ? DmUI.accentText : DmUI.warn;
+    self.accessibilityValue = _state.text;
+}
+- (void)setImportDone:(double)d {
+    _importDone = d; if (!_ring) return;
+    [CATransaction begin]; [CATransaction setDisableActions:UIAccessibilityIsReduceMotionEnabled()]; _ring.strokeEnd = d; [CATransaction commit];
+    _state.text = [NSString stringWithFormat:@"Importing %.0f%%", floor(d * 100)];
     self.accessibilityValue = _state.text;
 }
 - (void)setChosen:(BOOL)f { [self setChosen:f animated:NO]; }
@@ -94,7 +109,7 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
 @end
 
 @implementation HearthTopBar {
-    UILabel *_player, *_clock, *_battery; UIImageView *_cell; NSMutableArray<UIButton *> *_avatars; NSDateFormatter *_fmt; NSTimer *_tick;
+    UILabel *_player, *_clock, *_battery, *_notice; UIImageView *_cell; NSMutableArray<UIButton *> *_avatars; NSDateFormatter *_fmt; NSTimer *_tick;
 }
 - (instancetype)initWithFrame:(CGRect)f {
     if (!(self = [super initWithFrame:f])) return nil;
@@ -103,7 +118,8 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     _clock = [UILabel new]; _clock.font = tabular([DmUI font:22 weight:UIFontWeightSemibold]); _clock.textColor = DmUI.text; _clock.textAlignment = NSTextAlignmentRight;
     _battery = [UILabel new]; _battery.font = tabular([DmUI font:17 weight:UIFontWeightMedium]); _battery.textColor = DmUI.sub; _battery.textAlignment = NSTextAlignmentRight;
     _cell = [UIImageView new]; _cell.tintColor = DmUI.sub;
-    for (UIView *v in @[_player, _clock, _battery, _cell]) [self addSubview:v];
+    _notice = [UILabel new]; _notice.font = [DmUI font:18 weight:UIFontWeightSemibold]; _notice.textColor = DmUI.accentText; _notice.textAlignment = NSTextAlignmentRight;
+    for (UIView *v in @[_player, _clock, _battery, _cell, _notice]) [self addSubview:v];
     _fmt = [NSDateFormatter new]; _fmt.locale = NSLocale.currentLocale; [_fmt setLocalizedDateFormatFromTemplate:@"jmm"];
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     for (NSNotificationName n in @[UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification])
@@ -127,6 +143,7 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     _player.text = names.count == 1 ? names[0] : nil;   // several users: their pictures say who is here
     [self setNeedsLayout];
 }
+- (void)setNotice:(NSString *)notice { _notice.text = notice; _notice.hidden = !notice.length; [self setNeedsLayout]; }
 - (void)avatarTapped:(UIButton *)b { if (self.onUser) self.onUser(b.tag); }
 - (void)refresh {
     _clock.text = [_fmt stringFromDate:NSDate.date];
@@ -149,5 +166,6 @@ static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and
     if (!_cell.hidden) { x -= 34; _cell.frame = CGRectMake(x, (h - 22) / 2, 34, 22); _cell.contentMode = UIViewContentModeScaleAspectFit; }
     if (_battery.text) { x -= _battery.bounds.size.width + 6; _battery.frame = CGRectMake(x, 0, _battery.bounds.size.width, h); }
     x -= _clock.bounds.size.width + 22; _clock.frame = CGRectMake(x, 0, _clock.bounds.size.width, h);
+    if (!_notice.hidden) { CGFloat nw = MIN([_notice sizeThatFits:CGSizeMake(w, h)].width, MAX(0, x - 24 - CGRectGetMaxX(_player.frame))); _notice.frame = CGRectMake(x - 24 - nw, 0, nw, h); }
 }
 @end

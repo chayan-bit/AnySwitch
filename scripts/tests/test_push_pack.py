@@ -1,4 +1,4 @@
-"""push_pack.py without a device: a scratch two-platform pack becomes one archive whose tree is the iOS part, verified by its own inventory, with the code signed
+"""push_pack.py without a device: a scratch two-platform pack becomes one archive whose tree is the iOS part (meta/ first), verified by its own inventory, with the code signed
 for the given bundle ID; a pack that no longer matches its inventory is refused. Needs Xcode's clang and codesign, and aa (macOS).
 Run: python3 -I scripts/tests/test_push_pack.py"""
 import json, subprocess, sys, tempfile, unittest
@@ -18,7 +18,7 @@ class PushPack(unittest.TestCase):
     def setUp(self):
         self.t = tempfile.TemporaryDirectory(); t = Path(self.t.name)
         self.pack, self.work = t / 'pack', t / 'work'
-        for f in ('profile/game.json', 'code/macos.dylib', 'msl/ios/b-1/a.metallib', 'msl/macos/b-1/a.metallib', 'romfs.dmstore'):
+        for f in ('meta/icon.jpg', 'profile/game.json', 'code/macos.dylib', 'msl/ios/b-1/a.metallib', 'msl/macos/b-1/a.metallib', 'romfs.dmstore'):
             (self.pack / f).parent.mkdir(parents=True, exist_ok=True); (self.pack / f).write_text(f)
         src = t / 'c.c'; src.write_text('int dm_probe(void) { return 1; }\n')
         subprocess.run(['xcrun', '-sdk', 'iphoneos', 'clang', '-dynamiclib', '-arch', 'arm64', '-miphoneos-version-min=17.0', '-o', str(self.pack / 'code/ios.dylib'), str(src)], check=True)
@@ -32,11 +32,14 @@ class PushPack(unittest.TestCase):
         aar = sorted(self.work.glob('*.aar')); ready = sorted(self.work.glob('*.ready'))
         self.assertEqual(len(aar), 1); self.assertEqual(len(ready), 1)
         note = json.loads(ready[0].read_text())
-        self.assertEqual((note['title_id'], note['archive'], note['archive_bytes'], note['files']), ('0100000000010000', aar[0].name, aar[0].stat().st_size, 4))   # files.tsv and manifest.json are not in the inventory
+        self.assertEqual((note['title_id'], note['archive'], note['archive_bytes'], note['files']), ('0100000000010000', aar[0].name, aar[0].stat().st_size, 5))   # files.tsv and manifest.json are not in the inventory
+        listed = subprocess.run(['aa', 'list', '-i', str(aar[0])], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(listed[:2], ['meta', 'meta/icon.jpg'])   # meta/ first, so the device shows the icon while the rest extracts
+        self.assertEqual(listed.count('meta/icon.jpg'), 1)
         out = Path(self.t.name) / 'out'; out.mkdir()
         subprocess.run(['aa', 'extract', '-i', str(aar[0]), '-d', str(out)], check=True)
         have = sorted(p.relative_to(out).as_posix() for p in out.rglob('*') if p.is_file())
-        self.assertEqual(have, ['code/ios.dylib', 'files.tsv', 'manifest.json', 'msl/ios/b-1/a.metallib', 'profile/game.json', 'romfs.dmstore'])
+        self.assertEqual(have, ['code/ios.dylib', 'files.tsv', 'manifest.json', 'meta/icon.jpg', 'msl/ios/b-1/a.metallib', 'profile/game.json', 'romfs.dmstore'])
         self.assertEqual(pack_manifest.problems(out), [])
         sig = subprocess.run(['codesign', '-dv', str(out / 'code/ios.dylib')], capture_output=True, text=True).stderr
         self.assertIn('Identifier=org.example.hearth\n', sig)

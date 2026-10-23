@@ -18,6 +18,7 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @property (nonatomic) BOOL chosen;              // Home's focus is on it: grows a little and shows the game's name above it (not UIKit's own `focused`)
 - (void)setChosen:(BOOL)chosen animated:(BOOL)animated;
 @property (nonatomic) BOOL playing;             // the game paused under Home: its state line says Playing
+@property (nonatomic) double importDone;        // a placeholder (HEARTH_IMPORTING): 0...1, shown as a ring over the art and "Importing 42%"
 @end
 
 @interface HearthRoundButton : UIControl
@@ -27,4 +28,5 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @interface HearthTopBar : UIView
 - (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names;   // the users' pictures as circles at the left (one user: with the name)
 @property (nonatomic, copy) void (^onUser)(NSInteger index);   // a picture was tapped
+- (void)setNotice:(NSString *)notice;   // an amber line left of the clock (Hearth's signing ends soon), nil for none
 @end

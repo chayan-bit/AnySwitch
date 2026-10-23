@@ -7,6 +7,7 @@
 #import "HearthErrors.h"
 #import "HearthAvatar.h"
 #import "HearthSaves.h"
+#import "HearthNotify.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "DmSettings.h"
 #import "DmSettingsViews.h"
@@ -160,22 +161,23 @@ static NSArray<DmPageItem *> *data_items(DmSettingsVC *(^vc)(void)) {
     }
     return out;
 }
-// The provisioning profile the app was installed with: its team and when it expires (the 7-day profile of a free Apple ID)
-static NSDictionary *profile(void) {
-    NSData *d = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"embedded" ofType:@"mobileprovision"]]; if (!d) return nil;
-    NSRange a = [d rangeOfData:[@"<?xml" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, d.length)];
-    NSRange b = [d rangeOfData:[@"</plist>" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:NSMakeRange(0, d.length)];
-    if (a.location == NSNotFound || b.location == NSNotFound || NSMaxRange(b) <= a.location) return nil;
-    id p = [NSPropertyListSerialization propertyListWithData:[d subdataWithRange:NSMakeRange(a.location, NSMaxRange(b) - a.location)] options:0 format:nil error:nil];
-    return [p isKindOfClass:NSDictionary.class] ? p : nil;
+// The reminder the day before signing ends (HearthNotify.h): iPadOS asks the player first, the first time
+static DmPageItem *reminder_item(NSDate *exp, DmSettingsVC *(^vc)(void)) {
+    return action(@"Remind me the day before", @"One notification the day before signing ends. iPadOS asks first whether Hearth may send notifications.", ^{
+        hearth_notify_ask(exp, ^(BOOL allowed) {
+            tell(vc(), allowed ? @"Reminder set" : @"Notifications are off",
+                 allowed ? @"Hearth will remind you the day before its signing ends." : @"Allow notifications for Hearth in the Settings app, then choose this again.");
+        });
+    });
 }
-static NSArray<DmPageItem *> *signing_items(void) {
-    HearthLibrary *lib = hearth_library(); NSDictionary *p = profile(); NSDate *exp = p[@"ExpirationDate"];
+static NSArray<DmPageItem *> *signing_items(DmSettingsVC *(^vc)(void)) {
+    HearthLibrary *lib = hearth_library(); NSDate *exp = hearth_signing_ends(NSBundle.mainBundle.bundlePath, lib.documentsDir);
     NSMutableArray *out = [NSMutableArray arrayWithObject:info(@"This copy of Hearth", [NSString stringWithFormat:@"Team %@, app ID %@", lib.appSigner.team ?: @"none (not signed by a team)", lib.bundleId ?: @"unknown"])];
     if ([exp isKindOfClass:NSDate.class]) {
         long days = (long)floor(exp.timeIntervalSinceNow / 86400);
         [out addObject:info(days >= 0 ? [NSString stringWithFormat:@"Signing ends in %ld %@", days, days == 1 ? @"day" : @"days"] : @"Signing has ended",
                             [NSString stringWithFormat:@"On %@. Install Hearth again from the Mac before then; games and saves stay.", [NSDateFormatter localizedStringFromDate:exp dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle]])];
+        if (days >= 1) [out addObject:reminder_item(exp, vc)];
     } else [out addObject:info(@"No provisioning profile", @"This build was not installed with one (a simulator or a development run).")];
     for (HearthGame *g in [lib scan])
         [out addObject:info(g.name, g.reason == HEARTH_NEEDS_SIGNING ? @"Needs signing: import it again from the Mac." : g.bundled || g.codePath ? @"Its code is inside the app." : @"Signed for this Hearth.")];
@@ -299,7 +301,7 @@ static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void)) {
     NSMutableArray *p = [[DmPage pagesOf:DmSettings.systemStore gameRowsOnly:NO] mutableCopy];
     [p insertObject:[DmPage page:@"Users" icon:@"person.2.fill" items:^{ return users_items(vc); }] atIndex:0];
     [p addObject:[DmPage page:@"Data Management" icon:@"externaldrive.fill" items:^{ return data_items(vc); }]];
-    [p addObject:[DmPage page:@"Signing" icon:@"checkmark.seal.fill" items:^{ return signing_items(); }]];
+    [p addObject:[DmPage page:@"Signing" icon:@"checkmark.seal.fill" items:^{ return signing_items(vc); }]];
     [p addObject:[DmPage page:@"About" icon:@"info.circle.fill" items:^{ return about_items(vc); }]];
     if ([NSUserDefaults.standardUserDefaults boolForKey:DEV_KEY]) [p addObject:[DmPage page:@"Developer" icon:@"hammer.fill" items:^{ return developer_items(vc); }]];
     return p;

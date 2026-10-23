@@ -310,23 +310,18 @@ static UILabel *front_ios_fps_label(void) {
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 
-// Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result
+// Software keyboard: Hearth's text panel (hearth_dialog_text) on the main thread, the calling thread waits for the result
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
-    (void)max_chars;
     if (!g_layer) return -1;
     __block int r = 0; __block NSString *text = nil;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSString *t = title && *title ? @(title) : @"", *m = [[@[@(sub ? sub : ""), @(guide ? guide : "")] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]] componentsJoinedByString:@"\n"];
     NSString *init = initial ? @(initial) : @"", *ph = guide ? @(guide) : @"";
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
-        [ac addTextFieldWithConfigurationHandler:^(UITextField *f) { f.text = init; f.placeholder = ph; }];
-        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; r = 1; text = ac.textFields.firstObject.text; dispatch_semaphore_signal(done); }]];
-        [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; dispatch_semaphore_signal(done); }]];
         UIViewController *vc = nil;
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
         if (!vc) { dispatch_semaphore_signal(done); return; }
-        [vc presentViewController:ac animated:YES completion:nil];
+        hearth_dialog_text(vc, t.length ? t : @"Enter text", m, init, ph, max_chars, ^(NSString *s) { if (s) { r = 1; text = s; } dispatch_semaphore_signal(done); });
     });
     // The guest clock keeps running meanwhile, as on the Switch (hle_swkbd.c): a freeze here as well stopped Octopath Traveler 0's frame loop for as long as the box was up and made its sound stutter
     // (4,977 ms and 2,577 ms frames, 5,181 wakeups a second). The inline keyboard freezes around its own call (hle_swkbd.c)
@@ -336,7 +331,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     return 1;
 }
 
-// A notice the player has to see (front.h): an alert on the main thread, without blocking the caller.
+// A notice the player has to see (front.h): Hearth's dialog on the main thread, without blocking the caller.
 // Called at boot (shader libraries missing, nvn_mtl.m) the key window may not exist yet, so it retries for a few seconds instead of dropping the alert
 static void notice_show(NSString *t, NSString *m, int tries) {
     UIViewController *vc = nil;
@@ -346,9 +341,7 @@ static void notice_show(NSString *t, NSString *m, int tries) {
         if (tries > 0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{ notice_show(t, m, tries - 1); }); return; }
         LOG("[RED] front end: no window for the alert \"%s\"", t.UTF8String); return;
     }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [vc presentViewController:a animated:YES completion:nil];
+    hearth_dialog_info(vc, t, m);
 }
 void front_notice(const char *title, const char *msg) {
     LOG("front end: telling the player: %s: %s", title, msg);

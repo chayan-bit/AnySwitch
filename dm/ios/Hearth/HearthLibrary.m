@@ -39,6 +39,14 @@ static void nacp_read(NSString *path, HearthGame *g) {
     return self;
 }
 
+- (HearthGame *)placeholderAt:(NSString *)root title:(NSString *)titleId {
+    HearthGame *g = [HearthGame new];
+    g.root = root; g.titleId = titleId; g.name = @"New game"; g.reason = HEARTH_IMPORTING;
+    nacp_read([root stringByAppendingPathComponent:@"meta/control.nacp"], g);
+    NSString *icon = [root stringByAppendingPathComponent:@"meta/icon.jpg"];
+    if ([NSFileManager.defaultManager fileExistsAtPath:icon]) g.iconPath = icon;
+    return g;
+}
 - (HearthGame *)gameAt:(NSString *)root bundled:(BOOL)bundled {
     NSDictionary *m = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"manifest.json"]] ?: NSData.data options:0 error:nil];
     HearthGame *g = [HearthGame new];

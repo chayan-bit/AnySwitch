@@ -7,6 +7,9 @@ HearthLibrary *hearth_library(void);
 HearthGame *hearth_running_game(void);
 NSString *hearth_running_user(void);   // the Uid the running game started as (HearthUsers.h), nil while none runs
 // Games pushed into Documents/Import from the Mac (scripts/push_pack.py) are imported in the background (HearthImport.h); done runs on the main thread when one was added
+// The import's progress, posted on the main thread: userInfo name, title (the ready note's title id), work (the folder being extracted), done (0...1 over the whole import),
+// phase (a sentence: "extracting", "checking the files", "installing"); ended YES once the import is over, either way
+extern NSNotificationName const HearthImportProgressNotification;
 void hearth_import_scan(void (^done)(void));   // nil while no game was launched in this process
 // Launch g in this process (Home's tile action). A refused pack shows its reason; with another game running, a dialog offers to close it and restart straight into g.
 // A game that starts as a user (the NACP's StartupUserAccount) asks "Who is playing?" first when there are two or more users (HearthAvatar.h); with one user, that user.

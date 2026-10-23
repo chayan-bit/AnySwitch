@@ -7,6 +7,7 @@
 #import "HearthSign.h"
 
 #define HEARTH_NEEDS_SIGNING 100   // HearthGame.reason beside boot.h's DM_PACK_*: the pack is fine, its code is not signed for this copy of Hearth
+#define HEARTH_IMPORTING 101       // a placeholder for a game still being imported (Home's tile with its progress)
 #define HEARTH_UID @"78626c000000000153574e4154495645"   // the fixed local user of dm/host/hle_account.c, so P3's users never move a save
 
 @interface HearthGame : NSObject
@@ -41,6 +42,7 @@
 - (BOOL)deleteSavesOf:(HearthGame *)g user:(NSString *)uid error:(NSString **)why;   // one user's
 - (unsigned long long)saveSizeOf:(HearthGame *)g user:(NSString *)uid;
 - (HearthGame *)gameWithId:(NSString *)titleId;
+- (HearthGame *)placeholderAt:(NSString *)root title:(NSString *)titleId;   // a game being imported into root: "New game" until its meta/ (name, icon) has been extracted; reason HEARTH_IMPORTING
 - (int)checkPackAt:(NSString *)root why:(NSString **)why;   // dm_pack_check of a folder with its own code and game files (an import, before it replaces anything); 0 = fine
 - (NSString *)saveDirFor:(HearthGame *)g;   // the first user's (HEARTH_UID) Documents/Users/<uid>/saves/<id>/save; the first time, the single-game app's Documents/save is cloned there (the original is kept)
 - (NSString *)saveDirFor:(HearthGame *)g user:(NSString *)uid;   // that user's; the single-game copy only for HEARTH_UID

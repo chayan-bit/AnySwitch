@@ -13,6 +13,7 @@
 #import "HearthDialog.h"
 #import "HearthSettingsPages.h"
 #import "HearthControllers.h"
+#import "HearthNotify.h"
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
@@ -33,6 +34,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     DmFocusView *_tileRing, *_buttonRing; DmHintBar *_hints; NSArray *_shownHints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _launching;
     DmSettingsVC *_settings; HearthQuickVC *_quick; HearthGalleryVC *_gallery; NSArray<NSString *> *_buttonActions;
+    HearthGame *_importing; NSString *_importPhase; double _importDone;   // the game being imported (a placeholder tile), what it is doing, and how far it is
 }
 
 #pragma mark - Build
@@ -65,9 +67,24 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     dm_gamepad_watch();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scanInbox) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(importMoved:) name:HearthImportProgressNotification object:nil];
     [self scanInbox];
+    hearth_notify_schedule(hearth_signing_ends(NSBundle.mainBundle.bundlePath, hearth_library().documentsDir));   // only once the player allowed notifications (the Signing page)
 }
 - (CGFloat)screenHeight { CGFloat h = self.view.bounds.size.height; return h > 0 ? h : self.view.window.windowScene.screen.bounds.size.height; }   // 0 before the first layout: the first layout rebuilds the tiles
+// An import's progress: a placeholder tile with the game's icon and name as soon as meta/ is out, its ring and percentage following; gone when the import ends (the reload shows the game)
+- (void)importMoved:(NSNotification *)n {
+    NSDictionary *u = n.userInfo;
+    if ([u[@"ended"] boolValue]) { if (_importing) { _importing = nil; [self reload]; } return; }
+    NSString *title = u[@"title"], *work = u[@"work"];
+    HearthGame *g = [hearth_library() placeholderAt:work title:title];
+    _importDone = [u[@"done"] doubleValue]; _importPhase = u[@"phase"];
+    g.why = [NSString stringWithFormat:@"This game is being imported from the Mac (%@, %.0f%% done). It can be played once the import is finished.", _importPhase, floor(_importDone * 100)];
+    BOOL same = _importing && [_importing.titleId isEqual:g.titleId] && [_importing.name isEqual:g.name] && (_importing.iconPath != nil) == (g.iconPath != nil);
+    _importing = g;
+    if (!same) { [self reload]; return; }   // a new import, or its name and icon arrived
+    for (HearthTile *t in _tiles) if (t.game.reason == HEARTH_IMPORTING) { t.game.why = g.why; t.importDone = _importDone; }
+}
 - (void)scanInbox { __weak HearthHomeVC *w = self; hearth_import_scan(^{ [w reload]; }); }   // a game pushed from the Mac appears when its import is done
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
 - (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; [self reload]; }
@@ -84,12 +101,13 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
         for (HearthGame *g in games) if (![g.titleId isEqual:run.titleId]) [m addObject:g];
         games = m;
     }
+    if (_importing && ![[games valueForKey:@"titleId"] containsObject:_importing.titleId]) games = [games arrayByAddingObject:_importing];   // shortcut: a game being imported again over an installed one shows no progress, its tile stays until the swap
     fprintf(stderr, "home: %lu games\n", (unsigned long)games.count);
     for (HearthTile *t in _tiles) [t removeFromSuperview];
     [_tiles removeAllObjects];
     _tileSize = hearth_tile_size(self.screenHeight);
     for (HearthGame *g in games) {
-        HearthTile *t = [[HearthTile alloc] initWithGame:g size:_tileSize]; t.playing = g == run;
+        HearthTile *t = [[HearthTile alloc] initWithGame:g size:_tileSize]; t.playing = g == run; if (g == _importing) t.importDone = _importDone;
         [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
         [t addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tileHeld:)]];   // the game's Options
         [_row insertSubview:t belowSubview:_tileRing]; [_tiles addObject:t];
@@ -100,6 +118,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     NSMutableArray *pics = [NSMutableArray array], *names = [NSMutableArray array];
     for (HearthUser *u in hearth_users().users) { [pics addObject:hearth_avatar_image(u)]; [names addObject:u.name]; }
     [_bar setUsers:pics names:names];
+    [_bar setNotice:hearth_signing_line(hearth_signing_ends(NSBundle.mainBundle.bundlePath, hearth_library().documentsDir), NSDate.date)];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     [self showFocus:NO];
 }
@@ -269,6 +288,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     DmSettingsVC *v = hearth_system_settings(self.view.bounds.size); [self showSheet:v]; hearth_settings_show_user(v, u.uid);
 }
 - (void)openOptions:(HearthGame *)g {
+    if (g.reason == HEARTH_IMPORTING) return;   // nothing to set until it is installed
     __weak HearthHomeVC *w = self;
     fprintf(stderr, "hearth: Options of %s\n", g.titleId.UTF8String);
     [self showSheet:hearth_options(g, self.view.bounds.size, ^{ [w closeSettings]; })];   // a deleted game: back to Home, which lists the games again

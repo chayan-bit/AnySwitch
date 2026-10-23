@@ -7,10 +7,17 @@
 #import <Foundation/Foundation.h>
 #import "HearthLibrary.h"
 
+// Where an import is: extracting the archive, checking every file, then installing (a rename). Each phase reports 0 first and 1 exactly once, at its end
+typedef NS_ENUM(NSInteger, HearthImportPhase) { HearthImportExtracting, HearthImportChecking, HearthImportInstalling };
+typedef void (^HearthImportProgress)(NSString *name, HearthImportPhase phase, double done);   // done 0...1 within the phase, called on the import's own thread at most once per whole percent
+
 @interface HearthImport : NSObject
 - (instancetype)initWithLibrary:(HearthLibrary *)lib;
 @property (nonatomic, readonly) NSString *inbox;
 @property (nonatomic, copy) NSString *runningId;    // the title of the game running in this process: it is not replaced under it (the import waits)
+@property (nonatomic, copy) HearthImportProgress progress;
+- (NSString *)workDir:(NSString *)name;             // Import/<name>.import: the pack as it is extracted (meta/ comes first: push_pack.py), for an early icon and name
+- (NSString *)titleOf:(NSString *)name;             // the ready note's title id, nil when it names none
 - (NSArray<NSString *> *)ready;                     // names of complete archives waiting, without an error note, oldest first
 - (NSString *)importName:(NSString *)name;          // nil: imported; else the reason (written beside it unless the import only has to wait)
 - (NSUInteger)importAll;                            // every ready archive; the number imported
