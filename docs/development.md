@@ -218,6 +218,21 @@ A refused pack does not boot: `dmhost` prints a `[RED]` line that names the mism
 The caller owns the per-user and per-session values, which the pack never sets: `DM_SAVE`, `DM_TEMP`, `DM_USER_UID` (32 hex digits; unset means the fixed local user, so existing saves keep their owner), `DM_NICK`, `DM_USERS` and `DM_OPMODE`.
 `dm_boot_game` runs once per process: switching games starts a new process.
 
+## Disk hygiene
+
+Builds and device installs used to leave several GB each on the Mac.
+`scripts/diskhygiene.py` holds the fixes; run `python3 scripts/diskhygiene.py -h` for its commands.
+
+- **CoreDevice delta cache.** Every `devicectl device install app` leaves a full copy of the app in `~/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/<bundle id>/`.
+  Install with `python3 scripts/diskhygiene.py install --device <udid> <signed .app>` instead of the bare devicectl line: after a successful install it deletes that bundle's folder (our `com.chayan.*` bundle IDs only; a failed install keeps it).
+  `clean-delta <bundle id>` does the same step on its own.
+- **One copy of a device build.** `scripts/dev_sign.sh <build dir>` unpacks `app.ipa` into `sign/`, signs and verifies it, and only then moves the unsigned `app.ipa` (the same bytes) to `~/.Trash`; `KEEP_IPA=1` keeps it.
+  `diskhygiene.py prune <parent> --sub build` keeps the newest 2 per-step build folders under `<parent>` (`--keep N` changes that) and moves the rest to `~/.Trash`.
+  It refuses anything under `backups`, `dump` or `extracted`.
+- **Clones, not copies.** Big pack inputs (the RomFS store, the shader folders, the pipeline archives) enter packs and IPA work folders as APFS clones (`cp -c`), with a plain copy as the fallback on another volume; `diskhygiene.py clone <src> <dst>` is the same step for scripts.
+  Clones share blocks with their source, so `du` counts them in full while the free space barely moves.
+- **Metal GPU archiver temp.** `build_ipa.sh` and `build_ipa_from_nsp.py` note the entries of `$(getconf DARWIN_USER_CACHE_DIR)com.apple.gpuarchiver` when they start and remove only the entries made since when they end (never an entry touched in the last 30 s or held open).
+
 ## Prewarm lists
 
 Metal compiles each combination of shaders and pipeline settings for the GPU the first time it is used. Each takes tens of milliseconds, so a burst of them on entering a level is a visible freeze. The host records what it had to compile and rebuilds those pipelines on a background queue at the next launch:
