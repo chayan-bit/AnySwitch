@@ -45,7 +45,7 @@ static void run(chain *c) {
 static uint32_t texel(const tex_t *t, int x, int y) { uint32_t o = 0; NVNcopyRegion r = {x, y, 0, 1, 1, 1}; mtl_read_texels(t, 0, 0, &r, (uint8_t *)&o, 4, 4); return o; }
 static int overlap(id<MTLTexture> a, id<MTLTexture> b) { return a.heapOffset < b.heapOffset + b.allocatedSize && b.heapOffset < a.heapOffset + a.allocatedSize; }
 int main(int argc, char **argv) { @autoreleasepool {
-    setvbuf(stdout, NULL, _IONBF, 0); setenv("DM_INTERNAL_RES", argc > 1 ? argv[1] : "1", 1); mtl_init(); printf("== internal resolution %gx ==\n", g_rs);
+    setvbuf(stdout, NULL, _IONBF, 0); setenv("DM_NVN_RTHEAP", "1", 0); setenv("DM_INTERNAL_RES", argc > 1 ? argv[1] : "1", 1); mtl_init(); printf("== internal resolution %gx ==\n", g_rs);
     // A, B (0.4 MB after A), C (0.4 MB after B: disjoint from A), E (A's storage as R32F); D far away, overlapping nothing
     int64_t L = 0; { tex_t probe = {0}; probe.d.width = W; probe.d.height = H; probe.d.depth = probe.d.levels = 1; probe.d.target = NVN_TEXTURE_TARGET_2D; probe.d.format = NVN_FORMAT_RGBA8; nvn_tex_layout(&probe.d, &probe.L); L = (int64_t)probe.L.size; }
     int64_t step = L - 0x61600 > L / 2 ? L / 2 + 0x1000 : L - 0x61600;   // B overlaps A and C, C does not overlap A
