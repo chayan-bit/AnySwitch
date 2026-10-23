@@ -215,7 +215,7 @@ A refused pack does not boot: `dmhost` prints a `[RED]` line that names the mism
 | `DM_FONT_DIR` | `<root>/font` | logged; the system's stand-ins |
 | `DM_AOC_DIR` | `<root>/aoc` | logged; no add-on content |
 
-The caller owns the per-user and per-session values, which the pack never sets: `DM_SAVE`, `DM_TEMP`, `DM_USER_UID` (32 hex digits; unset means the fixed local user, so existing saves keep their owner), `DM_NICK`, `DM_USERS` and `DM_OPMODE`.
+The caller owns the per-user and per-session values, which the pack never sets: `DM_SAVE`, `DM_TEMP`, `DM_USER_UID` (32 hex digits; unset means the fixed local user, so existing saves keep their owner), `DM_NICK`, `DM_USERS` (one user per line: uid, nickname and profile image path, tab-separated, at most 8), `DM_SAVE_ROOT` (where other users' saves live, `<root>/<uid>/saves/<title id>/save`) and `DM_OPMODE`.
 `dm_boot_game` runs once per process: switching games starts a new process.
 
 ## Disk hygiene

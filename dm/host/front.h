@@ -35,3 +35,6 @@ void front_notice(const char *title, const char *msg);
 // The game's error display applet (hle_err.c): code is the error in its 2xxx-yyyy form, or "" when the game gave none; network = an online error (Hearth has no online play).
 // The iOS front end shows Hearth's dialog and adds it to the error history; the default weak implementation logs it. Called on a game thread, which waits until the player dismisses it
 void front_error(const char *code, int network);
+// The game's own user selector (nn::account::ShowUserSelector, hle_account.c), on a game thread: blocks until the player picks; writes the Uid as 32 lowercase hex digits.
+// 1 picked, 0 cancelled, -1 no picker (the preselected user is used). Weak default in hle_account.c returns -1; the iOS front end shows Hearth's picker
+int front_user_select(char out[33]);
