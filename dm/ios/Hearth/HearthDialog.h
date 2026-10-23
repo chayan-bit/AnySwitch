@@ -6,5 +6,7 @@
 // buttons: titles, left to right. destructive: the index drawn in the warning colour (-1 none). focus: the button focused at first (the one a plain A or Return chooses). cancel: the index B, Escape and a tap
 // outside choose (-1: only a button ends the dialog). answer runs with the chosen index once the dialog is gone. The dialog opens over the top-most dialog or sheet above over.
 void hearth_dialog(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *buttons, NSInteger destructive, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index));
+// Picture tiles in one row (a user picker, the avatar chooser): images holds a UIImage per name (NSNull for a tile with only its name, such as Cancel); the rest as hearth_dialog
+void hearth_dialog_tiles(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *names, NSArray *images, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index));
 // One OK button: information the player only has to dismiss
 void hearth_dialog_info(UIViewController *over, NSString *title, NSString *message);

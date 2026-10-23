@@ -22,6 +22,7 @@ static void manifest(NSString *root, NSString *title, int format) {
 static void nacp(NSString *root, int lang, NSString *name, NSString *pub) {
     NSMutableData *d = [NSMutableData dataWithLength:0x4000];
     if (lang == 0) memcpy((char *)d.mutableBytes + 0x3060, "1.3.2", 5);   // the display version (the pack with the American English entry has one)
+    if (lang == 0) ((char *)d.mutableBytes)[0x3025] = 1;   // StartupUserAccount: required (the pack with the American English entry)
     memcpy((char *)d.mutableBytes + lang * 0x300, name.UTF8String, strlen(name.UTF8String));
     memcpy((char *)d.mutableBytes + lang * 0x300 + 0x200, pub.UTF8String, strlen(pub.UTF8String));
     [NSFileManager.defaultManager createDirectoryAtPath:[root stringByAppendingPathComponent:@"meta"] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -56,6 +57,7 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
     CHECK([all[0].name isEqual:@"Bundled Game"] && [all[0].publisher isEqual:@"Maker"], "NACP American English: %s", all[0].name.UTF8String);
     CHECK([all[0].version isEqual:@"1.3.2"] && all[1].version == nil, "NACP display version: %s / %s", all[0].version.UTF8String, all[1].version.UTF8String);
     CHECK([all[1].name isEqual:@"Second Language Name"], "NACP first set language: %s", all[1].name.UTF8String);
+    CHECK(all[0].startupUser == 1 && all[1].startupUser == 0 && all[2].startupUser == 0, "NACP StartupUserAccount: %d %d %d", all[0].startupUser, all[1].startupUser, all[2].startupUser);
     CHECK([all[2].name isEqual:@"0100000000020000"], "no NACP: the title id");
 
     // 3. reason codes: a newer pack format is a rebuild; a pack missing its profile and code is a missing part or a rebuild, never bootable
@@ -148,15 +150,20 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
       CHECK([sz[@"code"] isEqual:@1000] && [sz[@"shaders"] isEqual:@230] && [sz[@"pipelines"] isEqual:@400] && [sz[@"files"] isEqual:@5000] && [sz[@"addons"] isEqual:@700]
             && [sz[@"other"] isEqual:@35] && [sz[@"save"] isEqual:@64], "sizes by kind %s", sz.description.UTF8String);
       CHECK([lib capsOf:g] == nil, "no capabilities before the first start");
-      [lib rememberCaps:@{@"fstep": @YES, @"nvn": @NO} of:g]; [lib addPlayTime:90 to:g]; [lib addPlayTime:30.5 to:g]; [lib markPlayed:g];
+      [lib rememberCaps:@{@"fstep": @YES, @"nvn": @NO} of:g]; [lib addPlayTime:90 to:g user:@"0123456789abcdef0123456789abcdef"]; [lib addPlayTime:30.5 to:g user:nil]; [lib markPlayed:g];
       CHECK([[lib capsOf:g][@"fstep"] boolValue] && ![[lib capsOf:g][@"nvn"] boolValue], "capabilities kept %s", [lib capsOf:g].description.UTF8String);
       CHECK([lib playTimeOf:g] == 120.5 && g.lastPlayed > 0, "play time %.1f, and markPlayed keeps it", [lib playTimeOf:g]);
+      CHECK([lib playTimeOf:g user:@"0123456789abcdef0123456789abcdef"] == 90 && [lib playTimeOf:g user:HEARTH_UID] == 0, "per user: %.1f", [lib playTimeOf:g user:@"0123456789abcdef0123456789abcdef"]);
+      NSString *other = [lib saveDirFor:g user:@"0123456789abcdef0123456789abcdef"];
+      CHECK(([other hasSuffix:[NSString stringWithFormat:@"Documents/Users/0123456789abcdef0123456789abcdef/saves/%@/save", g.titleId]] && [fm fileExistsAtPath:other.stringByDeletingLastPathComponent] && ![other isEqual:save]), "another user's save path %s", other.UTF8String);
+      CHECK([[lib saveDirFor:g user:HEARTH_UID] isEqual:save], "the first user's is the old path");
       NSString *why = nil;
       HearthGame *b = [HearthGame new]; b.titleId = @"0100000000030000"; b.root = [bundle stringByAppendingPathComponent:@"pack"]; b.bundled = YES;
       CHECK(![lib deleteGame:b error:&why] && why.length && [fm fileExistsAtPath:b.root], "the game built into the app is not deleted (%s)", why.UTF8String);
       CHECK([lib deleteGame:g error:&why] && ![fm fileExistsAtPath:g.root] && [fm fileExistsAtPath:[save stringByAppendingPathComponent:@"main"]], "deleted, its save kept (%s)", why.UTF8String);
       CHECK([lib capsOf:g] == nil && [lib playTimeOf:g] == 0, "its state goes with it");
       put([home stringByAppendingPathComponent:@"Documents/save/main"], @"old single-game save");
+      CHECK(![fm fileExistsAtPath:[[lib saveDirFor:b user:@"0123456789abcdef0123456789abcdef"] stringByAppendingPathComponent:@"main"]], "the old single-game save is never copied to another user");
       NSString *bs = [lib saveDirFor:b]; CHECK([fm fileExistsAtPath:[bs stringByAppendingPathComponent:@"main"]], "bundled game: the old save copied once");
       put([bs stringByAppendingString:@".work/main"], @"working copy");
       CHECK([lib deleteSavesOf:b error:&why] && ![fm fileExistsAtPath:[bs stringByAppendingString:@".work"]], "delete saves, the working copy too (%s)", why.UTF8String);

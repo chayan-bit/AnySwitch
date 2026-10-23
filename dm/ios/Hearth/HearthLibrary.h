@@ -18,6 +18,7 @@
 @property (nonatomic) int reason;                   // boot.h DM_PACK_* or HEARTH_NEEDS_SIGNING: 0 = bootable
 @property (nonatomic) double lastPlayed;            // seconds since 1970 of the last launch (State/<id>.json), 0 = never
 @property (nonatomic, copy) NSString *why;          // dm_pack_check's sentence when reason != 0
+@property (nonatomic) int startupUser;              // the NACP's StartupUserAccount (0x3025): 0 none, 1 required, 2 required with an online account; non-zero = the game starts as a chosen user
 @end
 
 @interface HearthLibrary : NSObject
@@ -27,17 +28,21 @@
 @property (nonatomic, strong) HearthSigner *appSigner;
 - (NSArray<HearthGame *> *)scan;   // the bundled pack and Games/<id>/, last played first, then by title id; each checked (cached while the pack's key files keep their size and time)
 - (void)markPlayed:(HearthGame *)g;   // State/<id>.json: lastPlayed = now
-- (void)addPlayTime:(double)seconds to:(HearthGame *)g;   // State/<id>.json playSeconds
-- (double)playTimeOf:(HearthGame *)g;
+- (void)addPlayTime:(double)seconds to:(HearthGame *)g user:(NSString *)uid;   // State/<id>.json playSeconds (the total) and users.<uid>.playSeconds; uid nil: the total only
+- (double)playTimeOf:(HearthGame *)g;   // every user's
+- (double)playTimeOf:(HearthGame *)g user:(NSString *)uid;
 - (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g;   // what the game provides (dm_capability), learned when it runs (plan decision 12)
 - (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g;   // nil before its first start
 // Bytes per kind: code, shaders (msl/), pipelines (pso/), files (the game's own files), addons (aoc/), other (profile, icon, manifest), save
 - (NSDictionary<NSString *, NSNumber *> *)sizesOf:(HearthGame *)g;
 - (BOOL)deleteGame:(HearthGame *)g error:(NSString **)why;      // an imported game's folder and state; its saves stay. Not the game built into the app. The caller makes sure it is not running
-- (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why;   // this game's save folder, left empty so the old single-game save is not copied back
+- (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why;   // every user's save of this game, each folder left empty so the old single-game save is not copied back
+- (BOOL)deleteSavesOf:(HearthGame *)g user:(NSString *)uid error:(NSString **)why;   // one user's
+- (unsigned long long)saveSizeOf:(HearthGame *)g user:(NSString *)uid;
 - (HearthGame *)gameWithId:(NSString *)titleId;
 - (int)checkPackAt:(NSString *)root why:(NSString **)why;   // dm_pack_check of a folder with its own code and game files (an import, before it replaces anything); 0 = fine
-- (NSString *)saveDirFor:(HearthGame *)g;   // Documents/Users/<uid>/saves/<id>/save; the first time, the single-game app's Documents/save is cloned there (the original is kept)
+- (NSString *)saveDirFor:(HearthGame *)g;   // the first user's (HEARTH_UID) Documents/Users/<uid>/saves/<id>/save; the first time, the single-game app's Documents/save is cloned there (the original is kept)
+- (NSString *)saveDirFor:(HearthGame *)g user:(NSString *)uid;   // that user's; the single-game copy only for HEARTH_UID
 - (NSString *)logDirFor:(HearthGame *)g;
 // next.json: what the next process does, {"action": "home"} or {"action": "launch", "id": "<title id>"}. take = read and remove (a crash never loops)
 - (void)writeNext:(NSDictionary *)next;

@@ -5,6 +5,7 @@
 #import "HearthSound.h"
 #import "HearthDialog.h"
 #import "HearthErrors.h"
+#import "HearthAvatar.h"
 #import "DmSettings.h"
 #import "DmSettingsViews.h"
 #import "DmHaptics.h"
@@ -189,6 +190,61 @@ static DmPageItem *error_history_item(DmSettingsVC *(^vc)(void)) {
         [HearthTextVC show:@"Error history" text:[lines componentsJoinedByString:@"\n"] mono:NO over:vc()];
     });
 }
+#pragma mark - Users
+
+// The Users page (plan-hearth-p3.md 3.3): Add user, then per user a heading row (play time, games with saves) and its actions
+static void after_change(DmSettingsVC *(^vc)(void)) { [vc() reloadPages]; }
+static void add_user(DmSettingsVC *(^vc)(void)) {
+    [vc() editText:@"New user's name" value:@"" maxBytes:HEARTH_NAME_BYTES save:^BOOL(NSString *name) {
+        NSString *why = nil; HearthUser *u = [hearth_users() addUser:name avatar:nil error:&why];
+        if (!u) { dispatch_async(dispatch_get_main_queue(), ^{ tell(vc(), @"The user was not added", why); }); return NO; }
+        fprintf(stderr, "hearth: user added: %s\n", u.uid.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{ hearth_choose_avatar(vc(), u, ^(BOOL changed) { (void)changed; hearth_avatar_ensure(); after_change(vc); }); });
+        return YES;
+    }];
+}
+static NSString *user_detail(HearthUser *u) {
+    HearthLibrary *lib = hearth_library(); NSMutableArray *played = [NSMutableArray array], *saved = [NSMutableArray array];
+    NSArray *withSaves = [hearth_users() gamesWithSavesOf:u];
+    for (HearthGame *g in [lib scan]) {
+        double s = [lib playTimeOf:g user:u.uid];
+        if (s >= 60) [played addObject:[NSString stringWithFormat:@"%@ %@", g.name, duration(s)]];
+        if ([withSaves containsObject:g.titleId]) [saved addObject:g.name];
+    }
+    return [NSString stringWithFormat:@"Play time: %@. Saves: %@.", played.count ? [played componentsJoinedByString:@", "] : @"none yet", saved.count ? [saved componentsJoinedByString:@", "] : @"none"];
+}
+static NSArray<DmPageItem *> *users_items(DmSettingsVC *(^vc)(void)) {
+    HearthUsers *us = hearth_users(); NSArray<HearthUser *> *list = us.users; NSMutableArray *o = [NSMutableArray array];
+    [o addObject:list.count < HEARTH_MAX_USERS ? action(@"Add user", @"Someone else who plays here, with their own saves.", ^{ add_user(vc); })
+                                               : [DmPageItem unavailable:@"Add user" detail:[NSString stringWithFormat:@"Hearth holds up to %d users.", HEARTH_MAX_USERS]]];
+    for (NSUInteger i = 0; i < list.count; i++) {
+        HearthUser *u = list[i]; BOOL playing = [hearth_running_user() isEqual:u.uid];
+        [o addObject:info(playing ? [NSString stringWithFormat:@"%@ (playing now)", u.name] : u.name, user_detail(u))];
+        [o addObject:action([NSString stringWithFormat:@"Rename %@", u.name], @"The name games show for this user.", ^{
+            [vc() editText:@"Name" value:u.name maxBytes:HEARTH_NAME_BYTES save:^BOOL(NSString *name) {
+                NSString *why = nil; BOOL ok = [hearth_users() rename:u to:name error:&why];
+                dispatch_async(dispatch_get_main_queue(), ^{ if (!ok) tell(vc(), @"The name was not changed", why); else after_change(vc); });
+                return ok;
+            }];
+        })];
+        [o addObject:action([NSString stringWithFormat:@"Picture of %@", u.name], @"A picture from Hearth's set or a photo.", ^{
+            hearth_choose_avatar(vc(), u, ^(BOOL changed) { if (changed) after_change(vc); });
+        })];
+        if (i > 0) [o addObject:action([NSString stringWithFormat:@"Move %@ up", u.name], @"The order on Home and in Who is playing.", ^{ [hearth_users() move:u by:-1]; after_change(vc); })];
+        NSArray *saves = [us gamesWithSavesOf:u];
+        if (list.count == 1) [o addObject:[DmPageItem unavailable:[NSString stringWithFormat:@"Delete %@", u.name] detail:@"The last user cannot be deleted."]];
+        else if (playing) [o addObject:[DmPageItem unavailable:[NSString stringWithFormat:@"Delete %@", u.name] detail:@"Close the game first."]];
+        else {
+            NSMutableArray *names = [NSMutableArray array];
+            for (NSString *t in saves) [names addObject:[hearth_library() gameWithId:t].name ?: t];
+            [o addObject:confirmed(action([NSString stringWithFormat:@"Delete %@", u.name], saves.count ? [NSString stringWithFormat:@"Their saves go too: %@.", [names componentsJoinedByString:@", "]] : @"They have no saves.", ^{
+                NSString *why = nil;
+                if (![hearth_users() deleteUser:u error:&why]) tell(vc(), @"The user was not deleted", why); else hearth_sound(HearthSoundClose);
+            }), saves.count ? [NSString stringWithFormat:@"Press again to delete %@ and their saves", u.name] : [NSString stringWithFormat:@"Press again to delete %@", u.name])];
+        }
+    }
+    return o;
+}
 static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void));
 static void reload(DmSettingsVC *v) { __weak DmSettingsVC *w = v; v.pages = system_pages(^{ return w; }); [v reloadPages]; }   // the Developer page came or went
 static NSArray<DmPageItem *> *about_items(DmSettingsVC *(^vc)(void)) {
@@ -227,7 +283,7 @@ static NSArray<DmPageItem *> *developer_items(DmSettingsVC *(^vc)(void)) {
     for (NSString *l in [env componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) { NSString *t = [l stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]; if (t.length && ![t hasPrefix:@"#"]) [lines addObject:t]; }
     [out addObject:info(@"Environment overrides (Documents/env.txt)", lines.count ? [lines componentsJoinedByString:@"\n"] : @"None")];
     NSMutableArray *locked = [NSMutableArray array]; DmSettings *st = DmSettings.systemStore;
-    for (DmSection *s in st.sections) for (DmSetting *x in s.settings) if ([st sourceForKey:x.key] == DmSourceEnv) [locked addObject:x.label];
+    for (DmSection *s in st.sections) for (DmSetting *x in s.settings) if ([st isAvailable:x] && [st sourceForKey:x.key] == DmSourceEnv) [locked addObject:x.label];
     [out addObject:info(@"Settings the environment locks", locked.count ? [locked componentsJoinedByString:@", "] : @"None")];
     [out addObject:info(@"Logs", [NSString stringWithFormat:@"Documents/Logs/hearth.txt, and Documents/Logs/<title id>/log.txt per game"])];
     [out addObject:action(@"Hide this page", @"Press the version line in About 7 times to show it again.", ^{
@@ -238,13 +294,21 @@ static NSArray<DmPageItem *> *developer_items(DmSettingsVC *(^vc)(void)) {
 
 static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void)) {
     NSMutableArray *p = [[DmPage pagesOf:DmSettings.systemStore gameRowsOnly:NO] mutableCopy];
+    [p insertObject:[DmPage page:@"Users" icon:@"person.2.fill" items:^{ return users_items(vc); }] atIndex:0];
     [p addObject:[DmPage page:@"Data Management" icon:@"externaldrive.fill" items:^{ return data_items(vc); }]];
     [p addObject:[DmPage page:@"Signing" icon:@"checkmark.seal.fill" items:^{ return signing_items(); }]];
     [p addObject:[DmPage page:@"About" icon:@"info.circle.fill" items:^{ return about_items(vc); }]];
     if ([NSUserDefaults.standardUserDefaults boolForKey:DEV_KEY]) [p addObject:[DmPage page:@"Developer" icon:@"hammer.fill" items:^{ return developer_items(vc); }]];
     return p;
 }
+void hearth_settings_show_user(DmSettingsVC *v, NSString *uid) {   // the Users page (the first) with the user's heading row
+    NSUInteger i = [hearth_users().users indexOfObjectPassingTest:^BOOL(HearthUser *u, NSUInteger k, BOOL *stop) { (void)k; (void)stop; return [u.uid isEqual:uid]; }];
+    NSInteger row = 1;
+    for (NSUInteger k = 0; k < i && i != NSNotFound; k++) row += k > 0 ? 5 : 4;   // heading, rename, picture, move up (not for the first), delete
+    [v selectSection:0 focusPane:YES row:i == NSNotFound ? 0 : row];
+}
 DmSettingsVC *hearth_system_settings(CGSize size) {
+    if (!DmSettings.systemStore.capabilities) DmSettings.systemStore.capabilities = ^BOOL(NSString *c) { return ![c isEqualToString:@"playername"]; };   // the old Player name row: users have names now
     DmSettingsVC *v = [[DmSettingsVC alloc] initWithSettings:DmSettings.systemStore size:size];
     __weak DmSettingsVC *w = v; DmSettingsVC *(^vc)(void) = ^{ return w; };
     v.pages = system_pages(vc);

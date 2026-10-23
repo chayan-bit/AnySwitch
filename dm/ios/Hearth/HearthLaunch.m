@@ -5,16 +5,18 @@
 #import "HearthSound.h"
 #import "HearthImport.h"
 #import "HearthDialog.h"
+#import "HearthAvatar.h"
 #import <objc/message.h>
 #include "hle.h"
 
 void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
 
-int hearth_boot_game(HearthGame *g);       // main.m: the game's environment, log and dm_boot_game; 1 = booting
+int hearth_boot_game(HearthGame *g, NSString *uid);   // main.m: the game's environment (as user uid), log and dm_boot_game; 1 = booting
 UIViewController *front_ios_root(void);    // front_ios.m: the game's view controller
 void dm_host_shutdown(const char *why);    // hle_lifecycle.c: audio and graphics stopped, then _exit(0)
 
-static HearthGame *g_running;
+static HearthGame *g_running; static NSString *g_running_uid;
+void hearth_mark_running(HearthGame *g, NSString *uid);
 HearthLibrary *hearth_library(void) {
     static HearthLibrary *lib; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -25,6 +27,7 @@ HearthLibrary *hearth_library(void) {
     return lib;
 }
 HearthGame *hearth_running_game(void) { return g_running; }
+NSString *hearth_running_user(void) { return g_running_uid; }
 
 void hearth_import_scan(void (^done)(void)) {
     static dispatch_queue_t q; static dispatch_once_t once; static BOOL busy;
@@ -48,7 +51,7 @@ static double g_play_since;
 static void play_start(void) { if (g_running && !g_play_since && !hearth_home_up()) g_play_since = CACurrentMediaTime(); }
 static void play_stop(void) {
     if (!g_play_since) return;
-    [hearth_library() addPlayTime:CACurrentMediaTime() - g_play_since to:g_running]; g_play_since = 0;
+    [hearth_library() addPlayTime:CACurrentMediaTime() - g_play_since to:g_running user:g_running_uid]; g_play_since = 0;
 }
 // What the game provides (plan decision 12), for its Options while it is not running: learned 15 s after the start (the host has loaded its modules by then), again at Home and at close
 static void caps_note(void) {
@@ -103,27 +106,40 @@ static void confirm(UIViewController *over, NSString *title, NSString *yes, NSSt
 
 static void alert(UIViewController *over, NSString *title, NSString *msg) { hearth_dialog_info(over, title, msg); }
 
+// Who plays g: asked when the game starts as a user and there is more than one, else the only (or last) one. done gets nil for Cancel
+static void choose_user(HearthGame *g, UIViewController *over, void (^done)(HearthUser *u)) {
+    HearthUsers *us = hearth_users(); HearthUser *last = [us lastUserOf:g.titleId];
+    if (!g.startupUser || us.users.count < 2) { done(last); return; }
+    hearth_pick_user(over, @"Who is playing?", last, done);
+}
+
 void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void))) {
     if (g.reason) { alert(window.rootViewController, hearth_state_line(g), g.why); return; }   // titled like the tile's state line
     if (g_running) {   // one game per process: close the running one, then the restart boots g
         if ([g_running.titleId isEqual:g.titleId]) { hearth_resume(); return; }
         confirm(window.rootViewController, [NSString stringWithFormat:@"Close %@ and start %@?", g_running.name, g.name], @"Close and Start", @"switch", ^{
-            [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId}];
-            play_stop(); caps_note();
-            relaunch();
+            choose_user(g, window.rootViewController, ^(HearthUser *u) {
+                if (!u) return;
+                [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId, @"uid": u.uid}];
+                play_stop(); caps_note();
+                relaunch();
+            });
         });
         return;
     }
-    if (!hearth_boot_game(g)) { alert(window.rootViewController, @"This game cannot start", @"Its log has the reason (Documents/Logs)."); return; }
-    g_running = g; running_started();
-    void (^show)(void) = ^{ window.rootViewController = front_ios_root(); };
-    if (zoom) zoom(show); else show();
+    choose_user(g, window.rootViewController, ^(HearthUser *u) {
+        if (!u) return;
+        if (!hearth_boot_game(g, u.uid)) { alert(window.rootViewController, @"This game cannot start", @"Its log has the reason (Documents/Logs)."); return; }
+        hearth_mark_running(g, u.uid);
+        void (^show)(void) = ^{ window.rootViewController = front_ios_root(); };
+        if (zoom) zoom(show); else show();
+    });
 }
 
 void hearth_restart_game(void) {
     if (!g_running) return;
     fprintf(stderr, "hearth: restarting %s for its changed settings\n", g_running.titleId.UTF8String);
-    [hearth_library() writeNext:@{@"action": @"launch", @"id": g_running.titleId}];
+    [hearth_library() writeNext:g_running_uid ? @{@"action": @"launch", @"id": g_running.titleId, @"uid": g_running_uid} : @{@"action": @"launch", @"id": g_running.titleId}];
     play_stop(); caps_note();
     relaunch();
 }
@@ -171,4 +187,4 @@ void hearth_home(void) { if (g_running) dm_home_press(home_deliver); }
 void hearth_home_long(void) { if (g_running) dm_home_press(home_long_deliver); }
 
 // Called by main.m for a launch intent from next.json, before UIApplicationMain: the game boots early, as the single-game app did
-void hearth_mark_running(HearthGame *g) { g_running = g; running_started(); }
+void hearth_mark_running(HearthGame *g, NSString *uid) { g_running = g; g_running_uid = uid.copy; running_started(); }

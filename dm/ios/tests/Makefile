@@ -9,16 +9,19 @@ t_import: t_import.m ../Hearth/HearthImport.m ../Hearth/HearthImport.h ../Hearth
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../../host -o $@ t_import.m ../Hearth/HearthImport.m ../Hearth/HearthLibrary.m ../Hearth/HearthSign.m ../Hearth/HearthSound.m ../../host/boot.m ../../host/profile.m -framework Foundation -lAppleArchive
 t_home_focus: t_home_focus.m ../Hearth/HearthFocus.m ../Hearth/HearthFocus.h ../Hearth/HearthTheme.h ../Sources/DmRepeat.m ../Sources/DmRepeat.h
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../Sources -o $@ t_home_focus.m ../Hearth/HearthFocus.m ../Sources/DmRepeat.m -framework Foundation
+t_users: t_users.m ../Hearth/HearthUsers.m ../Hearth/HearthUsers.h ../Hearth/HearthLibrary.h
+	clang -O1 -g -Wall -fobjc-arc -I../Hearth -o $@ t_users.m ../Hearth/HearthUsers.m -framework Foundation
 PACK_ID = $(firstword $(sort $(notdir $(patsubst %/game.tsv,%,$(wildcard ../../games/*/game.tsv)))))
-run: t_settings t_haptics t_library t_import t_home_focus
+run: t_settings t_haptics t_library t_import t_home_focus t_users
 	./t_settings
 	python3 -I ../../games/game.py json $(PACK_ID) t_library.profile > /dev/null
 	./t_library t_library.profile $(PACK_ID)
 	./t_import t_library.profile $(PACK_ID)
 	./t_home_focus
+	./t_users
 	./t_haptics
 	python3 -I test_device_gpu.py   # tools/device_gpu.py chip IDs -> GPU architectures and the fallback
 	python3 -I test_build_defaults.py   # tools/build_ipa.sh: chunk store by default, flexible pipeline archive on by default
 clean:
-	rm -rf t_settings t_settings.dSYM t_haptics t_haptics.dSYM t_library t_library.dSYM t_home_focus t_home_focus.dSYM t_import t_import.dSYM t_library.profile
+	rm -rf t_settings t_settings.dSYM t_haptics t_haptics.dSYM t_library t_library.dSYM t_home_focus t_home_focus.dSYM t_import t_import.dSYM t_users t_users.dSYM t_library.profile
 .PHONY: run clean

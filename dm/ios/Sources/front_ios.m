@@ -15,6 +15,7 @@
 #import "HearthErrors.h"
 #import "HearthLaunch.h"
 #import "HearthCapture.h"
+#import "HearthAvatar.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -323,6 +324,25 @@ static NSString *front_log_tail(HearthGame *g) {
     NSString *s = [[NSString alloc] initWithData:[h readDataToEndOfFile] encoding:NSUTF8StringEncoding]; [h closeFile];
     return s;
 }
+// The game's own "who is playing" (front.h, hle_account.c's ShowUserSelector): Hearth's picker, the game thread waiting for the answer as with the software keyboard
+int front_user_select(char out[33]) {
+    if (!g_layer) return -1;
+    __block HearthUser *picked = nil; __block BOOL shown = NO;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = nil;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
+        if (!vc) { dispatch_semaphore_signal(done); return; }
+        shown = YES;
+        hearth_pick_user(vc, @"Who is playing?", [hearth_users() userWithUid:hearth_running_user()], ^(HearthUser *u) { picked = u; dispatch_semaphore_signal(done); });
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    if (!shown) return -1;
+    if (!picked) return 0;
+    snprintf(out, 33, "%s", picked.uid.UTF8String);
+    return 1;
+}
+
 void front_error(const char *code, int network) {
     if (!g_layer) { LOG("front end: error %s not shown: no window", code); return; }
     NSString *c = @(code); dispatch_semaphore_t done = dispatch_semaphore_create(0);
