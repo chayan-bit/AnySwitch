@@ -48,7 +48,6 @@ static void eligibility(void) {
     t = rt(1920, 1080); t.flags = 0x2; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "VIDEO_DECODE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x20; check(nvn_rs_eligible(&t) == NVN_RS_FLAGS, "SPARSE: not scaled (flags)");
     t = rt(1920, 1080); t.flags = 0x1 | 0x8; check(nvn_rs_eligible(&t) == NVN_RS_OK, "DISPLAY and COMPRESSIBLE: scaled");
-    t = rt(1920, 1080); t.sparse_pool = 1; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "virtual (sparse) pool: not scaled (cpu)");
     t = rt(1920, 1080); t.packaged = 1; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "packaged: not scaled (cpu)");
     t = rt(1920, 1080); t.init_data = 1; check(nvn_rs_eligible(&t) == NVN_RS_CPU, "storage already holds data: not scaled (cpu)");
     t = rt(1920, 1080); t.levels = 3; check(nvn_rs_eligible(&t) == NVN_RS_OK, "3 levels: scaled");

@@ -32,7 +32,7 @@ static inline int nvn_rs_whole(long x, long w, float s) { double a = (double)x *
 typedef struct {
     int target, flags, samples;     // NVNtextureTarget, NVNtextureFlags
     uint32_t w, h, levels, bpp;     // guest size, mip levels, bytes per pixel (for Ryujinx's width alignment)
-    uint8_t compressed, depth_or_single, packaged, sparse_pool, init_data;   // block-compressed format; depth / stencil or one-channel format; packaged (CPU-written) texture; virtual (sparse) pool; storage already holds data the GPU must start from
+    uint8_t compressed, depth_or_single, packaged, init_data;   // block-compressed format; depth / stencil or one-channel format; packaged (CPU-written) texture; storage already holds data the GPU must start from
 } nvn_rs_tex;
 
 // Why a texture is not scaled (or demoted later); the names are what the log prints
@@ -50,9 +50,9 @@ static inline int nvn_rs_eligible(const nvn_rs_tex *t) {
     if (t->compressed) return NVN_RS_FORMAT;
     // VIDEO_DECODE, LINEAR, SPARSE, LINEAR_RENDER_TARGET. IMAGE is allowed: games set it on ordinary render targets, so an image binding demotes instead (nvn_mtl.m rs_bind_check)
     if (t->flags & (0x2 | 0x10 | 0x20 | 0x40)) return NVN_RS_FLAGS;
-    // Whether the pool lets the CPU map the storage does not matter: the host never mirrors GPU-drawn texels into guest memory (at 1x either), and the CPU reaches them only through
-    // ReadTexels, copies and the CPU-write tracking, which read a scaled texture at 1x or demote it (notes/internal-res-cpu-pools.md). A sparse pool's content comes through its page table
-    if (t->packaged || t->sparse_pool || t->init_data) return NVN_RS_CPU;
+    // The pool's flags (CPU access, virtual) do not matter: a texture that gets here is GPU-owned, the host never mirrors its texels into guest memory (at 1x either), and the CPU
+    // reaches them only through ReadTexels, copies and the CPU-write tracking, which read a scaled texture at 1x or demote it (notes/internal-res-cpu-pools.md)
+    if (t->packaged || t->init_data) return NVN_RS_CPU;
     if (t->levels > 3) return NVN_RS_LEVELS;
     if (t->w < 8 || t->h < 8) return NVN_RS_SMALL;
     uint32_t al = 64 / (t->bpp && t->bpp <= 64 ? t->bpp : 1);   // GOB width (64 bytes) in pixels
