@@ -23,6 +23,9 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 DM=$(cd .. && pwd)
 t() { echo "[$(date +%T)] $*"; }; die() { t "FAIL: $*"; exit 1; }
+cpc() { cp -c "$@" 2> /dev/null || cp "$@"; }   # copy as an APFS clone (no extra disk on the same volume), a plain copy where cloning is refused
+# Metal's pipeline compiler (metal-tt) leaves temp entries in the per-user gpuarchiver cache (13 GB once): when this build ends, remove the ones it made, never the others (scripts/diskhygiene.py)
+HYG=$DM/../scripts/diskhygiene.py; GPU_SNAP=$(mktemp -t dm_gpusnap) && python3 "$HYG" gpu-snapshot "$GPU_SNAP" && trap 'python3 "$HYG" gpu-clean "$GPU_SNAP"; rm -f "$GPU_SNAP"' EXIT
 ROMFS_MODE=${IPA_ROMFS:-store}   # store (default): a chunk store beside the IPA; 1: loose files in the IPA; 0: none
 case $ROMFS_MODE in store|1|0) ;; *) die "IPA_ROMFS must be store, 1 or 0, not $ROMFS_MODE" ;; esac
 [ -n "${GAME:-}" ] || die "GAME is not set: GAME=<base game title ID> $0; profiles: $(python3 "$DM/games/game.py" list | awk -F'\t' '{printf "%s (%s)  ", $1, $3}')"
@@ -109,11 +112,11 @@ if [ -n "${PSO_EXPAND:-}" ] && [ "$GFXAPI" = nvn ] && [ -z "${PSO_ARCHIVE:-}" ];
 fi
 HV=(); if [ -n "${PSO_HARVEST:-}" ]; then IFS=: read -ra HV <<< "$PSO_HARVEST"; else for h in "$W"/build/pso_harvest*.metallib; do [ -f "$h" ] && HV+=("$h"); done; fi
 for h in ${HV[@]+"${HV[@]}"}; do [ -f "$h" ] || die "no pipeline harvest $h (PSO_HARVEST)"; done
-if [ -n "${PSO_ARCHIVE:-}" ]; then cp -c "$PSO_ARCHIVE" "$PSO_O"/pso_archive.metallib 2> /dev/null || cp "$PSO_ARCHIVE" "$PSO_O"/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"
+if [ -n "${PSO_ARCHIVE:-}" ]; then cpc "$PSO_ARCHIVE" "$PSO_O"/pso_archive.metallib || die "copy PSO_ARCHIVE"; t "pipeline archive: $PSO_ARCHIVE (as is)"
 elif [ "$GFXAPI" = nvn ] && [ ${#HV[@]} -gt 0 ]; then
   t "pipeline archive: compile ${HV[*]} for the iOS GPUs (metal-tt)"
   mkdir -p "$O" && python3 "$DM/gfx/tools/dmsh_psoarch.py" "${HV[@]}" --libs "$MSL_MAC/b-$V" "$MSL_IOS/b-$V" --target-libs "$MSL_IOS/b-$V" --msl "$MSL_MAC/b-$V" \
-    ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cp "$O/pso_archive.metallib" "$PSO_O"/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
+    ${PSO_ARCHS:+--arch $PSO_ARCHS} -o "$O/pso_archive.metallib" && cpc "$O/pso_archive.metallib" "$PSO_O"/ || t "[RED] no pipeline archive (dmsh_psoarch.py failed above): pipelines compile on first use"
 else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pipeline archive, pipelines compile on first use"; fi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
@@ -121,7 +124,7 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 # app ships, so it is built from the packed libraries once those are packed. The cap holds for all the architectures above (measured on a one-architecture build), so every
 # architecture fewer fits that many more pipelines
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
-  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cp -c "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib 2> /dev/null || cp "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
+  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cpc "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
   else
     [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
@@ -129,7 +132,7 @@ if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
     t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
     make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
       ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/pso_flex.metallib" \
-      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cp "$O/pso_flex.metallib" "$PSO_O"/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
+      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cpc "$O/pso_flex.metallib" "$PSO_O"/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
   fi
 fi
 # Diagnostic build: DM_ENV_FILE=file → profile/env.txt in the bundled pack (main.m sets one environment variable per line at boot)

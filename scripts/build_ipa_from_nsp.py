@@ -18,6 +18,8 @@
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress).
 import collections, ctypes, getpass, hashlib, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import diskhygiene   # noqa: E402
 
 # ---- Settings ----
 NSP_DIR = ''                            # folder holding the NSPs (empty = ask at run time)
@@ -1429,6 +1431,7 @@ def main(args=None):
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
+    gpu_before = diskhygiene.gpu_snapshot()   # Metal's pipeline compiler leaves temp entries in the gpuarchiver cache: only the ones this run made are removed at its end
     try:
         main(parse_args(argv))
     except BuildError as e:
@@ -1437,6 +1440,7 @@ def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
         PROG.close(ok=False); print('[RED] interrupted', flush=True); return 130
     finally:
         PROG.close(ok=False)   # an unexpected error: end the stage line before the traceback
+        diskhygiene.gpu_clean(gpu_before)
     return 0
 
 
