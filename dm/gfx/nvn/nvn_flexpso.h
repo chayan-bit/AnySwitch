@@ -22,12 +22,14 @@ id<MTLRenderPipelineState> flexpso_get(const void *key, const void *ukey, id<MTL
 void flexpso_kick(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, MTLRenderPipelineDescriptor *(^mk)(void), int soon);
 // Blocking: unspecialized pipeline (archive, else compiled; cached by ukey) then specialized. For the warm-up thread and tools, never the render thread
 id<MTLRenderPipelineState> flexpso_make(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, NSError **err);
-// flexpso_make for a stand-in no draw uses as is (the program warm-up's): its archive lookup is counted apart from the draws' (warm_hit / warm_miss), so coverage stays the draws'
+// flexpso_make for a stand-in no draw uses as is (the program warm-up's): its archive lookup is counted apart from the draws' (warm_hit / warm_miss), so coverage stays the draws'.
+// Its unspecialized pipeline is not kept once the stand-in is made (warm_released), unless a draw asked for the same key meanwhile (warm_taken); a later ask makes it again from the same descriptor, so the same pipeline
 id<MTLRenderPipelineState> flexpso_warm(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, NSError **err);
 // Cumulative counts and a log line ("flexible pipelines: ...") with the archive coverage of the pipelines asked for so far
-// archive_hit / archive_miss: lookups of unspecialized pipelines for draws (and tools); warm_hit / warm_miss: those of the warm-up's stand-ins (flexpso_warm)
+// archive_hit / archive_miss: lookups of unspecialized pipelines for draws (and tools); warm_hit / warm_miss: those of the warm-up's stand-ins (flexpso_warm); warm_released / warm_taken: above
 // waited: draws asked for a pipeline not ready yet, which waited for it; wait_hist: waits under 1, 4, 16, 64, 256 ms and longer
 enum { FLEXPSO_WAIT_BUCKETS = 6 };
-typedef struct { uint64_t asked, kicked, ready, archive_hit, archive_miss, warm_hit, warm_miss, compiled, specialized, failed, waited, wait_hist[FLEXPSO_WAIT_BUCKETS]; double spec_ms, spec_worst_ms, wait_ms, wait_worst_ms; } flexpso_counts;
+typedef struct { uint64_t asked, kicked, ready, archive_hit, archive_miss, warm_hit, warm_miss, warm_released, warm_taken, compiled, specialized, failed, waited, wait_hist[FLEXPSO_WAIT_BUCKETS]; double spec_ms, spec_worst_ms, wait_ms, wait_worst_ms; } flexpso_counts;
 flexpso_counts flexpso_stats(void);
+unsigned flexpso_bases(void);   // unspecialized pipelines kept now
 void flexpso_log(void);

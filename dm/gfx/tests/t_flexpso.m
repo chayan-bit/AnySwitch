@@ -161,9 +161,26 @@ int main(void) { @autoreleasepool {
         CHECK(c2.archive_hit == c1.archive_hit + 1 && c2.warm_hit == c1.warm_hit, "a draw's archive hit was not counted as one: hits %llu -> %llu", c1.archive_hit, c2.archive_hit);
         CHECK(c0.archive_hit == 0 && c0.archive_miss >= 1, "the draws before used fs (not in the archive): hits %llu, misses %llu", c0.archive_hit, c0.archive_miss);
     }
+    // Warm-up stand-ins do not keep their unspecialized pipeline: it leaves the table once the stand-in is made, and a later ask for the same key makes the same pipeline again.
+    // A base a draw made first stays when a stand-in of the same key comes later
+    {
+        flexpso_counts c0 = flexpso_stats(); unsigned n0 = flexpso_bases(); long u = 30, k = 31;
+        MTLRenderPipelineDescriptor *d = desc(1, MTLPixelFormatRGBA8Unorm, "fs");
+        CHECK(flexpso_warm(&u, d, lib, lib, "warm released", &e), "warm-up stand-in failed");
+        flexpso_counts c1 = flexpso_stats();
+        CHECK(c1.warm_released == c0.warm_released + 1 && flexpso_bases() == n0, "a stand-in's base was kept: released %llu -> %llu, bases %u -> %u", c0.warm_released, c1.warm_released, n0, flexpso_bases());
+        id<MTLRenderPipelineState> ps = flexpso_get(&k, &u, lib, lib, "after release", ^{ return d; }, NULL);
+        flexpso_counts c2 = flexpso_stats();
+        CHECK(ps && c2.compiled == c1.compiled + 1 && flexpso_bases() == n0 + 1, "a draw after the release did not make the base again (compiled %llu -> %llu)", c1.compiled, c2.compiled);
+        id<MTLRenderPipelineState> classic = [dev newRenderPipelineStateWithDescriptor:d error:&e];
+        CHECK([draw(classic, MTLPixelFormatRGBA8Unorm) isEqualToData:draw(ps, MTLPixelFormatRGBA8Unorm)], "the pipeline made again draws different pixels");
+        CHECK(flexpso_warm(&u, d, lib, lib, "warm after draw", &e), "warm-up stand-in of a drawn key failed");
+        flexpso_counts c3 = flexpso_stats();
+        CHECK(c3.warm_released == c2.warm_released && flexpso_bases() == n0 + 1 && c3.compiled == c2.compiled, "a draw's base was released or remade by a later stand-in");
+    }
     [NSFileManager.defaultManager removeItemAtPath:arch error:nil];
     bgq_check();
     flexpso_log();
-    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, every draw gets its pipeline (none skipped), kicked pipeline ready at its first draw, failure reported, waits counted, background slots bounded without starving the worker pool, warm-up archive lookups counted apart\n");
+    printf("FLEXPSO OK: pixel-identical to classic for 2 colour states of 1 unspecialized pipeline, every draw gets its pipeline (none skipped), kicked pipeline ready at its first draw, failure reported, waits counted, warm-up stand-in bases released and made again identically, background slots bounded without starving the worker pool, warm-up archive lookups counted apart\n");
     return 0;
 }}

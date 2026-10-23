@@ -12,7 +12,8 @@
 #define FLOG(...) do { fprintf(stderr, "[dm] [pso-flex] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 enum { MISS_LOG_ALL = 32 };   // archive misses logged one by one, then every 100th
 
-@interface FlexEntry : NSObject { @public id<MTLRenderPipelineState> ps; int done, kicked; } @end   // kicked: started ahead of the draw (flexpso_kick)
+// kicked: started ahead of the draw (flexpso_kick); warm: a base made for a warm-up stand-in that no draw has asked for (released when the stand-in is done, base_get)
+@interface FlexEntry : NSObject { @public id<MTLRenderPipelineState> ps; int done, kicked, warm; } @end
 @implementation FlexEntry @end
 
 static id<MTLDevice> g_dev;
@@ -24,6 +25,7 @@ static int g_on;
 static nvn_hmap g_req, g_base;   // values: retained FlexEntry
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_whit, g_wmiss;   // archive lookups of warm-up stand-ins (flexpso_warm), apart from the draws' g_hit / g_miss
+static _Atomic uint64_t g_wrel, g_wtaken;   // stand-in bases released once their stand-in was made / taken by a draw that asked for the same key while it was in the table
 static _Atomic uint64_t g_asked, g_kicked, g_ready, g_kick_late, g_hit, g_miss, g_compiled, g_spec, g_failed, g_spec_ns, g_spec_worst_ns;   // kicked: started ahead of the draw; ready: render asks that found it made
 static _Atomic uint64_t g_waited, g_wait_ns, g_wait_worst_ns, g_wait_hist[FLEXPSO_WAIT_BUCKETS];   // draws that waited for their pipeline: count, total and worst time, histogram
 
@@ -85,14 +87,17 @@ MTL4RenderPipelineDescriptor *flexpso_desc(MTLRenderPipelineDescriptor *d, id<MT
 void flexpso_specialize(MTL4RenderPipelineDescriptor *s, MTLRenderPipelineDescriptor *d) { for (int i = 0; i < 8; i++) colour(s.colorAttachments[i], d.colorAttachments[i]); }
 
 // The unspecialized pipeline for ukey: the first caller makes it (archive, else compile) while later callers for the same key wait for it. A failure is remembered (nil).
-// warm: the lookup is a warm-up stand-in's, counted in g_whit / g_wmiss
-static id<MTLRenderPipelineState> base_get(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, int warm, NSError **err) {
+// warm: the lookup is a warm-up stand-in's, counted in g_whit / g_wmiss; a base it makes is marked warm until a draw (or a tool) asks for the same key, see base_release_warm
+static FlexEntry *base_get(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, int warm, NSError **err) {
     pthread_mutex_lock(&g_mu);
     FlexEntry *b = (__bridge FlexEntry *)nvn_hm_get(&g_base, ukey); int mine = !b;
-    if (mine) { b = [FlexEntry new]; nvn_hm_put(&g_base, ukey, (void *)CFBridgingRetain(b)); }
-    else while (!b->done) pthread_cond_wait(&g_cv, &g_mu);
+    if (mine) { b = [FlexEntry new]; b->warm = warm; nvn_hm_put(&g_base, ukey, (void *)CFBridgingRetain(b)); }
+    else {
+        if (!warm && b->warm) { b->warm = 0; atomic_fetch_add(&g_wtaken, 1); }   // a draw's key: the base stays for good, as every draw's base does
+        while (!b->done) pthread_cond_wait(&g_cv, &g_mu);
+    }
     pthread_mutex_unlock(&g_mu);
-    if (!mine) return b->ps;
+    if (!mine) return b;
     dispatch_group_wait(g_open, DISPATCH_TIME_FOREVER);
     id<MTLRenderPipelineState> ps = nil;
     MTL4RenderPipelineDescriptor *m = flexpso_desc(d, vlib, flib, 1);
@@ -105,11 +110,21 @@ static id<MTLRenderPipelineState> base_get(const void *ukey, MTLRenderPipelineDe
         if (ps) atomic_fetch_add(&g_compiled, 1);
     }
     pthread_mutex_lock(&g_mu); b->ps = ps; b->done = 1; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
-    return ps;
+    return b;
+}
+// A warm-up stand-in is made only to leave its functions compiled (nvn_mtl.m, program warm-up); its vertex layout and sample count rarely match a draw's, so its base is almost never
+// asked for again. Keeping every one cost hundreds of MB (14,625 bases kept against about 460 drawn in Odyssey), so the base leaves the table once the stand-in is made, unless a draw
+// asked for the same key meanwhile. A later ask makes it again from the same descriptor (archive, else compile): the same pipeline
+static void base_release_warm(const void *ukey, FlexEntry *b) {
+    pthread_mutex_lock(&g_mu);
+    int drop = b->warm && (__bridge FlexEntry *)nvn_hm_get(&g_base, ukey) == b;
+    if (drop) CFBridgingRelease(nvn_hm_del(&g_base, ukey));
+    pthread_mutex_unlock(&g_mu);
+    if (drop) atomic_fetch_add(&g_wrel, 1);
 }
 
 static id<MTLRenderPipelineState> make(const void *ukey, MTLRenderPipelineDescriptor *d, id<MTLLibrary> vlib, id<MTLLibrary> flib, const char *label, int warm, NSError **err) {
-    id<MTLRenderPipelineState> b = base_get(ukey, d, vlib, flib, label, warm, err), ps = nil;
+    FlexEntry *e = base_get(ukey, d, vlib, flib, label, warm, err); id<MTLRenderPipelineState> b = e->ps, ps = nil;
     if (b) {
         MTL4RenderPipelineDescriptor *s = (MTL4RenderPipelineDescriptor *)[b newRenderPipelineDescriptorForSpecialization];
         flexpso_specialize(s, d);
@@ -117,6 +132,7 @@ static id<MTLRenderPipelineState> make(const void *ukey, MTLRenderPipelineDescri
         atomic_fetch_add(&g_spec, 1); atomic_fetch_add(&g_spec_ns, t);
         for (uint64_t w = atomic_load(&g_spec_worst_ns); t > w && !atomic_compare_exchange_weak(&g_spec_worst_ns, &w, t);) {}
     }
+    if (warm) base_release_warm(ukey, e);
     if (!ps) { atomic_fetch_add(&g_failed, 1); FLOG("[RED] %s: no flexible pipeline (%s): made as before", label ? label : "-", err && *err ? (*err).localizedDescription.UTF8String : "no unspecialized pipeline"); }
     return ps;
 }
@@ -180,8 +196,9 @@ void flexpso_kick(const void *key, const void *ukey, id<MTLLibrary> vlib, id<MTL
     ask(key, ukey, vlib, flib, label, mk, 0, QOS_CLASS_UTILITY, &g_far, NULL);
 }
 
+unsigned flexpso_bases(void) { pthread_mutex_lock(&g_mu); unsigned n = g_base.n; pthread_mutex_unlock(&g_mu); return n; }
 flexpso_counts flexpso_stats(void) {
-    flexpso_counts c = {g_asked, g_kicked, g_ready, g_hit, g_miss, g_whit, g_wmiss, g_compiled, g_spec, g_failed, g_waited, {0}, g_spec_ns / 1e6, g_spec_worst_ns / 1e6, g_wait_ns / 1e6, g_wait_worst_ns / 1e6};
+    flexpso_counts c = {g_asked, g_kicked, g_ready, g_hit, g_miss, g_whit, g_wmiss, g_wrel, g_wtaken, g_compiled, g_spec, g_failed, g_waited, {0}, g_spec_ns / 1e6, g_spec_worst_ns / 1e6, g_wait_ns / 1e6, g_wait_worst_ns / 1e6};
     for (int i = 0; i < FLEXPSO_WAIT_BUCKETS; i++) c.wait_hist[i] = g_wait_hist[i];
     return c;
 }
@@ -191,8 +208,8 @@ void flexpso_log(void) {
     flexpso_counts c = flexpso_stats();
     static uint64_t said = ~0ull; if (c.asked + c.kicked + c.specialized + c.waited == said) return; said = c.asked + c.kicked + c.specialized + c.waited;
     uint64_t looked = c.archive_hit + c.archive_miss;
-    FLOG("asked at the draw %llu, kicked ahead %llu (ready at their first draw %llu, still in progress %llu; guesses dropped %llu), archive %llu hits / %llu misses (coverage of the draws' pipelines %.1f%%; warm-up stand-ins apart: %llu hits / %llu misses), compiled %llu, specialized %llu (%.3f ms each, worst %.1f ms), failed %llu, draws waited %llu (%.2f ms each, worst %.1f ms; under 1 / 4 / 16 / 64 / 256 ms / longer: %llu / %llu / %llu / %llu / %llu / %llu)",
-         (unsigned long long)c.asked, (unsigned long long)c.kicked, (unsigned long long)c.ready, (unsigned long long)g_kick_late, (unsigned long long)g_far_dropped, (unsigned long long)c.archive_hit, (unsigned long long)c.archive_miss, looked ? 100.0 * c.archive_hit / looked : 0.0, (unsigned long long)c.warm_hit, (unsigned long long)c.warm_miss, (unsigned long long)c.compiled,
+    FLOG("asked at the draw %llu, kicked ahead %llu (ready at their first draw %llu, still in progress %llu; guesses dropped %llu), archive %llu hits / %llu misses (coverage of the draws' pipelines %.1f%%; warm-up stand-ins apart: %llu hits / %llu misses, bases released %llu, taken by a draw %llu, kept %u), compiled %llu, specialized %llu (%.3f ms each, worst %.1f ms), failed %llu, draws waited %llu (%.2f ms each, worst %.1f ms; under 1 / 4 / 16 / 64 / 256 ms / longer: %llu / %llu / %llu / %llu / %llu / %llu)",
+         (unsigned long long)c.asked, (unsigned long long)c.kicked, (unsigned long long)c.ready, (unsigned long long)g_kick_late, (unsigned long long)g_far_dropped, (unsigned long long)c.archive_hit, (unsigned long long)c.archive_miss, looked ? 100.0 * c.archive_hit / looked : 0.0, (unsigned long long)c.warm_hit, (unsigned long long)c.warm_miss, (unsigned long long)c.warm_released, (unsigned long long)c.warm_taken, flexpso_bases(), (unsigned long long)c.compiled,
          (unsigned long long)c.specialized, c.specialized ? c.spec_ms / c.specialized : 0.0, c.spec_worst_ms, (unsigned long long)c.failed,
          (unsigned long long)c.waited, c.waited ? c.wait_ms / c.waited : 0.0, c.wait_worst_ms, (unsigned long long)c.wait_hist[0], (unsigned long long)c.wait_hist[1], (unsigned long long)c.wait_hist[2],
          (unsigned long long)c.wait_hist[3], (unsigned long long)c.wait_hist[4], (unsigned long long)c.wait_hist[5]);
