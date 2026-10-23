@@ -83,7 +83,7 @@ static NSString *stamp(NSString *p) {
         int r = dm_pack_check(g.root.fileSystemRepresentation, why, sizeof why);
         env_back("DM_CODE", oc); env_back("DM_ROMFS", orf);
         NSString *text = @(why);
-        if (!r && useOwn && bad) { r = HEARTH_NEEDS_SIGNING; text = [NSString stringWithFormat:@"%@: %@", g.titleId, bad]; }
+        if (!r && useOwn && bad) { r = HEARTH_NEEDS_SIGNING; text = [NSString stringWithFormat:@"%@: %@. To sign it for this app, import the game again from the Mac.", g.titleId, bad]; }   // also after Hearth's certificate or bundle ID changed
         c = @[key, @(r), text, code ?: @""]; _checked[g.root] = c;
     }
     g.reason = [c[1] intValue]; g.why = g.reason ? c[2] : nil; g.codePath = [c[3] length] ? c[3] : nil;

@@ -1,6 +1,7 @@
 // Hearth's process model (HearthLaunch.h)
 #import "HearthLaunch.h"
 #import "HearthHomeVC.h"
+#import "HearthHomeViews.h"
 #import "HearthSound.h"
 #import <objc/message.h>
 #include "hle.h"
@@ -73,7 +74,7 @@ static void alert(UIViewController *over, NSString *title, NSString *msg) {
 }
 
 void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void))) {
-    if (g.reason) { alert(window.rootViewController, g.reason == 2 ? @"Rebuild needed" : @"This game cannot start", g.why); return; }
+    if (g.reason) { alert(window.rootViewController, hearth_state_line(g), g.why); return; }   // titled like the tile's state line
     if (g_running) {   // one game per process: close the running one, then the restart boots g
         if ([g_running.titleId isEqual:g.titleId]) { hearth_resume(); return; }
         UIViewController *over = window.rootViewController; while (over.presentedViewController) over = over.presentedViewController;

@@ -126,7 +126,7 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
         lib.bundleId = @"org.example.hearth"; lib.appSigner = [HearthSigner signerOf:own];
         system([NSString stringWithFormat:@"touch '%@'", own].UTF8String);   // the check is cached by file stamps: the rule changed, so touch the code
         g = [lib gameWithId:gid];
-        CHECK(g.reason == HEARTH_NEEDS_SIGNING && [g.why containsString:@"signed as org.example.other"], "own code signed for another identifier: Needs signing (%d %s)", g.reason, g.why.UTF8String);
+        CHECK(g.reason == HEARTH_NEEDS_SIGNING && [g.why containsString:@"signed as org.example.other"] && [g.why containsString:@"import the game again"], "own code signed for another identifier: Needs signing (%d %s)", g.reason, g.why.UTF8String);
         NSString *inApp = [bundle stringByAppendingFormat:@"/Frameworks/%@.dylib", gid];
         [fm copyItemAtPath:own toPath:inApp error:nil];
         g = [lib gameWithId:gid];
