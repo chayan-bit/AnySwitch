@@ -31,5 +31,13 @@ assert dmo[-1:] == ['Gen/pack/profile'] and '"$GD/settings.json" "$DMO"/settings
 assert '[packRoot stringByAppendingPathComponent:@"profile/settings.json"]' in (SRC / 'DmSettings.m').read_text(encoding='utf-8') and 'dm_settings_set_game(g.titleId, pack)' in (SRC / 'main.m').read_text(encoding='utf-8'), 'DmSettings.m reads the launched pack\'s settings where the IPA puts them'
 assert '${CODE_DYLIB:-0}' in SH and '${CODE_DYLIB:-1}' not in SH and '"$P/Frameworks=$O/fw"' in SH, 'the code stays in the executable unless CODE_DYLIB=1, which ships Frameworks/<title id>.dylib'
 assert '--dylib "$O/fw/$GAME.dylib"' in SH and '@"/Frameworks/%@.dylib", g.titleId' in (SRC.parent / 'Hearth' / 'HearthLibrary.m').read_text(encoding='utf-8'), 'Hearth points DM_CODE at Frameworks/<title id>.dylib when the app ships it'
-print('BUILD_DEFAULTS OK chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile, code in the executable unless CODE_DYLIB=1')
+# Profiling counters: off in a product build (no DEVCTL, what gen_build.py hands the iOS project), on in a dev build
+HOST = Path(__file__).resolve().parents[2] / 'host'
+def host_cmd(env):
+    return subprocess.run(['make', '-s', '-n', '-B', '-C', str(HOST), 'dmhost'], env=env, capture_output=True, text=True, check=True).stdout
+import os
+base = {k: v for k, v in os.environ.items() if k != 'DEVCTL'}
+assert '-DDM_PERF_DEFAULT=0' in host_cmd(base), 'a product build starts with the profiling counters off'
+assert '-DDM_PERF_DEFAULT=0' not in host_cmd({**base, 'DEVCTL': '1'}) and '-DDM_DEVCTL' in host_cmd({**base, 'DEVCTL': '1'}), 'a dev build keeps them on'
+print('BUILD_DEFAULTS OK profiling counters off in product builds, chunk store by default, loose files and none by IPA_ROMFS, flexible pipeline archive on by default, game settings at pack/profile, code in the executable unless CODE_DYLIB=1')
 sys.exit(0)

@@ -6,6 +6,10 @@ SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m romstore.c profile.
 ifneq ($(strip $(DEVCTL)),)
 CFLAGS += -DDM_DEVCTL
 SRC += devctl.c
+else
+# A product build (no DEVCTL: the shipped app): the profiling counters (per-pass GPU timestamps, host gates) start off; DM_PERF=1 in env.txt turns them on.
+# The frame rate overlay counts presents and the long-frame log reads command-buffer GPU times, neither needs them
+CFLAGS += -DDM_PERF_DEFAULT=0
 endif
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex and dm/gfx/vk are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line

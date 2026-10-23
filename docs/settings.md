@@ -149,7 +149,7 @@ A game can still pin it with `"defaults": {"DM_UPSCALE": "bilinear"}` in its `se
 
 ### Flexible pipelines (`DM_PSO_FLEX`)
 
-The flexible pipelines (`dm/gfx/nvn/nvn_flexpso.m`, `dm/gfx/README.md`) make the game's graphics pipelines on background threads from a pipeline archive shipped in the app, and skip a draw for a moment instead of stalling the frame.
+The flexible pipelines (`dm/gfx/nvn/nvn_flexpso.m`, `dm/gfx/README.md`) make the game's graphics pipelines on background threads from a pipeline archive shipped in the app, so most are ready before their first draw; a draw whose pipeline is not ready yet waits for it and is never skipped.
 The row is on the Performance page for a game that draws with NVN (the `nvn` capability), is **on by default**, and a change applies on the next start.
 The row's detail says what it costs: it can make the first launch slightly slower, and it avoids hitches while playing.
 The host itself defaults to off (the Mac host, its tests and tools), so the entry has `exportDefault`: the app hands its default over to the environment.

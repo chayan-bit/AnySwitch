@@ -26,8 +26,7 @@
 #include "nvn_cover.h"
 #include "nvn_rscale.h"   // DM_INTERNAL_RES: internal resolution (render targets drawn at 1x, 1.5x or 2x)
 #include "nvn_psoarch.h"   // precompiled pipelines (Metal binary archives): lookup before compiling, harvest runs
-#include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw skipped until ready (or waiting, nvn_rthist.h)
-#include "nvn_rthist.h"
+#include "nvn_flexpso.h"   // flexible pipelines (Metal 4, DM_PSO_FLEX): made on workers from a shipped MTL4Archive, the draw waits until ready
 #include "nvn_bgq.h"   // background slots of the program warm-up and the record-time kick
 #include "../../host/profile.h"   // the game profile (g_profile): its switches and chain, the translation chain version of the B shader library it expects
 extern int g_mtl_rk_on;   // record-time kick (defined with it, below)
@@ -119,7 +118,7 @@ enum { RS_SITES = 16 }; static struct { int line; uint64_t n, bytes; } g_rs_site
 // weak-table add / lookup autoreleases the entries it probes (loaded weak = retained + autoreleased), not only the object passed in. Without the pool each call pinned some other entry for good: freed memory pools' no-copy buffers
 // stayed alive with their guest pages wired (1052 buffers, 128 MB after one scene change; 1862 after 50 minutes on a tablet), and "freed but alive" in the memory readout line never went down
 static void res_add_at(id<MTLResource> r, int line) { @autoreleasepool {
-    if (!r) return;
+    if (!r || ([(id)r conformsToProtocol:@protocol(MTLResource)] && r.heap)) return;   // a texture placed in a heap is resident through its heap (render-target heaps)
     pthread_mutex_lock(&g_res_mu);
     if (!g_res_objects) g_res_objects = [NSHashTable weakObjectsHashTable];
     if ([g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }   // already resident (a shared texture resolved again): marking the set dirty would cost a commit that changes nothing
@@ -146,7 +145,7 @@ static void res_check(id r, const char *what, int reg) {
     int is_tex = [r conformsToProtocol:@protocol(MTLTexture)], is_buf = [r conformsToProtocol:@protocol(MTLBuffer)];
     if (!is_tex && !is_buf) return;   // Samplers etc. are not allocations
     id<MTLResource> a = r; int hops = 0;
-    if (is_tex) { id<MTLTexture> t = (id<MTLTexture>)a; while (t.parentTexture) { t = t.parentTexture; hops++; } a = t.buffer ? (id<MTLResource>)t.buffer : (id<MTLResource>)t; }
+    if (is_tex) { id<MTLTexture> t = (id<MTLTexture>)a; while (t.parentTexture) { t = t.parentTexture; hops++; } a = t.buffer ? (id<MTLResource>)t.buffer : t.heap ? (id<MTLResource>)(id)t.heap : (id<MTLResource>)t; }
     pthread_mutex_lock(&g_res_mu); int ok = [g_res_objects containsObject:a]; pthread_mutex_unlock(&g_res_mu);
     if (!ok) { nbad++; id<MTLTexture> t = is_tex ? (id<MTLTexture>)r : nil;
         MLOG("[RED] missing residency #%d: %s slot %d %s %p (parent chain %d deep) allocated %lu B storage mode %lu%s", nbad, what, reg, is_tex ? "texture" : "buffer", (__bridge void *)a, hops, (unsigned long)a.allocatedSize, (unsigned long)a.storageMode,
@@ -201,7 +200,7 @@ static void defer_drain(void) { @autoreleasepool {
     pthread_mutex_unlock(&g_deferred_mu);
     for (NvDeferredRelease *d in ready) {
         id obj = d->object;
-        if (!d->keep_resident && [obj conformsToProtocol:@protocol(MTLResource)]) {
+        if (!d->keep_resident && ([obj conformsToProtocol:@protocol(MTLResource)] || [obj conformsToProtocol:@protocol(MTLHeap)])) {
             pthread_mutex_lock(&g_res_mu);
             int registered = [g_res_objects containsObject:obj];
             pthread_mutex_unlock(&g_res_mu);
@@ -1274,9 +1273,10 @@ static int rs_guest_ext(id<MTLTexture> t, NSUInteger level, NSUInteger *w, NSUIn
 // On memory pool Finalize, evict the textures built on that pool from the sharing table (collect the keys first, then delete: deletion shifts entries back). The sharing table used not to evict: Mario's pools stay for good, so entries are bounded;
 // Engage frees pools on scene changes and rebuilds on new ones, so the old pools' render targets and other private textures stayed in the table forever (about 0.8 GB more GPU memory over 850 s of the title demo), and linear textures built directly on a pool also kept the whole pool buffer alive.
 // Also, when a pool object's address is reused, old entries would hand a texture on the old storage to the new pool's texture at the same offset and description. Evicted textures go through deferred release; if the serial table still holds one, that is just one more reference
-static void treg_drop_pool_views(const void *pool);
+static void treg_drop_pool_views(const void *pool); static void rh_drop_pool(const void *pool);
 void mtl_alias_drop_pool(const void *pool) {
     if (!pool) return;
+    rh_drop_pool(pool);
     pthread_mutex_lock(&g_smu);
     uint32_t n = 0; alias_key *ks = NULL;
     for (uint32_t i = 0; i < g_alias.cap; i++) {
@@ -1318,7 +1318,8 @@ static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get
 enum { NGHOST = 512 };
 static nvn_hmap g_tex_live = {.klen = 8};   // serial → (void *)1, under g_smu
 static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_ring[NGHOST]; static unsigned g_ghost_next; static uint64_t g_ghost_puts;
-void mtl_tex_init(const tex_t *t) { if (!t->serial) return; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1); pthread_mutex_unlock(&g_smu); }
+static void rh_note(const tex_t *t);
+void mtl_tex_init(const tex_t *t) { if (!t->serial) return; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1); pthread_mutex_unlock(&g_smu); rh_note(t); }
 static void obj_drop(id o) { if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); }   // caller holds g_smu
 static __unsafe_unretained id tex_get(uint64_t k) {
     pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); if (!o && g_ghost.n) o = hm_get_id(&g_ghost, &k); pthread_mutex_unlock(&g_smu); return o;
@@ -1927,6 +1928,150 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
     if (r != (unsigned)pk->vbase) { static int nl; if (nl++ < 6) MLOG("sparse texture ser=%llu %ux%u: sampled from level %u of %u (finer levels not mapped)", (unsigned long long)t->serial, t->d.width, t->d.height, r, n); }
     pk->vbase = (int)r;
 }
+// ---- Render-target heaps: NVN aliasing kept (off by default: DM_NVN_RTHEAP=1 turns it on; an occasional one-frame green flash in Odyssey is not explained yet) ----
+// A game places render targets it never uses at the same time in the same or overlapping storage of one pool, and initializes new texture objects on that storage as it goes (Odyssey:
+// a 100 MB G-buffer pool holds about 1,000 texture descriptions by the Cap Kingdom, 1.4 GB summed at 1x, as its dynamic resolution and passes re-describe the same 60 MB; one storage is
+// used as R11G11B10F and as R32F). One Metal texture per (pool, offset, description) gave each its own memory, and kept it until the pool went. Here the GPU-owned textures of a pool share
+// a Metal placement heap laid out like the pool: each at its guest offset times the heap's scale K (host size + alignment over guest size), so textures whose guest ranges overlap share
+// bytes as on the Switch and textures whose guest ranges are disjoint never share host bytes (host range within [K(o - lo), K(o + size - lo)), see rh_place).
+// A heap is made when the game uses a texture on storage another texture it uses overlaps (that first one stays standalone): initialized descriptions alone may never be drawn with.
+// The heap covers the whole pool when that is smaller than 9/10 of the textures initialized in it so far apart (a pool of render targets); else a cluster: the textures whose guest
+// ranges overlap, transitively, when there are at least two and the same saving holds. K covers 90% of the members' host bytes; a texture that needs more (small ones, whose alignment
+// dominates) stays standalone, as does every texture outside a heap. The replay already orders every pass after the passes before it (full barriers between encoders), which is what aliased
+// memory needs. A texture created over bytes another member already used is not zeroed (on the Switch it reads what is there; zeroing would clobber the other texture). Generic: no title
+// lists; packaged, linear, buffer, CPU-written and initial-content textures stay standalone, as before. The registry and heaps live until their pool is finalized (mtl_alias_drop_pool)
+typedef struct { uint64_t pool; int64_t off; uint64_t size; nvn_texdesc d; MTLSizeAndAlign sa; int made; } rh_tex;   // made: a Metal texture exists for it (in a heap or standalone)
+@interface NvRtHeap : NSObject { @public uint64_t pool; int64_t lo, hi; double k; NSUInteger align; id<MTLHeap> heap; uint32_t members; uint64_t (*used)[2]; uint32_t nused; } @end
+@implementation NvRtHeap - (void)dealloc { free(used); } @end
+static pthread_mutex_t g_rh_mu = PTHREAD_MUTEX_INITIALIZER;
+static rh_tex *g_rh; static uint32_t g_rh_n, g_rh_cap; static nvn_hmap g_rh_idx = {.klen = sizeof(alias_key)};   // registry of initialized eligible textures, deduplicated by storage + description
+static NSMutableArray<NvRtHeap *> *g_rh_heaps; static int g_rh_on = -1; static uint64_t g_rh_placed, g_rh_shared;   // textures placed in heaps, of them over bytes a member already used
+static int rh_on(void) { if (g_rh_on < 0) { const char *e = getenv("DM_NVN_RTHEAP"); g_rh_on = e && atoi(e) != 0; } return g_rh_on; }
+// A texture that becomes a plain GPU-owned private texture in tex_mtl_ (not packaged, linear, buffer or compressed): a sampled texture of a sparse virtual pool is read through the page
+// table (packaged), as tex_mtl_ decides
+static int rh_eligible(const tex_t *t) {
+    if (!t->pool || !t->L.size || t->has_layout || t->d.target == NVN_TEXTURE_TARGET_BUFFER || fmt_compressed(t->d.format)) return 0;
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;
+    if ((t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && !(t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE)) && nvn_sparse_pool(t->pool)) return 0;
+    return 1;
+}
+// Host size and alignment of a texture description in a heap, at the session scale when it may be scaled (an upper bound: a member made at 1x takes less)
+static MTLSizeAndAlign rh_size(const nvn_texdesc *td) {
+    tex_t t; memset(&t, 0, sizeof t); t.d = *td; MTLSizeAndAlign z = {0, 0};
+    MTLTextureDescriptor *d = tex_desc(&t, 0); if (!d) return z;
+    if (g_rs != 1.0f && (td->target == 1 || td->target >= 4) && td->target <= 6 && nvn_rs_host(td->width, g_rs) <= 16384 && nvn_rs_host(td->height, g_rs) <= 16384) {
+        d.width = nvn_rs_host((uint32_t)d.width, g_rs); d.height = nvn_rs_host((uint32_t)d.height, g_rs); }
+    return [g_dev heapTextureSizeAndAlignWithDescriptor:d];
+}
+static void rh_note(const tex_t *t) {   // TextureInitialize
+    if (!rh_on() || !rh_eligible(t)) return;
+    alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
+    pthread_mutex_lock(&g_rh_mu); int known = nvn_hm_get(&g_rh_idx, &ak) != NULL; pthread_mutex_unlock(&g_rh_mu);
+    if (known) return;
+    MTLSizeAndAlign sa; @autoreleasepool { sa = rh_size(&t->d); }   // a game thread: its implicit pool is never drained
+    if (!sa.size) return;
+    pthread_mutex_lock(&g_rh_mu);
+    if (!nvn_hm_get(&g_rh_idx, &ak)) {
+        if (g_rh_n == g_rh_cap) { g_rh_cap = g_rh_cap ? g_rh_cap * 2 : 256; g_rh = realloc(g_rh, g_rh_cap * sizeof *g_rh); if (!g_rh) abort(); }
+        g_rh[g_rh_n] = (rh_tex){ak.pool, t->off, t->L.size, t->d, sa}; g_rh_n++;
+        nvn_hm_put(&g_rh_idx, &ak, (void *)(uintptr_t)g_rh_n);
+    }
+    pthread_mutex_unlock(&g_rh_mu);
+}
+static void rh_drop_pool(const void *pool) {   // pool Finalize: its registry entries and heaps go (a heap stays alive while a texture placed in it does)
+    if (!g_rh_n && !g_rh_heaps.count) return;
+    pthread_mutex_lock(&g_rh_mu);
+    uint32_t w = 0; for (uint32_t i = 0; i < g_rh_n; i++) if (g_rh[i].pool != (uint64_t)(uintptr_t)pool) g_rh[w++] = g_rh[i];
+    if (w != g_rh_n) { g_rh_n = w; nvn_hm_clear(&g_rh_idx, NULL);
+        for (uint32_t i = 0; i < g_rh_n; i++) { alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = g_rh[i].pool; ak.off = g_rh[i].off; ak.d = g_rh[i].d; nvn_hm_put(&g_rh_idx, &ak, (void *)(uintptr_t)(i + 1)); } }
+    for (NSInteger i = (NSInteger)g_rh_heaps.count - 1; i >= 0; i--) if (g_rh_heaps[(NSUInteger)i]->pool == (uint64_t)(uintptr_t)pool) {
+        defer_obj_release(g_rh_heaps[(NSUInteger)i]->heap); [g_rh_heaps removeObjectAtIndex:(NSUInteger)i]; }
+    pthread_mutex_unlock(&g_rh_mu);
+}
+// Host offset of a texture at guest offset o (size g) in heap h for a host size n: aligned K(o - lo), and only if it ends before K(o + g - lo) and the heap's end
+static int rh_place(NvRtHeap *h, int64_t o, uint64_t g, MTLSizeAndAlign sa, uint64_t *at) {
+    if (o < h->lo || o + (int64_t)g > h->hi || !sa.size || h->align % sa.align) return 0;
+    uint64_t a = (uint64_t)ceil((double)(o - h->lo) * h->k); a = (a + sa.align - 1) / sa.align * sa.align;
+    if (a + sa.size > (uint64_t)floor((double)(o + (int64_t)g - h->lo) * h->k) || a + sa.size > h->heap.size) return 0;
+    *at = a; return 1;
+}
+// K's margin over the textures known when the heap is made: descriptions the game initializes later on the same storage (another resolution, another format) need up to about a tenth
+// more host bytes per guest byte (guest rows are padded to the block-linear layout, scaled sizes round up); they fit, at a heap a seventh larger
+#define RH_K_SLACK 1.15
+typedef struct { double r; uint64_t w; } rh_rw;
+static int rh_rw_cmp(const void *a, const void *b) { double x = ((const rh_rw *)a)->r, y = ((const rh_rw *)b)->r; return (x > y) - (x < y); }
+// A heap for t's pool over guest [lo, hi) (under g_rh_mu): K is the smallest scale that fits 90% of the host bytes of the registry textures inside; nil when fewer than two fit or the heap
+// is not smaller than 9/10 of the ones that fit apart
+static NvRtHeap *rh_heap_new(const tex_t *t, int64_t lo, int64_t hi, const char *what) {
+    uint64_t pool = (uint64_t)(uintptr_t)t->pool; NSUInteger al = 1; uint32_t n = 0; uint64_t all = 0;
+    for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; if (e->pool == pool && e->off >= lo && e->off + (int64_t)e->size <= hi) { al = MAX(al, e->sa.align); n++; } }
+    if (n < 2) return nil;
+    rh_rw *rw = malloc(n * sizeof *rw); if (!rw) abort(); n = 0;
+    for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i];
+        if (e->pool == pool && e->off >= lo && e->off + (int64_t)e->size <= hi) { rw[n++] = (rh_rw){(double)(e->sa.size + al) / (double)e->size, e->sa.size}; all += e->sa.size; } }
+    qsort(rw, n, sizeof *rw, rh_rw_cmp);
+    double k = 0; uint64_t sum = 0; uint32_t fit = 0;
+    for (uint32_t i = 0; i < n && sum * 10 < all * 9; i++) { k = rw[i].r; sum += rw[i].w; }
+    k *= RH_K_SLACK; sum = 0;
+    for (uint32_t i = 0; i < n && rw[i].r <= k; i++) { sum += rw[i].w; fit++; }
+    free(rw);
+    uint64_t size = ((uint64_t)ceil((double)(hi - lo) * k) + al - 1) / al * al;
+    if (fit < 2 || size * 10 >= sum * 9) return nil;
+    MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.storageMode = MTLStorageModePrivate; hd.hazardTrackingMode = MTLHazardTrackingModeUntracked; hd.size = size;
+    id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd];
+    if (!heap) { static int nf; if (!nf++) MLOG("[RED] render-target heap of %llu MB not created: its textures stay standalone", (unsigned long long)(size >> 20)); return nil; }
+    NvRtHeap *h = [NvRtHeap new]; h->pool = pool; h->lo = lo; h->hi = hi; h->k = k; h->align = al; h->heap = heap;
+    if (!g_rh_heaps) g_rh_heaps = [NSMutableArray array];
+    [g_rh_heaps addObject:h];
+    res_add((id<MTLResource>)(id)heap);   // the heap is the allocation the residency set holds (MTLAllocation; res_add_at only adds it)
+    static int nl; if (nl++ < 16) MLOG("render-target heap (%s): pool %p guest %#llx..%#llx (%llu KB), %u of %u textures, %llu KB apart, in %llu KB (scale %.3f)", what, t->pool, (unsigned long long)lo,
+                                       (unsigned long long)hi, (unsigned long long)((hi - lo) >> 10), fit, n, (unsigned long long)(sum >> 10), (unsigned long long)(size >> 10), k);
+    return h;
+}
+// A heap for t (under g_rh_mu): the whole pool, unless the pool has one already or it would not save; else t's cluster, unless that reaches an existing heap (then t stays standalone)
+static NvRtHeap *rh_cluster(const tex_t *t) {
+    uint64_t pool = (uint64_t)(uintptr_t)t->pool; int whole = 0;
+    for (NvRtHeap *h in g_rh_heaps) whole |= h->pool == pool && h->lo == 0 && h->hi == (int64_t)t->pool->size;
+    if (!whole && t->pool->size >= (uint64_t)t->off + t->L.size) { NvRtHeap *h = rh_heap_new(t, 0, (int64_t)t->pool->size, "whole pool"); if (h) return h; }
+    int64_t lo = t->off, hi = t->off + (int64_t)t->L.size;
+    for (int grew = 1; grew;) { grew = 0;
+        for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; int64_t elo = e->off, ehi = e->off + (int64_t)e->size;
+            if (e->pool == pool && elo < hi && lo < ehi && (elo < lo || ehi > hi)) { lo = MIN(lo, elo); hi = MAX(hi, ehi); grew = 1; } } }
+    for (NvRtHeap *h in g_rh_heaps) if (h->pool == pool && h->lo < hi && lo < h->hi) return nil;
+    return rh_heap_new(t, lo, hi, "cluster");
+}
+// t's texture in a heap of its pool (the widest that holds its range and its scale), or nil (standalone). *over: it starts on bytes a member already used (not zeroed then)
+// Whether the game already uses another texture on storage overlapping t's (under g_rh_mu): a heap is made only then, as descriptions it initializes and never draws with would make the
+// heap cost more than the one texture it uses (Sword: 15 cluster heaps of 10 to 13 MB, one texture placed in each)
+static int rh_aliased(const tex_t *t, uint32_t self) {
+    uint64_t pool = (uint64_t)(uintptr_t)t->pool; int64_t lo = t->off, hi = t->off + (int64_t)t->L.size;
+    for (uint32_t i = 0; i < g_rh_n; i++) { const rh_tex *e = &g_rh[i]; if (i != self && e->made && e->pool == pool && e->off < hi && lo < e->off + (int64_t)e->size) return 1; }
+    return 0;
+}
+static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d, int *over) {
+    *over = 0;
+    if (!rh_on() || !rh_eligible(t)) return nil;
+    int init = tex_init_wanted(t, d.pixelFormat);   // stays standalone, but counts as a texture in use
+    MTLSizeAndAlign sa = init ? (MTLSizeAndAlign){0, 0} : [g_dev heapTextureSizeAndAlignWithDescriptor:d];
+    pthread_mutex_lock(&g_rh_mu);
+    NvRtHeap *h = nil; uint64_t pool = (uint64_t)(uintptr_t)t->pool, at = 0, a;
+    alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = pool; ak.off = t->off; ak.d = t->d; uint32_t ix = (uint32_t)(uintptr_t)nvn_hm_get(&g_rh_idx, &ak);   // registry index + 1
+    if (!init) {
+        for (NvRtHeap *x in g_rh_heaps) if (x->pool == pool && (!h || x->hi - x->lo > h->hi - h->lo) && rh_place(x, t->off, t->L.size, sa, &a)) { h = x; at = a; }
+        if (!h && ix && rh_aliased(t, ix - 1) && (h = rh_cluster(t)) && !rh_place(h, t->off, t->L.size, sa, &at)) h = nil;
+    }
+    if (ix) g_rh[ix - 1].made = 1;
+    if (!h) { pthread_mutex_unlock(&g_rh_mu); return nil; }
+    for (uint32_t i = 0; i < h->nused; i++) *over |= h->used[i][0] < at + sa.size && at < h->used[i][1];
+    uint64_t (*nu)[2] = realloc(h->used, (h->nused + 1) * sizeof *nu); if (!nu) abort(); h->used = nu; h->used[h->nused][0] = at; h->used[h->nused][1] = at + sa.size; h->nused++;
+    h->members++; g_rh_placed++; g_rh_shared += *over;
+    id<MTLHeap> heap = h->heap;
+    pthread_mutex_unlock(&g_rh_mu);
+    return [heap newTextureWithDescriptor:d offset:at];
+}
+static void rh_stats(uint32_t *heaps, uint64_t *bytes, uint64_t *placed, uint64_t *shared) {
+    pthread_mutex_lock(&g_rh_mu); *heaps = (uint32_t)g_rh_heaps.count; *bytes = 0; for (NvRtHeap *h in g_rh_heaps) *bytes += h->heap.size; *placed = g_rh_placed; *shared = g_rh_shared; pthread_mutex_unlock(&g_rh_mu);
+}
 static uint64_t g_texinfo_ser[8]; static int g_texinfo_n;
 static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     tex_t *t = (tex_t *)ct;
@@ -2047,10 +2192,11 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (!d) return nil;
         int scaled = g_rs != 1.0f && t->pool && rs_decide(t, &ak, d);
         if (scaled) { d.width = nvn_rs_host((uint32_t)d.width, g_rs); d.height = nvn_rs_host((uint32_t)d.height, g_rs); }   // targets 1, 4, 5, 6: width and height are the guest's
-        mt = [g_dev newTextureWithDescriptor:d];
+        int over = 0; mt = rh_texture(t, d, &over);   // in its render-target heap (shared bytes as on the Switch), else standalone
+        if (!mt) mt = [g_dev newTextureWithDescriptor:d];
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
         if (scaled) rs_add(mt);
-        res_add(mt); if (scaled || !tex_init_fill(t, mt)) tex_zero_fill(mt);   // register residency before filling (the copy destination must be resident too)
+        res_add(mt); if (!over && (scaled || !tex_init_fill(t, mt))) tex_zero_fill(mt);   // register residency before filling (the copy destination must be resident too); a texture on bytes another one used keeps them
     }
     if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("new texture (%s) #%d ser=%llu %ux%ux%u format %#x target %d levels %u storage %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }
     if (getenv("DM_NVN_TEXCPU") && t->pool && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) MLOG("non-swizzled texture on a CPU-visible pool ser=%llu %ux%ux%u format %#x target %d levels %u texture flags %#x pool flags %#x storage %p", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, t->d.flags, t->pool->flags, (void *)t->mem);
@@ -2098,6 +2244,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
         uint64_t made = g_rs_skip[0]; os_unfair_lock_unlock(&g_rs_lk);
         MLOG("internal resolution memory: scaled targets %llu live (%llu made), %llu MB (%llu MB at 1x), demoted %llu; at 1x / demoted by reason:%s", (unsigned long long)n, (unsigned long long)made, (unsigned long long)mb, (unsigned long long)mb1, (unsigned long long)dem, o ? why : " none");
     }
+    { uint32_t hn; uint64_t hb, hp, hs; rh_stats(&hn, &hb, &hp, &hs);
+      if (hn) MLOG("render-target heaps: %u, %llu MB, %llu textures placed in them in total (%llu on bytes another one used)", hn, (unsigned long long)(hb >> 20), (unsigned long long)hp, (unsigned long long)hs); }
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *); unsigned vn; uint64_t vh, vm; mtl_vc_stats(&vn, &vh, &vm);
       MLOG("texture views by texture (vc_get): %u textures hold cached views; %llu views reused, %llu made in total", vn, (unsigned long long)vh, (unsigned long long)vm); }
     if (g_allocprof > 0) { char ab[256]; int o = 0; for (int i = 0; i < g_alloc_n && o < 200; i++) o += snprintf(ab + o, sizeof ab - o, " #%d %llu MB", i, (unsigned long long)(g_alloc4[i].allocatedSize >> 20));
@@ -2157,7 +2305,7 @@ static void rr_reset(void);
 static id<MTL4RenderCommandEncoder> g_enc;
 static int enc_open(void) { return g_enc != nil; }
 // Target info of the current render pass: determined once from the attachments at rp_begin and shared by all draws in the pass (pipeline key, depth-stencil, viewport / scissor all depend only on it)
-static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs, steady; NSUInteger tw, th; float rs; NSUInteger gw, gh; uint64_t serial, reg_gen, ser_gen, range_dirty; int range_external, range_depth_nonro, layered; __unsafe_unretained id<MTLTexture> range_color, range_depth; } g_pass;
+static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs; NSUInteger tw, th; float rs; NSUInteger gw, gh; uint64_t serial, reg_gen, ser_gen, range_dirty; int range_external, range_depth_nonro, layered; __unsafe_unretained id<MTLTexture> range_color, range_depth; } g_pass;
 // rs: the pass scale (internal resolution: every attachment at g_rs, else 1; attachment-less passes 1); gw / gh: tw / th in guest units
 // The guest scissor R.sc in host units of a target tw x th at scale s, clamped to it; 0 = empty. Edges: start floored, end ceiled (nvn_rs_edges), so neighbouring scissors stay gap-free at 1.5x
 static int pass_sc(long *x0, long *y0, long *x1, long *y1, NSUInteger tw, NSUInteger th, float s) {
@@ -2167,10 +2315,6 @@ static int pass_sc(long *x0, long *y0, long *x1, long *y1, NSUInteger tw, NSUInt
     return *x1 > *x0 && *y1 > *y0;
 }
 static int g_rp_layered;   // the pass about to open is for a vertex shader that writes the layer (draw → rp_begin_ex)
-// steady (DM_PSO_FLEX skip-draw): every target of the pass was also rendered the previous frame (window images always count as such), so a draw whose pipeline is not ready may be
-// skipped; otherwise it waits (nvn_rthist.h).
-// Stamped once per pass begin on the replay thread; the draws read the flag only
-static nvn_rthist g_rth = {.m = {.klen = 8}, .next_prune = RTH_PRUNE_EVERY};
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // Already set on this encoder (not set again if identical)
 // Dynamic state already sent on the open render encoder: each draw used to send all nine (stencil reference, viewport, scissor, cull, winding, fill, depth bias, depth clip, blend colour);
 // now a value is sent only when it differs. g_ed.ok holds one bit per item and is cleared for every new encoder and after a clear triangle (which sets its own)
@@ -2786,10 +2930,6 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
                 if (w) { g_pass.gw = w; g_pass.gh = h; }
                 g_rs_wgen++; }
         }
-        if (flexpso_on()) { uint64_t ts[9]; int nt = 0, nwin = 0;
-            for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) { uint64_t s = R.rt.color[i]->serial; if (xv_present(s)) nwin++; else ts[nt++] = s; }
-            if (dt || stt) ts[nt++] = R.rt.depth->serial;
-            g_pass.steady = rth_steady(&g_rth, ts, nt, nwin, atomic_load(&g_cur_frame)); }
         if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
@@ -4156,18 +4296,18 @@ static void pso_ukey_fill(const pso_key *k, NvShader *vs, pso_ukey *u) {
     memset(u->k.cfmt, 0, sizeof u->k.cfmt); u->k.dfmt = u->k.sfmt = 0; u->k.blend_en = u->k.chmask = 0; memset(u->k.blend, 0, sizeof u->k.blend);
     u->layer_out = vs->layer_out;
 }
-// may_skip: every target of the pass was rendered the previous frame (g_pass.steady, nvn_rthist.h); otherwise the draw waits for its pipeline (time in *wait_ns)
-static id<MTLRenderPipelineState> pso_flex_get(const pso_key *k, NvShader *vs, NvShader *fs, int may_skip, int *pending, uint64_t *wait_ns) {
+// The draw waits for its pipeline when a worker has not made it yet (time in *wait_ns): a draw is never skipped
+static id<MTLRenderPipelineState> pso_flex_get(const pso_key *k, NvShader *vs, NvShader *fs, uint64_t *wait_ns) {
     pso_ukey u; pso_ukey_fill(k, vs, &u); char lb[64]; snprintf(lb, sizeof lb, "vertex %s fragment %s", vs->key, fs ? fs->key : "-");
-    return flexpso_get(k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(k, vs, fs, nil, 0); }, may_skip, pending, wait_ns);
+    return flexpso_get(k, &u, vs->lib, fs ? fs->lib : nil, lb, ^{ return pso_desc(k, vs, fs, nil, 0); }, wait_ns);
 }
-// DM_PSO_SKIPLOG=path: one line per draw whose pipeline was not ready, for the skip measurement (dm/gfx/README.md, pipeline coverage):
-// <present count> <TAB> <key hash> <TAB> skip | wait <TAB> <wait in us> <TAB> <vertex shader key> <TAB> <fragment shader key>
-static void pso_skip_log(const pso_key *k, NvShader *vs, NvShader *fs, int waited, uint64_t wait_ns) {
+// DM_PSO_SKIPLOG=path: one line per draw whose pipeline was not ready (dm/gfx/README.md, pipeline coverage):
+// <present count> <TAB> <key hash> <TAB> wait <TAB> <wait in us> <TAB> <vertex shader key> <TAB> <fragment shader key>
+static void pso_skip_log(const pso_key *k, NvShader *vs, NvShader *fs, uint64_t wait_ns) {
     static FILE *f; static int init; if (!init) { init = 1; const char *p = getenv("DM_PSO_SKIPLOG"); if (p && (f = fopen(p, "w"))) setvbuf(f, NULL, _IOLBF, 0); }   // line-buffered: the process may be killed
     if (!f) return;
     uint64_t h = 1469598103934665603ull; const uint8_t *b = (const uint8_t *)k; for (size_t i = 0; i < sizeof *k; i++) h = (h ^ b[i]) * 1099511628211ull;
-    fprintf(f, "%llu\t%016llx\t%s\t%llu\t%s\t%s\n", (unsigned long long)mtl_present_count(), (unsigned long long)h, waited ? "wait" : "skip", (unsigned long long)(wait_ns / 1000), vs->key, fs ? fs->key : "-");
+    fprintf(f, "%llu\t%016llx\t%s\t%llu\t%s\t%s\n", (unsigned long long)mtl_present_count(), (unsigned long long)h, "wait", (unsigned long long)(wait_ns / 1000), vs->key, fs ? fs->key : "-");
 }
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
@@ -4221,12 +4361,11 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     pw_first_draw(vs, fs);
     id<MTLRenderPipelineState> ps = nil;
     NSError *e = nil; uint64_t bt = bp_now();
-    int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw skipped until then when its targets are redrawn every frame, else waited for (nvn_rthist.h); merged passes and specialized fragments as before
+    int flex = flexpso_on() && !g_pso_lmap && !ms_fn;   // flexible pipelines (nvn_flexpso.m): made on a worker, the draw waits for it; merged passes and specialized fragments as before
     if (flex) {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // first miss in this submission: ask for the later ones too
-        int pending; uint64_t wns = 0; ps = pso_flex_get(&k, vs, fs, g_pass.steady, &pending, &wns);
-        if (!ps && pending) { pso_skip_log(&k, vs, fs, 0, 0); return nil; }
-        if (wns) pso_skip_log(&k, vs, fs, 1, wns);
+        uint64_t wns = 0; ps = pso_flex_get(&k, vs, fs, &wns);
+        if (wns) pso_skip_log(&k, vs, fs, wns);
     }
     if (!ps) ps = flex || g_pso_lmap || ms_fn ? nil : pso_pend_take(&k);
     if (ps) g_pp_taken += !flex;

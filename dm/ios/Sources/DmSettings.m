@@ -215,7 +215,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
               @"detail": @"Game decides leaves the frame rate to the game. 30 or 60 caps it, which can run cooler.",
               @"options": @[@{@"value": @"0", @"label": @"Game decides"}, @{@"value": @"30", @"label": @"30 fps"}, @{@"value": @"60", @"label": @"60 fps"}]},
             @{@"key": @"DM_PSO_FLEX", @"label": @"Flexible pipelines", @"type": @"toggle", @"default": @"1", @"apply": @"restart", @"requires": @"nvn", @"exportDefault": @YES,   // the host's own default is off (the Mac host and its tests)
-              @"detail": @"Prepares the game's graphics pipelines in the background and skips a draw for a moment instead of stalling. It can make the first launch slightly slower but avoids hitches while playing."},
+              @"detail": @"Prepares the game's graphics pipelines in the background from an archive shipped with the app, so most are ready before they are first drawn. It can make the first launch slightly slower but avoids hitches while playing."},
             @{@"key": @"DM_SHOW_FPS", @"plistKey": @"DMShowFPS", @"label": @"Frame rate counter", @"type": @"toggle", @"default": @"0",
               @"detail": @"Shows the frames per second at the top of the screen."}]},
         @{@"id": @"system", @"title": @"System", @"icon": @"gearshape", @"settings": @[
