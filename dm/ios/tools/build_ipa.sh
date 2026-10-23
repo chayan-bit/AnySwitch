@@ -121,18 +121,30 @@ else t "no pipeline harvest ($W/build/pso_harvest*.metallib, PSO_HARVEST): no pi
 # Flexible pipeline archive (dm/gfx/README.md, pipeline coverage) as dm/pso_flex.metallib, for nvn_flexpso.m (DM_PSO_FLEX=1). Tiers filled in order until PSO_FLEX_MB (default 300, 0 = no cap):
 # the pipeline logs of earlier runs ($W/build/pso_user*.tsv; a reachable device's log is pulled there first by pull_pso_user.py, PSO_PULL=0 skips that), then the program pairs of the
 # accelerator rules and the same-variation table, then the interface pairs. Built by default (the app's Flexible pipelines setting is on by default and uses it); PSO_FLEX=0 skips it, PSO_FLEX_ARCHIVE=a finished archive taken as is. The archive names the libraries the
-# app ships, so it is built from the packed libraries once those are packed. The cap holds for all the architectures above (measured on a one-architecture build), so every
-# architecture fewer fits that many more pipelines
+# app ships, so it is built from the packed libraries once those are packed. The cap is per archive: with several architectures above, one archive each (pso_flex_<arch>.metallib, the host
+# opens the one named for its GPU, boot.m for_this_gpu), so a second GPU family never takes pipelines from the first; one architecture gives the plain pso_flex.metallib.
+# PSO_FLEX_ARCHIVE takes finished archives too: one path, or <arch>=<path> entries separated by ':' (applegpu_g16g=/a/ipad.metallib:applegpu_g17p=/b/iphone.metallib)
 if [ "$GFXAPI" = nvn ] && [ "${PSO_FLEX:-1}" != 0 ]; then
-  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then cpc "$PSO_FLEX_ARCHIVE" "$PSO_O"/pso_flex.metallib || die "copy PSO_FLEX_ARCHIVE"; t "flexible pipeline archive: $PSO_FLEX_ARCHIVE (as is)"
+  if [ -n "${PSO_FLEX_ARCHIVE:-}" ]; then
+    IFS=: read -ra FA <<< "$PSO_FLEX_ARCHIVE"
+    for a in "${FA[@]}"; do
+      case "$a" in *=*) FN=pso_flex_${a%%=*}.metallib; a=${a#*=};; *) FN=pso_flex.metallib;; esac
+      cpc "$a" "$PSO_O/$FN" || die "copy PSO_FLEX_ARCHIVE $a"; t "flexible pipeline archive: $a as $FN (as is)"
+    done
   else
     [ "${PSO_PULL:-1}" = 0 ] || python3 tools/pull_pso_user.py "$DM_BUNDLE_ID" "$W/build" "$GAME" || t "[RED] pull_pso_user.py failed above: no device pipeline log"
     UL=(); for u in "$W"/build/pso_user*.tsv; do [ -f "$u" ] && UL+=("$u"); done
     PL=(); for p in "$PAIRS_TSV" "$GD/shader_pairs.tsv"; do [ -f "$p" ] && PL+=("$p"); done
-    t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
-    make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" && DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
-      ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/pso_flex.metallib" \
-      ${PSO_ARCHS:+--arch $PSO_ARCHS} && cpc "$O/pso_flex.metallib" "$PSO_O"/ || t "[RED] no flexible pipeline archive (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
+    t "flexible pipeline archive (dmsh_flexarch.py, cap ${PSO_FLEX_MB:-300} MB per archive): ${#UL[@]} pipeline logs, ${#PL[@]} pair lists"
+    # one build per architecture (several: a file each); none named: the tool's default, every iOS family, in the plain file
+    FARCHS=(${PSO_ARCHS:-}); [ ${#FARCHS[@]} -gt 0 ] || FARCHS=("")
+    make -s -C "$DM/gfx/tests" GAME="$GAME" pso_flexbench > /dev/null && mkdir -p "$O" || die "pso_flexbench"
+    for a in "${FARCHS[@]}"; do
+      FN=pso_flex.metallib; [ ${#FARCHS[@]} -gt 1 ] && FN=pso_flex_$a.metallib
+      DM_SHADER_PACKS=$([ $PACKS = 1 ] && echo on || echo off) DM_NVN_SHMAP="$GD/shader_map.tsv" DM_MSL_DIR="$MSL_MAC" python3 "$DM/gfx/tools/dmsh_flexarch.py" \
+        ${UL[@]+--records "${UL[@]}"} ${PL[@]+--pairs "${PL[@]}"} --max-mb "${PSO_FLEX_MB:-300}" --msl "$MSL_MAC/b-$V" --target-libs "$MSL_IOS/b-$V" -o "$O/$FN" \
+        ${a:+--arch $a} && cpc "$O/$FN" "$PSO_O"/ || t "[RED] no flexible pipeline archive $FN (dmsh_flexarch.py failed above): flexible pipelines compile on workers"
+    done
   fi
 fi
 # Diagnostic build: DM_ENV_FILE=file → profile/env.txt in the bundled pack (main.m sets one environment variable per line at boot)

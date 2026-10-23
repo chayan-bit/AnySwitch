@@ -6,6 +6,7 @@
 @interface HearthQuickVC : UIViewController
 @property (nonatomic, copy) void (^onClose)(void);   // after the panel has gone
 @property (nonatomic, copy) void (^onSleep)(void);   // Sleep was chosen (the panel is gone already)
+@property (nonatomic) BOOL compact;                  // an iPhone's short screen: smaller rows and panel (set before the view loads)
 - (void)close;
 - (void)padState:(uint64_t)buttons lx:(int32_t)lx ly:(int32_t)ly;   // the controller, as Home hands it over
 @end

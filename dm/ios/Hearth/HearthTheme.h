@@ -31,3 +31,57 @@ static inline double hearth_tile_size(double screenHeight) {   // whole points, 
     return (double)(long)(s + 0.5);
 }
 static inline double hearth_tile_focus_scale(double tile) { return (tile + HEARTH_TILE_GROW) / tile; }
+static inline double hearth_tile_scale(double tile, double grow) { return (tile + grow) / tile; }
+
+// Home's measures for one screen (the iPhone compact layout). Compact is the iPhone's (the screen's shorter side under 500 pt, the switch DmSettingsVC uses); regular equals the constants above,
+// so an iPad keeps today's layout to the point. A pure function of the screen size and the vertical safe-area insets, so a test can check any screen on the Mac.
+typedef struct {
+    int compact;
+    double tile, grow, radius, spacing;                 // art edge, how much longer the focused edge is, corner radius, gap between tiles
+    double nameH, nameLabelH, nameGap, nameFont;        // band above the art, the focused game's name label in it, its gap to the art, its font
+    double stateH, stateGap, stateLabelH, stateFont;    // band below the art and the state line in it
+    double button, buttonSpacing, buttonsGap, buttonIcon, barGap;   // round buttons: size, gap between, gap under the row, symbol size, least gap above the bottom bar
+    double barH, margin;                                // bottom bar height, side margins
+    double topOffset, topH, avatar, playerFont, clockFont, batteryFont;   // top bar
+    double rowTop;                                      // the row's top edge measured from the top safe edge; -1: the art's centre sits at HEARTH_ROW_CENTRE of the height
+} HearthMetrics;
+
+static inline HearthMetrics hearth_metrics(double width, double height, double safeTop, double safeBottom) {
+    double shorter = width < height ? width : height;
+    if (safeTop < 0) safeTop = 0;
+    if (safeBottom < 0) safeBottom = 0;
+    HearthMetrics m = {0, hearth_tile_size(height), HEARTH_TILE_GROW, HEARTH_TILE_RADIUS, HEARTH_TILE_SPACING, 56, 36, 12, 26, 44, 8, 36, 19,
+                       HEARTH_BUTTON_SIZE, 28, HEARTH_BUTTONS_GAP, 26, 24, HEARTH_BAR_HEIGHT, HEARTH_MARGIN, 24, 48, 36, 20, 22, 17, -1};
+    if (shorter >= 500) return m;
+    m.compact = 1; m.grow = 28; m.radius = 20; m.spacing = 24;
+    m.nameLabelH = 30; m.nameGap = 8; m.nameFont = 20; m.nameH = m.grow / 2 + m.nameGap + m.nameLabelH;   // the focused name stays clear of the top bar
+    m.stateGap = 3; m.stateLabelH = 20; m.stateFont = 15; m.stateH = m.stateGap + m.stateLabelH + 1;
+    m.button = 48; m.buttonSpacing = 20; m.buttonsGap = 22; m.buttonIcon = 20; m.barGap = 8;   // the gap holds the focused button's name above it
+    m.barH = 44; m.margin = 16;
+    m.topOffset = 8; m.topH = 36; m.avatar = 28; m.playerFont = 17; m.clockFont = 18; m.batteryFont = 15;
+    m.rowTop = m.topOffset + m.topH + 4;
+    double fixed = safeTop + m.rowTop + m.nameH + m.stateH + m.buttonsGap + m.button + m.barGap + m.barH + safeBottom;   // everything but the art, top to bottom
+    double t = height - fixed, cap = height * 0.36;
+    t = t > cap ? cap : t < 96 ? 96 : t;
+    m.tile = (double)(long)t;
+    return m;
+}
+
+// The game screen's HOME and Capture buttons (44 pt targets) as top-left corners. The picture is the game's 16:9 frame fitted in the screen. Where it leaves a bar at the side (an iPhone: 16:9 on
+// a 19.5:9 screen) wide enough for a target, they go there, in the right bar (the Dynamic Island is at the left), stacked about the screen's middle with HOME above Capture, clear of the
+// controls in the corners and never over the picture's subtitles. Otherwise (an iPad, whose bars are above and below the picture) HOME is at the bottom centre with Capture to its left, as before.
+// safeMaxY: the bottom edge of the safe area; contentMaxX: the right edge of the picture.
+#define HEARTH_GAME_BUTTON 44.0
+#define HEARTH_GAME_BAR_MIN 52.0    // the side bar's least width for the buttons: a target and 4 pt each side
+typedef struct { double homeX, homeY, shotX, shotY; int sideBar; } HearthGameButtons;
+static inline HearthGameButtons hearth_game_buttons(double width, double height, double safeMaxY, double contentMaxX) {
+    HearthGameButtons g = {0};
+    double bar = width - contentMaxX;
+    if (bar >= HEARTH_GAME_BAR_MIN) {
+        g.sideBar = 1; g.homeX = g.shotX = (double)(long)(width - bar / 2 - HEARTH_GAME_BUTTON / 2);
+        g.homeY = (double)(long)(height / 2 - HEARTH_GAME_BUTTON - 4); g.shotY = g.homeY + HEARTH_GAME_BUTTON + 8;
+        return g;
+    }
+    g.homeX = (double)(long)(width / 2 - HEARTH_GAME_BUTTON / 2); g.homeY = g.shotY = safeMaxY - 52; g.shotX = g.homeX - 52;
+    return g;
+}

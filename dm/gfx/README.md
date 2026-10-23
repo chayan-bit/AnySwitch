@@ -312,14 +312,16 @@ A `[pso-flex]` log line every 600 presents gives asks, archive hits and misses (
 2. accelerator pairs: `split` and `tfx` pairs and the profile's same-variation table (`shader_pairs.tsv`);
 3. interface pairs.
 
-Each GPU architecture the archive is built for holds its own copy of every pipeline, so the cap holds for the records times the architectures.
+Each GPU architecture an archive is built for holds its own copy of every pipeline, so the cap holds for the records times the architectures.
+With several architectures `build_ipa.sh` therefore builds one archive per architecture (`pso_flex_<arch>.metallib`, each under the cap), so adding a GPU family never takes pipelines from another, and the app opens the file named for its GPU (`boot.m` `for_this_gpu`; a pack with only the plain `pso_flex.metallib` uses that, and a file for another GPU is never opened).
+The precompiled pipeline archive (`pso_archive.metallib`) is small and stays one file with a slice per architecture.
 The records are first chosen at an estimate (about 34 KB per pipeline per architecture); the archive is then built for one architecture and measured, and while that size times the architectures is over the cap the list is cut in proportion and measured again, since pipelines differ a lot in size.
 By default `build_ipa.sh` builds both archives only for the GPU architectures of the connected devices: `ios/tools/device_gpu.py` lists them with `xcrun devicectl` (read-only, nothing is installed or copied) and maps each chip ID (the first field of the UDID) to its Metal GPU architecture.
 With no connected device, no device list or a chip not in its table, the build falls back to every iOS GPU family and the log line says why.
 `PSO_ARCHS` (architecture names, as the app's `[pso-flex]` load line prints them) overrides the detection; every architecture fewer fits that many more pipelines under the same cap.
 The build prints the architectures, how many records fit, what each tier gave, any cut and the size written.
 Before that, `ios/tools/pull_pso_user.py` copies the pipeline log (`Documents/pso_user.tsv`) from every reachable device that has the app installed (`PSO_PULL=0` skips it); the app always writes that log, off the render thread.
-`PSO_FLEX=0` skips the archive and `PSO_FLEX_ARCHIVE=path` takes a finished one.
+`PSO_FLEX=0` skips the archive and `PSO_FLEX_ARCHIVE=path` takes a finished one (or `<arch>=<path>` entries separated by `:`, one finished archive per GPU family).
 The archive names the libraries the app ships, so it is built from the final (packed) libraries.
 
 ## Known limitations

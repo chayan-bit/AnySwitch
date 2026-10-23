@@ -34,7 +34,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     DmEditorView *_editor; BOOL _editB;   // _editB: the controller's B is held (it cancels the editor once released)
     NSInteger _section, _row; BOOL _inPane;
     NSMutableArray<DmCategoryView *> *_cats; NSMutableArray<DmRowView *> *_rows; BOOL _hasRestartRow;
-    UILabel *_head, *_paneTitle; UIButton *_close; UIView *_catBox, *_panel, *_clip; UIScrollView *_scroll; DmHintBar *_hints;
+    UILabel *_head, *_paneTitle; UIButton *_close; UIScrollView *_catBox; UIView *_panel, *_clip; UIScrollView *_scroll; DmHintBar *_hints;
     DmFocusView *_catRing, *_rowRing;
     uint64_t _prev; BOOL _baselined; DmRepeat *_repeat; NSArray *_shownHints;
 }
@@ -56,7 +56,8 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     [_close setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:_compact ? 14 : 17 weight:UIImageSymbolWeightBold]] forState:UIControlStateNormal];
     _close.tintColor = DmUI.sub; _close.layer.cornerRadius = 22; _close.accessibilityLabel = @"Close settings";
     [_close addTarget:self action:@selector(requestClose) forControlEvents:UIControlEventTouchUpInside];
-    _catBox = [UIView new]; _panel = [UIView new]; _panel.layer.cornerRadius = _compact ? 18 : 26;
+    _catBox = [UIScrollView new]; _catBox.showsVerticalScrollIndicator = NO; _catBox.alwaysBounceVertical = NO; _catBox.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;   // nine categories do not fit an iPhone's height: the list scrolls
+    _panel = [UIView new]; _panel.layer.cornerRadius = _compact ? 18 : 26;
     _paneTitle = [UILabel new]; _paneTitle.font = [DmUI font:_compact ? 18 : 26 weight:UIFontWeightBold]; _paneTitle.textColor = DmUI.text;
     _clip = [UIView new]; _scroll = [UIScrollView new]; _scroll.showsVerticalScrollIndicator = NO; _scroll.showsHorizontalScrollIndicator = NO; _scroll.alwaysBounceVertical = NO; _scroll.alwaysBounceHorizontal = NO; _scroll.directionalLockEnabled = YES; _scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever; _scroll.delaysContentTouches = NO;   // vertical only
     _hints = [DmHintBar new];
@@ -156,8 +157,10 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     _hints.frame = CGRectMake(left, bottom, right - left, hb);
     CGFloat y0 = top + hh + (_compact ? 4 : 6), y1 = bottom - (_compact ? 6 : 14);
     CGFloat lw = _compact ? 176 : MIN(360, MAX(280, b.size.width * 0.26)), ch = _compact ? 46 : 66, gap = _compact ? 6 : 10;
-    _catBox.frame = CGRectMake(left, y0, lw, y1 - y0);
-    for (NSUInteger i = 0; i < _cats.count; i++) _cats[i].frame = CGRectMake(0, i * (ch + gap), lw, ch);
+    CGFloat gx = 10, gy = 8;   // room around the rows for the focus ring's glow (the scroll view clips)
+    _catBox.frame = CGRectMake(left - gx, y0 - gy, lw + gx * 2, y1 - y0 + gy * 2);
+    for (NSUInteger i = 0; i < _cats.count; i++) _cats[i].frame = CGRectMake(gx, gy + i * (ch + gap), lw, ch);
+    _catBox.contentSize = CGSizeMake(lw + gx * 2, gy * 2 + _cats.count * (ch + gap));
     CGFloat px = left + lw + (_compact ? 14 : 28);
     _panel.frame = CGRectMake(px, y0, right - px, y1 - y0);
     CGFloat pad = _compact ? 14 : 26, tt = _compact ? 30 : 44;
@@ -190,6 +193,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     if (animated) [UIView animateWithDuration:0.13 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:place completion:nil]; else place();
     _catRing.active = !_inPane; _rowRing.active = _inPane;
     if (_inPane) [_scroll scrollRectToVisible:CGRectInset(_rows[(NSUInteger)_row].frame, 0, -10) animated:animated];
+    else [_catBox scrollRectToVisible:CGRectInset(_cats[(NSUInteger)_section].frame, -3, -10) animated:animated];
     [self updateHints];
 }
 // The footer says what the focused spot can do (dm_hints_for_focus)

@@ -89,6 +89,39 @@ int main(void) { @autoreleasepool {
       CHECK(fabs(centre - 409.6) < 1e-9 && centre - size / 2 > 100, "the art's centre sits at 40%% of the height, clear of the top bar (%g)", centre);
       double rowBottom = centre + size / 2 + 44, buttonsTop = rowBottom + HEARTH_BUTTONS_GAP, barTop = h - HEARTH_BAR_HEIGHT;
       CHECK(buttonsTop + HEARTH_BUTTON_SIZE + 24 < barTop, "the round buttons (%g to %g) fit above the bottom bar (%g)", buttonsTop, buttonsTop + HEARTH_BUTTON_SIZE, barTop); }
+    // 8. the layout of HearthMetrics on five landscape screens (iPad Air 11 and 13, iPhone 15 Pro, 16 Pro, 16 Pro Max): nothing overlaps top to bottom, the regular values are today's constants
+    { double sizes[5][4] = {{1180, 820, 0, 20}, {1366, 1024, 0, 20}, {852, 393, 0, 21}, {874, 402, 0, 21}, {956, 440, 0, 21}};   // width, height, safe top, safe bottom
+      for (int i = 0; i < 5; i++) {
+          double w = sizes[i][0], h = sizes[i][1], st = sizes[i][2], sb = sizes[i][3];
+          HearthMetrics m = hearth_metrics(w, h, st, sb);
+          double ry = m.rowTop >= 0 ? st + m.rowTop : h * HEARTH_ROW_CENTRE - m.nameH - m.tile / 2, th = m.nameH + m.tile + m.stateH;
+          double barTop = h - sb - m.barH, by = fmin(ry + th + m.buttonsGap, barTop - m.barGap - m.button), g = m.grow / 2;
+          double topBarBottom = st + m.topOffset + m.topH;
+          CHECK(m.compact == (fmin(w, h) < 500), "%gx%g: compact %d", w, h, m.compact);
+          CHECK(ry + m.nameH - m.grow / 2 - m.nameGap - m.nameLabelH >= topBarBottom, "%gx%g: the focused name (%g) clears the top bar (%g)", w, h, ry + m.nameH - g - m.nameGap - m.nameLabelH, topBarBottom);
+          CHECK(ry + th + g <= by, "%gx%g: the grown art and state line (to %g) end above the round buttons (%g)", w, h, ry + th + g, by);
+          CHECK(by + m.button + m.barGap <= barTop + 1e-9, "%gx%g: the round buttons (to %g) end above the bottom bar (%g)", w, h, by + m.button, barTop);
+          CHECK(m.tile >= (m.compact ? 96 : HEARTH_TILE_MIN) && m.tile <= HEARTH_TILE_MAX, "%gx%g: tile %g", w, h, m.tile);
+          CHECK(m.tile + m.grow <= h - st - sb, "%gx%g: the grown art fits the screen", w, h);
+          if (!m.compact) CHECK(m.tile == hearth_tile_size(h) && m.button == HEARTH_BUTTON_SIZE && m.barH == HEARTH_BAR_HEIGHT && m.margin == HEARTH_MARGIN && m.nameH == 56 && m.stateH == 44 && m.rowTop < 0, "%gx%g: regular is today's layout", w, h);
+      }
+      HearthMetrics p = hearth_metrics(874, 402, 0, 21);
+      CHECK(p.tile == 135 && p.button == 48 && p.barH == 44, "iPhone 16 Pro: tile %g, buttons %g, bar %g", p.tile, p.button, p.barH); }
+    // 9. HOME and Capture on the game screen (hearth_game_buttons): in the right bar of an iPhone, bottom centre under the picture on an iPad, never over the picture
+    { double sizes[5][3] = {{1180, 820, 20}, {1366, 1024, 20}, {852, 393, 21}, {874, 402, 21}, {956, 440, 21}};   // width, height, bottom safe inset
+      for (int i = 0; i < 5; i++) {
+          double w = sizes[i][0], h = sizes[i][1], sb = sizes[i][2], cw = w / h > 16.0 / 9 ? h * 16.0 / 9 : w, ch = w / h > 16.0 / 9 ? h : w * 9.0 / 16;   // the 16:9 picture fitted in the screen
+          double cx = floor((w - cw) / 2), cy = floor((h - ch) / 2);
+          HearthGameButtons g = hearth_game_buttons(w, h, h - sb, cx + cw);
+          double t = HEARTH_GAME_BUTTON;
+          int overPicture = g.homeX < cx + cw && g.homeX + t > cx && g.homeY < cy + ch && g.homeY + t > cy, shotOver = g.shotX < cx + cw && g.shotX + t > cx && g.shotY < cy + ch && g.shotY + t > cy;
+          int apart = g.homeX + t <= g.shotX || g.shotX + t <= g.homeX || g.homeY + t <= g.shotY || g.shotY + t <= g.homeY;
+          CHECK(g.sideBar == (w - (cx + cw) >= HEARTH_GAME_BAR_MIN), "%gx%g: side bar %d", w, h, g.sideBar);
+          CHECK(g.homeX >= 0 && g.shotX >= 0 && g.homeX + t <= w && g.shotX + t <= w && g.homeY >= 0 && g.shotY + t <= h && apart, "%gx%g: both on the screen and apart", w, h);
+          if (g.sideBar) CHECK(!overPicture && !shotOver && g.homeX >= cx + cw && g.homeY < g.shotY, "%gx%g: in the right bar, HOME above Capture, clear of the picture (home %g,%g)", w, h, g.homeX, g.homeY);
+          else CHECK(g.homeX == floor(w / 2 - 22) && g.homeY == h - sb - 52 && g.shotX == g.homeX - 52 && g.shotY == g.homeY, "%gx%g: bottom centre as before (%g,%g)", w, h, g.homeX, g.homeY);
+          if (!g.sideBar) CHECK(!overPicture || h - sb - 52 < cy + ch, "%gx%g: bottom centre below the picture, or the screen has no bar there", w, h);
+      } }
 
     printf("t_home_focus: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;
