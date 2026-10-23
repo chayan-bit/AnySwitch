@@ -47,6 +47,7 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemReset
 - (instancetype)initWithAction:(NSString *)title detail:(NSString *)detail compact:(BOOL)compact;   // an action row; info = YES makes it plain text that does nothing
 - (void)setActionTitle:(NSString *)title detail:(NSString *)detail;
 @property (nonatomic) BOOL info, destructive;   // an action row: plain information (no accent), or an action that removes something (warning colour)
+@property (nonatomic) BOOL unavailable;          // an action row for something that cannot be done now: its title is dimmed as a setting with no effect is, its detail (the reason) stays legible
 @property (nonatomic, readonly) DmSetting *setting;
 @property (nonatomic, readonly) DmItemKind kind;
 @property (nonatomic, readonly) DmSliderView *slider;
@@ -54,7 +55,7 @@ typedef NS_ENUM(NSInteger, DmItemKind) { DmItemSetting, DmItemReset, DmItemReset
 - (void)showValue:(NSString *)value source:(DmSettingSource)src disabledNote:(NSString *)disabledNote;   // refresh from the store (env: the row is locked; a disabledNote: the setting has no effect now, the row is dimmed and shows the note)
 @property (nonatomic, readonly) BOOL locked;
 @property (nonatomic, readonly) BOOL disabled;
-@property (nonatomic, readonly) BOOL inert;   // locked or disabled: the row does not change
+@property (nonatomic, readonly) BOOL inert;   // locked, disabled or unavailable: the row does not change
 - (void)shake;   // a refused change
 @property (nonatomic) BOOL confirming;   // the restore-all row asks for a second tap
 - (CGFloat)heightForWidth:(CGFloat)w;

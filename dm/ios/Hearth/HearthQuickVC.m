@@ -7,6 +7,8 @@
 #import "DmRepeat.h"
 #import <AVKit/AVKit.h>
 
+#define QUICK_INSET 20.0   // the panel keeps this distance from the top, bottom and right edge of the screen
+
 enum { RowVolume, RowBrightness, RowMode, RowOutput, RowSleep, RowCount };
 
 @implementation HearthQuickVC {
@@ -19,11 +21,11 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
 - (void)viewDidLoad {
     [super viewDidLoad];
     DmSettings *st = DmSettings.systemStore;
-    _repeat = [DmRepeat new];
+    _repeat = [DmRepeat new]; self.view.accessibilityViewIsModal = YES;
     _dim = [UIView new]; _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
     [_dim addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(close)]];
     _panel = [UIView new]; _panel.layer.cornerRadius = 26; _panel.layer.cornerCurve = kCACornerCurveContinuous;
-    _panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
+    _panel.layer.shadowOpacity = 0.28; _panel.layer.shadowRadius = 26; _panel.layer.shadowOffset = CGSizeMake(-4, 8);   // a card floating at an even distance from the screen's edges, its four corners rounded
     _head = [UILabel new]; _head.text = @"Quick Settings"; _head.font = [DmUI font:28 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
     _battery = [UILabel new]; _battery.font = [DmUI font:16 weight:UIFontWeightMedium]; _battery.textColor = DmUI.sub;
     _bright = [DmSetting settingFromDictionary:@{@"key": @"HEARTH_BRIGHTNESS", @"label": @"Brightness", @"detail": @"The screen's brightness.", @"type": @"slider",
@@ -53,7 +55,7 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
 - (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; [self refresh]; }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a]; [self becomeFirstResponder]; [self refresh];
-    CGFloat w = _panel.bounds.size.width; _panel.transform = CGAffineTransformMakeTranslation(w, 0); _dim.alpha = 0;
+    CGFloat w = _panel.bounds.size.width + QUICK_INSET * 2; _panel.transform = CGAffineTransformMakeTranslation(w, 0); _dim.alpha = 0;
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ self->_panel.transform = CGAffineTransformIdentity; self->_dim.alpha = 1; } completion:nil];
     fprintf(stderr, "hearth: Quick Settings open\n");
 }
@@ -74,10 +76,11 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; UIEdgeInsets si = self.view.safeAreaInsets;
-    CGFloat pw = MIN(480, MAX(380, b.size.width * 0.38)), pad = 28;
+    CGFloat pw = MIN(480, MAX(380, b.size.width * 0.38)), pad = 28, m = QUICK_INSET;
     _dim.frame = b;
     CGAffineTransform t = _panel.transform; _panel.transform = CGAffineTransformIdentity;
-    _panel.frame = CGRectMake(b.size.width - pw, MAX(si.top, 16), pw + 1, b.size.height - MAX(si.top, 16) - MAX(si.bottom, 16));
+    _panel.frame = CGRectMake(b.size.width - MAX(si.right, 0) - m - pw, MAX(si.top, 0) + m, pw, b.size.height - MAX(si.top, 0) - MAX(si.bottom, 0) - 2 * m);   // the same gap above, below and at the right
+    _panel.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_panel.bounds cornerRadius:26].CGPath;
     _panel.transform = t;
     CGFloat w = pw - pad * 2, y = pad;
     _head.frame = CGRectMake(pad, y, w, 40); y += 42;
@@ -134,7 +137,7 @@ static UIScreen *screen_of(UIView *v) { return v.window.windowScene.screen; }
     fprintf(stderr, "hearth: Quick Settings closed\n");
     void (^done)(void) = self.onClose;
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn
-                     animations:^{ self->_panel.transform = CGAffineTransformMakeTranslation(self->_panel.bounds.size.width, 0); self->_dim.alpha = 0; }
+                     animations:^{ self->_panel.transform = CGAffineTransformMakeTranslation(self->_panel.bounds.size.width + QUICK_INSET * 2, 0); self->_dim.alpha = 0; }
                      completion:^(BOOL f) { (void)f; if (done) done(); if (then) then(); }];
 }
 

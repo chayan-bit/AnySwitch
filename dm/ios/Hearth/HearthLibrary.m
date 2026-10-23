@@ -9,11 +9,13 @@
 @implementation HearthGame
 @end
 
-// Name and publisher from meta/control.nacp: 16 language entries of 0x300 bytes (name 0x200, publisher 0x100); American English first, else the first one that is set
+// Name and publisher from meta/control.nacp: 16 language entries of 0x300 bytes (name 0x200, publisher 0x100); American English first, else the first one that is set.
+// The display version is the 16 bytes at 0x3060
 static void nacp_read(NSString *path, HearthGame *g) {
     NSData *d = [NSData dataWithContentsOfFile:path];
     if (d.length < 16 * 0x300) return;
     const char *b = d.bytes;
+    if (d.length >= 0x3060 + 16 && b[0x3060]) g.version = [[NSString alloc] initWithBytes:b + 0x3060 length:strnlen(b + 0x3060, 16) encoding:NSUTF8StringEncoding];
     for (int i = 0; i < 16; i++) {
         const char *e = b + i * 0x300;
         if (!e[0]) continue;

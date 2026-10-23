@@ -8,6 +8,7 @@
 #import "HearthSound.h"
 #import "HearthQuickVC.h"
 #import "HearthSleep.h"
+#import "HearthDialog.h"
 #import "HearthSettingsPages.h"
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
@@ -25,7 +26,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 @end
 
 @implementation HearthHomeVC {
-    HearthTopBar *_bar; UIScrollView *_row; UILabel *_empty; NSMutableArray<HearthTile *> *_tiles; NSArray<HearthRoundButton *> *_buttons;
+    HearthTopBar *_bar; UIScrollView *_row; UILabel *_empty; UIView *_divider; UILabel *_buttonName; CGFloat _tileSize; NSMutableArray<HearthTile *> *_tiles; NSArray<HearthRoundButton *> *_buttons;
     DmFocusView *_tileRing, *_buttonRing; DmHintBar *_hints; NSArray *_shownHints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _launching;
     DmSettingsVC *_settings; HearthQuickVC *_quick; NSArray<NSString *> *_buttonActions;
@@ -51,7 +52,10 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     for (HearthRoundButton *b in _buttons) [b addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
     _buttonRing = [DmFocusView new]; _buttonRing.radius = HEARTH_BUTTON_SIZE / 2 + 6;
     _hints = [DmHintBar new];
-    for (UIView *v in @[_bar, _row, _empty, _buttonRing, _hints]) [self.view addSubview:v];
+    _buttonName = [UILabel new]; _buttonName.font = [DmUI font:18 weight:UIFontWeightSemibold]; _buttonName.textColor = DmUI.text; _buttonName.textAlignment = NSTextAlignmentCenter; _buttonName.alpha = 0;   // names the focused round button, as the focused tile shows its game's name
+    _divider = [UIView new]; _divider.userInteractionEnabled = NO;   // the bottom bar's top edge; the hints sit in the bar on its right, its left end is free for the controllers' status
+    __weak UIView *line = _divider; dm_on_style(_divider, ^{ line.backgroundColor = [DmUI.sub colorWithAlphaComponent:0.35]; });
+    for (UIView *v in @[_bar, _row, _empty, _buttonRing, _buttonName, _divider, _hints]) [self.view addSubview:v];
     for (UIView *v in _buttons) [self.view insertSubview:v belowSubview:_buttonRing];
     [_focus setCount:(NSInteger)_buttons.count forZone:ZoneButtons];
     dm_gamepad_watch();
@@ -59,6 +63,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scanInbox) name:UIApplicationDidBecomeActiveNotification object:nil];
     [self scanInbox];
 }
+- (CGFloat)screenHeight { CGFloat h = self.view.bounds.size.height; return h > 0 ? h : self.view.window.windowScene.screen.bounds.size.height; }   // 0 before the first layout: the first layout rebuilds the tiles
 - (void)scanInbox { __weak HearthHomeVC *w = self; hearth_import_scan(^{ [w reload]; }); }   // a game pushed from the Mac appears when its import is done
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
 - (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; [self reload]; }
@@ -78,8 +83,9 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     fprintf(stderr, "home: %lu games\n", (unsigned long)games.count);
     for (HearthTile *t in _tiles) [t removeFromSuperview];
     [_tiles removeAllObjects];
+    _tileSize = hearth_tile_size(self.screenHeight);
     for (HearthGame *g in games) {
-        HearthTile *t = [[HearthTile alloc] initWithGame:g]; t.playing = g == run;
+        HearthTile *t = [[HearthTile alloc] initWithGame:g size:_tileSize]; t.playing = g == run;
         [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
         [t addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tileHeld:)]];   // the game's Options
         [_row insertSubview:t belowSubview:_tileRing]; [_tiles addObject:t];
@@ -97,23 +103,26 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; UIEdgeInsets si = self.view.safeAreaInsets;
+    if (_tiles.count && fabs(hearth_tile_size(b.size.height) - _tileSize) > 0.5) { __weak HearthHomeVC *w = self; dispatch_async(dispatch_get_main_queue(), ^{ [w reload]; }); }   // the view's real height arrived after the first build
     CGFloat left = MAX(si.left, 0) + HEARTH_MARGIN, right = b.size.width - MAX(si.right, 0) - HEARTH_MARGIN, top = MAX(si.top, 0) + 24;
-    CGFloat hh = [_hints heightWithCompact:NO], bottom = b.size.height - MAX(si.bottom, 16) - hh;
     _bar.frame = CGRectMake(left, top, right - left, 48);
-    _hints.frame = CGRectMake(left, bottom, right - left, hh);
-    CGFloat by = bottom - 36 - HEARTH_BUTTON_SIZE, bw = _buttons.count * HEARTH_BUTTON_SIZE + (_buttons.count - 1) * 28.0, bx = (b.size.width - bw) / 2;
+    // the bottom bar: a hairline between the margins, the hints centred in the bar under it and kept to the right
+    CGFloat hh = [_hints heightWithCompact:NO], barTop = b.size.height - MAX(si.bottom, 0) - HEARTH_BAR_HEIGHT;
+    _divider.frame = CGRectMake(left, barTop, right - left, 1);
+    _hints.frame = CGRectMake(left, barTop + 1 + (HEARTH_BAR_HEIGHT - 1 - hh) / 2, right - left, hh);
+    // the row: the art's centre at 40% of the height, the round buttons 60 pt under the row's last line (the state line)
+    CGFloat size = _tileSize ?: hearth_tile_size(b.size.height), th = [HearthTile nameHeight] + size + [HearthTile stateHeight];
+    CGFloat ry = b.size.height * HEARTH_ROW_CENTRE - [HearthTile nameHeight] - size / 2;
+    CGFloat by = MIN(ry + th + HEARTH_BUTTONS_GAP, barTop - 24 - HEARTH_BUTTON_SIZE), bw = _buttons.count * HEARTH_BUTTON_SIZE + (_buttons.count - 1) * 28.0, bx = (b.size.width - bw) / 2;
     for (NSUInteger i = 0; i < _buttons.count; i++) _buttons[i].frame = CGRectMake(bx + i * (HEARTH_BUTTON_SIZE + 28), by, HEARTH_BUTTON_SIZE, HEARTH_BUTTON_SIZE);
-    CGFloat th = _tiles.count ? _tiles[0].bounds.size.height : 300, rowTop = CGRectGetMaxY(_bar.frame) + 12;
-    CGFloat ry = rowTop + MAX(0, (by - 24 - rowTop - th) / 2);   // the row sits in the middle of the space between the bar and the buttons
     _row.frame = CGRectMake(0, ry, b.size.width, th);
-    CGFloat total = _tiles.count * HEARTH_TILE_SIZE + (_tiles.count ? _tiles.count - 1 : 0) * HEARTH_TILE_SPACING;
-    CGFloat x0 = total < right - left ? (b.size.width - total) / 2 : left;   // a short row is centred, a long one starts at the margin and scrolls
+    CGFloat x0 = left + (hearth_tile_focus_scale(size) - 1) * size / 2, total = _tiles.count * size + (_tiles.count ? _tiles.count - 1 : 0) * HEARTH_TILE_SPACING;   // the row starts at the left margin (the focused tile, which grows, reaches it), as on a console, and scrolls when it is longer than the screen
     for (NSUInteger i = 0; i < _tiles.count; i++) {
         HearthTile *t = _tiles[i]; CGAffineTransform keep = t.art.transform; t.art.transform = CGAffineTransformIdentity;
-        t.frame = CGRectMake(x0 + i * (HEARTH_TILE_SIZE + HEARTH_TILE_SPACING), 0, HEARTH_TILE_SIZE, th);
+        t.frame = CGRectMake(x0 + i * (size + HEARTH_TILE_SPACING), 0, size, th);
         t.art.transform = keep;
     }
-    _row.contentSize = CGSizeMake(MAX(x0 * 2 + total, b.size.width), th);
+    _row.contentSize = CGSizeMake(MAX(x0 + total + (b.size.width - right), b.size.width), th);
     _empty.frame = CGRectMake(left, ry, right - left, th);
     [self showFocus:NO];
 }
@@ -129,11 +138,16 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     void (^place)(void) = ^{
         if (onTiles) {
             HearthTile *t = self->_tiles[(NSUInteger)self->_focus.index];
-            CGRect a = CGRectOffset(CGRectMake(0, 0, HEARTH_TILE_SIZE, HEARTH_TILE_SIZE), t.frame.origin.x, t.frame.origin.y + t.art.center.y - HEARTH_TILE_SIZE / 2);
-            CGFloat grow = HEARTH_TILE_SIZE * (HEARTH_TILE_FOCUS_SCALE - 1) / 2;
+            CGRect a = CGRectOffset(CGRectMake(0, 0, t.size, t.size), t.frame.origin.x, t.frame.origin.y + t.art.center.y - t.size / 2);
+            CGFloat grow = t.size * (hearth_tile_focus_scale(t.size) - 1) / 2;
             self->_tileRing.frame = CGRectInset(a, -grow - 6, -grow - 6);
         }
-        if (self->_focus.zone == ZoneButtons) self->_buttonRing.frame = CGRectInset(self->_buttons[(NSUInteger)[self->_focus indexInZone:ZoneButtons]].frame, -6, -6);
+        if (self->_focus.zone == ZoneButtons) {
+            HearthRoundButton *b = self->_buttons[(NSUInteger)[self->_focus indexInZone:ZoneButtons]];
+            self->_buttonRing.frame = CGRectInset(b.frame, -6, -6);
+            self->_buttonName.text = b.accessibilityLabel; self->_buttonName.frame = CGRectMake(CGRectGetMidX(b.frame) - 120, CGRectGetMaxY(b.frame) + 14, 240, 26);
+        }
+        self->_buttonName.alpha = self->_focus.zone == ZoneButtons && self->_focus.ringVisible ? 1 : 0;
     };
     if (animated && !UIAccessibilityIsReduceMotionEnabled())
         [UIView animateWithDuration:HEARTH_FOCUS_SECONDS delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:place completion:nil];
@@ -143,7 +157,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     if (onTiles) [_row scrollRectToVisible:CGRectInset(_tiles[(NSUInteger)_focus.index].frame, -HEARTH_TILE_SPACING, 0) animated:animated];
     HearthTile *ft = onTiles ? _tiles[(NSUInteger)_focus.index] : nil;
     DmFocusKind k = _focus.zone == ZoneButtons ? DmFocusHomeButton : ft.playing ? DmFocusHomeRunning : ft.game.reason ? DmFocusHomeBlocked : DmFocusHomeGame;
-    NSArray *h = onTiles || _focus.zone == ZoneButtons ? dm_hints_for_focus(k, NO, NO) : @[];
+    NSArray *h = _focus.hintsVisible ? dm_hints_for_focus(k, NO, NO) : @[];   // no ring (after a touch), no hints
     if (![h isEqual:_shownHints]) { _shownHints = h; [_hints setHints:h]; }
 }
 - (void)go:(HearthDir)d {
@@ -167,9 +181,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
         : g.reason == HEARTH_NEEDS_SIGNING ? @"This game's code is not signed for this copy of Hearth, so iPadOS will not run it. Import the game again from your Mac, which signs it for this Hearth."
         : g.reason == DM_PACK_MISSING ? @"Part of this game is missing. Import it again from your Mac."
         : @"This folder is not a game Hearth can open.";
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:hearth_state_line(g) message:[NSString stringWithFormat:@"%@\n\n%@", what, g.why ?: @""] preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:a animated:YES completion:nil];
+    hearth_dialog_info(self, hearth_state_line(g), [NSString stringWithFormat:@"%@\n\n%@", what, g.why ?: @""]);
 }
 - (void)pressButton:(NSInteger)i {
     if (i < 0 || i >= (NSInteger)_buttonActions.count) return;
@@ -295,10 +307,6 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_X | 1ull << DMB_PLUS | 1ull << DMB_MINUS);
     if (!_baselined) { _baselined = YES; _prev = want; if (d) [_repeat hold:d step:nil]; return; }   // what is held when Home takes the controller does nothing until released
     uint64_t up = want & ~_prev; _prev = want;
-    if (self.presentedViewController) {   // a dialog is up: A answers it (Close, Close and Start, or OK), B cancels
-        if (up & (1ull << DMB_A | 1ull << DMB_B)) hearth_dialog_answer(self, (up & 1ull << DMB_A) != 0);
-        return;
-    }
     if (d != (HearthDir)_repeat.held) {
         [_repeat stop];
         if (d) { [self go:d]; __weak HearthHomeVC *w = self; [_repeat hold:d step:^NSTimeInterval { [w go:d]; return DM_REPEAT_NEXT; }]; }

@@ -12,6 +12,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
 @implementation DmPageItem
 + (instancetype)info:(NSString *)t detail:(NSString *)d { DmPageItem *i = [self new]; i.title = t; i.detail = d; return i; }
 + (instancetype)action:(NSString *)t detail:(NSString *)d run:(void (^)(void))r { DmPageItem *i = [self info:t detail:d]; i.run = r; return i; }
++ (instancetype)unavailable:(NSString *)t detail:(NSString *)d { DmPageItem *i = [self info:t detail:d]; i.unavailable = YES; return i; }
 @end
 @implementation DmPage
 + (instancetype)section:(DmSection *)s { DmPage *p = [self new]; p->_section = s; p->_title = s.title; p->_icon = s.icon; return p; }
@@ -48,7 +49,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    UIView *v = self.view; v.backgroundColor = DmUI.bg;
+    UIView *v = self.view; v.backgroundColor = DmUI.bg; v.accessibilityViewIsModal = YES;   // over Home: VoiceOver stays on this screen
     _shown = self.pages ?: [DmPage pagesOf:_settings gameRowsOnly:NO];
     _head = [UILabel new]; _head.text = self.heading ?: @"Settings"; _head.font = [DmUI font:_compact ? 22 : 34 weight:UIFontWeightBold]; _head.textColor = DmUI.text;
     _close = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -80,6 +81,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
     }
     [_catBox addSubview:_catRing];
 }
+- (void)resumeController { _baselined = NO; [_repeat stop]; }
 - (void)reloadPages {
     if (!self.isViewLoaded) return;
     NSString *was = _section < (NSInteger)_shown.count ? _shown[(NSUInteger)_section].title : nil;
@@ -123,7 +125,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
     } else {
         _items = pg.items ? pg.items() : @[];
         if (!_items.count) _items = @[[DmPageItem info:@"Nothing here yet" detail:nil]];
-        for (DmPageItem *it in _items) { DmRowView *r = [[DmRowView alloc] initWithAction:it.title detail:it.detail compact:_compact]; r.info = !it.run; r.destructive = it.destructive; add(r); }
+        for (DmPageItem *it in _items) { DmRowView *r = [[DmRowView alloc] initWithAction:it.title detail:it.detail compact:_compact]; r.info = !it.run; r.destructive = it.destructive; r.unavailable = it.unavailable; add(r); }
     }
     _armed = NO;
     _paneTitle.text = pg.title;

@@ -167,7 +167,7 @@ static const CGFloat kKnob = 26;
 }
 - (BOOL)confirming { return _confirming; }
 - (BOOL)disabled { return _disabled; }
-- (BOOL)inert { return _locked || _disabled; }
+- (BOOL)inert { return _locked || _disabled || _unavailable; }
 - (DmSetting *)setting { return _setting; }
 - (DmItemKind)kind { return _kind; }
 - (DmSliderView *)slider { return _slider; }
@@ -210,6 +210,7 @@ static const CGFloat kKnob = 26;
 - (void)setActionTitle:(NSString *)title detail:(NSString *)detail { _title.text = title; _detail.text = detail; [self setNeedsLayout]; }
 - (void)setInfo:(BOOL)i { _info = i; [self paint]; }
 - (void)setDestructive:(BOOL)d { _destructive = d; [self paint]; }
+- (void)setUnavailable:(BOOL)u { _unavailable = u; [self paint]; }
 // The title and detail of the rows that are not a setting
 - (void)showPlainTitle {
     switch (_kind) {
@@ -237,6 +238,7 @@ static const CGFloat kKnob = 26;
     CGFloat part = _disabled ? 0.45 : 1;   // a disabled row dims what it holds but keeps its note, which says why, fully legible
     for (UIView *v in @[_title, _detail, _value]) v.alpha = part;
     _chev[0].alpha = part; _chev[1].alpha = part; _toggle.alpha = part; _slider.alpha = part;
+    if (_unavailable) _title.alpha = 0.45;   // the reason in the detail below stays at full strength, like the note of a disabled setting
     _slider.enabled = !_disabled;
 }
 - (void)showValue:(NSString *)v source:(DmSettingSource)src disabledNote:(NSString *)disabledNote {

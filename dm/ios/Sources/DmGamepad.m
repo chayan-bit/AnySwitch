@@ -563,6 +563,8 @@ void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_
     publish();
     if (handler) { pthread_mutex_lock(&g_mu); uint64_t m = g_pad_btn; int32_t lx = g_pad_lx, ly = g_pad_ly; pthread_mutex_unlock(&g_mu); handler(m, lx, ly); }
 }
+// The handler that holds the controller now (nil: the game does): a dialog over a screen takes the controller and hands this one back
+void (^dm_gamepad_capture(void))(uint64_t, int32_t, int32_t) { return g_capture; }
 // Main thread, once: controllers report even while no game view exists (Hearth's Home takes them through dm_gamepad_set_capture)
 void dm_gamepad_watch(void) {
     static dispatch_once_t once;

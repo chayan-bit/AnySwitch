@@ -7,9 +7,10 @@
 @interface DmPageItem : NSObject
 + (instancetype)info:(NSString *)title detail:(NSString *)detail;
 + (instancetype)action:(NSString *)title detail:(NSString *)detail run:(void (^)(void))run;
++ (instancetype)unavailable:(NSString *)title detail:(NSString *)reason;   // an action that cannot be done now: the row is dimmed like a setting with no effect, its detail says why
 @property (nonatomic, copy) NSString *title, *detail;
 @property (nonatomic, copy) void (^run)(void);       // nil: information only
-@property (nonatomic) BOOL destructive;
+@property (nonatomic) BOOL destructive, unavailable;
 @property (nonatomic, copy) NSString *confirmTitle;  // set: the first press shows this title, the second runs the action
 @end
 // A category of the screen: a registry section (its rows), or a page of items built each time it is shown
@@ -31,6 +32,7 @@
 @property (nonatomic, copy) NSArray<DmPage *> *pages;   // set before the view loads; nil: every visible section of the store
 @property (nonatomic, copy) NSString *heading;          // the big title, "Settings" when nil
 @property (nonatomic, copy) void (^onChange)(void);     // after the player changed a value (a quiet store announces nothing)
+- (void)resumeController;   // a screen over this one handed the controller back: what is held now does nothing until it is released
 - (void)reloadPages;   // the categories again (a page appeared or went), keeping the place when it can
 // The physical controller's state (DmPadBits.h buttons, left stick) as handed over by dm_gamepad_set_capture; the first call only records what is already held
 - (void)padState:(uint64_t)buttons lx:(int32_t)lx ly:(int32_t)ly;
