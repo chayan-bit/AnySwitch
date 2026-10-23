@@ -141,7 +141,7 @@ static NSString *size_detail(NSDictionary<NSString *, NSNumber *> *s) {
         if (n) [(n < 1024 ? tiny : parts) addObject:[NSString stringWithFormat:@"%@ %@", bytes(n), k[1]]];
     }
     if (!parts.count) parts = tiny;
-    return parts.count ? [parts componentsJoinedByString:@", "] : @"Nothing on this iPad yet";
+    return parts.count ? [parts componentsJoinedByString:@", "] : [NSString stringWithFormat:@"Nothing on this %@ yet", UIDevice.currentDevice.model];
 }
 static unsigned long long installed(NSDictionary<NSString *, NSNumber *> *s) { unsigned long long n = 0; for (NSString *k in s) if (![k isEqual:@"save"]) n += s[k].unsignedLongLongValue; return n; }
 
@@ -174,7 +174,7 @@ static NSArray<DmPageItem *> *signing_items(void) {
     } else [out addObject:info(@"No provisioning profile", @"This build was not installed with one (a simulator or a development run).")];
     for (HearthGame *g in [lib scan])
         [out addObject:info(g.name, g.reason == HEARTH_NEEDS_SIGNING ? @"Needs signing: import it again from the Mac." : g.bundled || g.codePath ? @"Its code is inside the app." : @"Signed for this Hearth.")];
-    [out addObject:info(@"Signing on the iPad", @"Comes in a later version. Until then the Mac signs each game when it is imported.")];
+    [out addObject:info([NSString stringWithFormat:@"Signing on the %@", UIDevice.currentDevice.model], @"Comes in a later version. Until then the Mac signs each game when it is imported.")];
     return out;
 }
 static NSArray<DmPage *> *system_pages(DmSettingsVC *(^vc)(void));

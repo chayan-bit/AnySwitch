@@ -225,8 +225,8 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
               @"detail": @"The name the game shows for the player, up to 32 characters."}]},
         @{@"id": @"appearance", @"title": @"Appearance", @"icon": @"circle.lefthalf.filled", @"settings": @[
             @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",
-              @"options": @[@{@"value": @"system", @"label": @"Same as the iPad"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
-              @"detail": @"Light or dark menus, or follow the iPad's own appearance."}]},
+              @"options": @[@{@"value": @"system", @"label": @"Same as the device"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
+              @"detail": @"Light or dark menus, or follow the device's own appearance."}]},
     ]);
 }
 // Where each built-in entry's player choice lives (docs/settings.md); an entry not named here is system
