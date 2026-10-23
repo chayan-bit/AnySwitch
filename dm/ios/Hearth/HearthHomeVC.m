@@ -209,14 +209,14 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     q.onSleep = ^{ [w sleep]; };
     [self addChildViewController:q];
     q.view.frame = self.view.bounds; q.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:q.view]; [q didMoveToParentViewController:self];
+    [self.view addSubview:q.view]; [q didMoveToParentViewController:self]; hearth_ax_cover(q.view, YES);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [q padState:m lx:lx ly:ly]; });
 }
 - (BOOL)closeQuick { if (!_quick) return NO; [_quick close]; return YES; }   // HOME with the panel open closes only the panel
 - (void)quickGone {
     HearthQuickVC *q = _quick; if (!q) return;
     _quick = nil;
-    [q willMoveToParentViewController:nil]; [q.view removeFromSuperview]; [q removeFromParentViewController];
+    [q willMoveToParentViewController:nil]; hearth_ax_cover(q.view, NO); [q.view removeFromSuperview]; [q removeFromParentViewController];
     if (!hearth_asleep()) { [self takeController]; [self becomeFirstResponder]; }
 }
 - (void)launch:(HearthTile *)t {
@@ -263,14 +263,14 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
-    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self];
+    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self]; hearth_ax_cover(vc.view, YES);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [vc padState:m lx:lx ly:ly]; });
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ vc.view.alpha = 1; vc.view.transform = CGAffineTransformIdentity; } completion:nil];
 }
 - (void)closeSettings {
     DmSettingsVC *vc = _settings; if (!vc) return;
     _settings = nil; hearth_sound(HearthSoundBack);
-    [vc willMoveToParentViewController:nil];
+    [vc willMoveToParentViewController:nil]; hearth_ax_cover(vc.view, NO);
     [UIView animateWithDuration:0.14 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.98, 0.98); }
                      completion:^(BOOL f) { (void)f; [vc.view removeFromSuperview]; [vc removeFromParentViewController]; }];
     [self takeController]; [self becomeFirstResponder]; [self reload];   // the player's name may have changed

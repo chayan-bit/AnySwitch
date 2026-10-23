@@ -2,6 +2,10 @@
 #import <UIKit/UIKit.h>
 #import "HearthLibrary.h"
 
+// A full-screen layer (Home over the game, a sheet over Home) hides the views it covers from VoiceOver and the UI tree (accessibilityViewIsModal alone
+// leaves them in the tree); covered NO before the layer goes gives them back
+void hearth_ax_cover(UIView *layer, BOOL covered);
+
 NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows when its game cannot start ("Rebuild needed", "Needs signing"), nil when it can
 
 @interface HearthTile : UIControl

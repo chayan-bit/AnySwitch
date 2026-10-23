@@ -17,6 +17,7 @@
 #import "HearthCapture.h"
 #import "HearthGallery.h"
 #import "HearthAvatar.h"
+#import "HearthHomeViews.h"
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -152,7 +153,7 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
     self.settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
-    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self];
+    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self]; hearth_ax_cover(vc.view, YES);
     g_settings_open = 1; dm_focus_set(2);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [vc padState:m lx:lx ly:ly]; });
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ vc.view.alpha = 1; vc.view.transform = CGAffineTransformIdentity; } completion:nil];
@@ -161,7 +162,7 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
     DmSettingsVC *vc = self.settings; if (!vc) return;
     self.settings = nil;
     dm_gamepad_set_capture(nil); g_settings_open = 0; dm_focus_set(1);
-    [vc willMoveToParentViewController:nil];
+    [vc willMoveToParentViewController:nil]; hearth_ax_cover(vc.view, NO);
     [UIView animateWithDuration:0.14 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.98, 0.98); }
                      completion:^(BOOL f) { (void)f; [vc.view removeFromSuperview]; [vc removeFromParentViewController]; }];
 }

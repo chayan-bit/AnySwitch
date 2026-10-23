@@ -15,6 +15,11 @@ NSString *hearth_state_line(HearthGame *g) {
     }
 }
 
+void hearth_ax_cover(UIView *layer, BOOL covered) {
+    layer.accessibilityViewIsModal = covered;
+    for (UIView *v in layer.superview.subviews) if (v != layer) v.accessibilityElementsHidden = covered;
+}
+
 static UIFont *tabular(UIFont *f) {   // digits of equal width, so the clock and the percentage do not jitter
     UIFontDescriptor *d = [f.fontDescriptor fontDescriptorByAddingAttributes:@{UIFontDescriptorFeatureSettingsAttribute:
         @[@{UIFontFeatureTypeIdentifierKey: @(kNumberSpacingType), UIFontFeatureSelectorIdentifierKey: @(kMonospacedNumbersSelector)}]}];

@@ -163,7 +163,7 @@ static void home_show(void) {
     HearthHomeVC *h = [HearthHomeVC new]; h.overlay = YES; g_overlay = h;
     [root addChildViewController:h];
     h.view.frame = root.view.bounds; h.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; h.view.alpha = 0;
-    [root.view addSubview:h.view]; [h didMoveToParentViewController:root];
+    [root.view addSubview:h.view]; [h didMoveToParentViewController:root]; hearth_ax_cover(h.view, YES);
     hearth_sound(HearthSoundOpen);
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ h.view.alpha = 1; } completion:nil];
     fprintf(stderr, "hearth: Home over %s\n", g_running.titleId.UTF8String);
@@ -176,7 +176,7 @@ void hearth_resume(void) {
     dm_home_suspend(0);
     play_start();
     hearth_sound(HearthSoundBack);
-    [h willMoveToParentViewController:nil];
+    [h willMoveToParentViewController:nil]; hearth_ax_cover(h.view, NO);
     [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ h.view.alpha = 0; }
                      completion:^(BOOL f) { (void)f; [h.view removeFromSuperview]; [h removeFromParentViewController]; }];
     fprintf(stderr, "hearth: back to %s\n", g_running.titleId.UTF8String);
