@@ -56,7 +56,10 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     [_focus setCount:(NSInteger)_buttons.count forZone:ZoneButtons];
     dm_gamepad_watch();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scanInbox) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [self scanInbox];
 }
+- (void)scanInbox { __weak HearthHomeVC *w = self; hearth_import_scan(^{ [w reload]; }); }   // a game pushed from the Mac appears when its import is done
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
 - (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; [self reload]; }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self takeController]; [self becomeFirstResponder]; }

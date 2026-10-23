@@ -179,6 +179,16 @@ With `--mac-only` as well, the converter also writes `<title ID>_build/mac_run.j
 The per-game IPA bundles the same layout at `DmIOS.app/pack`, with two parts elsewhere: the code is linked into the app's executable (no `code/`), and the game files go to the app's `Documents/romfs.dmstore` (no `romfs.dmstore`; `IPA_ROMFS=1` puts loose files at `DmIOS.app/romfs`).
 Its manifest is written with `pack_manifest.py write --bundled`: platforms `ios` and no inventory, since the app's code signature seals every file it holds.
 
+### Importing a pack into Hearth
+
+`python3 -I scripts/push_pack.py <pack> --app <the installed DmIOS.app> --device <udid>` adds a game to Hearth on a device without reinstalling the app.
+It verifies the pack, clones its iOS part (`pack_manifest.py subset`), signs `code/ios.dylib` with the identity that signed the app and the app's bundle ID as the identifier (iOS loads code from the app's data folder only then), inventories it again and makes one Apple Archive (`aa`), because a device copy is one file per call and a pack holds about 100 000 files.
+It then copies `<title ID>-<time>.aar` and a small `.ready` note into the app's `Documents/Import/`, one file per `devicectl` call, and reads the sizes back.
+The work folder (default `<pack>.push/`) keeps the clone and the archive and can be thrown away afterwards.
+Hearth imports when Home appears or the app comes back to the front (`dm/ios/Hearth/HearthImport.m`): it extracts into `Documents/Import/<name>.import/` (plain files and folders only), checks every file's size and SHA-256 against the inventory, runs the pack check, then renames the folder to `Library/Application Support/Hearth/Games/<title ID>/`, kept out of the device backup.
+An installed game of the same title is replaced only after the new one passed every check, never while it runs, and saves are not touched.
+A failed import leaves `<name>.hearth-error.txt` with the reason in `Documents/Import/`; an interrupted one starts again from the archive.
+
 ### Version contract
 
 `dm/host/dm_abi.h` holds four numbers, each bumped by hand in the commit that breaks compatibility: `DM_PACK_FORMAT` (this layout and the manifest keys), `DM_PROFILE_SCHEMA` (the keys of `game.json`), `DM_CODE_ABI` (what the rewritten code shares with the loader), `DM_SHADER_ABI` (what the host expects from the shader stages).

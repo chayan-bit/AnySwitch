@@ -89,6 +89,15 @@ static NSString *stamp(NSString *p) {
     g.reason = [c[1] intValue]; g.why = g.reason ? c[2] : nil; g.codePath = [c[3] length] ? c[3] : nil;
 }
 
+- (int)checkPackAt:(NSString *)root why:(NSString **)why {
+    char text[1024] = "", *oc, *orf;
+    env_swap("DM_CODE", nil, &oc); env_swap("DM_ROMFS", nil, &orf);
+    int r = dm_pack_check(root.fileSystemRepresentation, text, sizeof text);
+    env_back("DM_CODE", oc); env_back("DM_ROMFS", orf);
+    if (why) *why = r ? @(text) : nil;
+    return r;
+}
+
 - (NSString *)statePath:(HearthGame *)g { return [_supportDir stringByAppendingFormat:@"/State/%@.json", g.titleId]; }
 - (NSDictionary *)stateOf:(HearthGame *)g {
     id st = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[self statePath:g]] ?: NSData.data options:0 error:nil];

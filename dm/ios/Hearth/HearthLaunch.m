@@ -3,6 +3,7 @@
 #import "HearthHomeVC.h"
 #import "HearthHomeViews.h"
 #import "HearthSound.h"
+#import "HearthImport.h"
 #import <objc/message.h>
 #include "hle.h"
 
@@ -23,6 +24,23 @@ HearthLibrary *hearth_library(void) {
     return lib;
 }
 HearthGame *hearth_running_game(void) { return g_running; }
+
+void hearth_import_scan(void (^done)(void)) {
+    static dispatch_queue_t q; static dispatch_once_t once; static BOOL busy;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("hearth.import", DISPATCH_QUEUE_SERIAL); });
+    if (busy) return;   // one scan at a time; the running one sees what arrived meanwhile on its next start
+    HearthImport *imp = [[HearthImport alloc] initWithLibrary:hearth_library()];
+    if (!imp.ready.count) return;
+    busy = YES; imp.runningId = g_running.titleId;
+    UIBackgroundTaskIdentifier bg = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"import" expirationHandler:nil];   // a little time if the player leaves; an interrupted import starts again later
+    dispatch_async(q, ^{
+        NSUInteger n = [imp importAll];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            busy = NO; [UIApplication.sharedApplication endBackgroundTask:bg];
+            if (n && done) done();
+        });
+    });
+}
 
 // Play time (State/<id>.json playSeconds): counted while the game runs in front, not while Home is over it or the app is in the background
 static double g_play_since;

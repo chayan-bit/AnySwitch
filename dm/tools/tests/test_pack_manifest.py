@@ -52,7 +52,25 @@ def main():
         assert mb['inventory'] is None and mb['platforms'] == ['ios'] and not (r / 'files.tsv').exists(), mb
         assert run('verify', str(r)).returncode == 0
         bad(stale, f'code {ABI["DM_CODE_ABI"] + 1}, this engine {ABI["DM_CODE_ABI"]}')
+    subset_case()
     print('test_pack_manifest: ok')
+
+
+def subset_case():   # subset: the iOS part of a two-platform pack, verified on its own; a source that no longer matches its inventory is refused
+    with tempfile.TemporaryDirectory() as t:
+        r, s = Path(t) / 'pack', Path(t) / 'ios'
+        for f in ('profile/game.json', 'code/ios.dylib', 'code/macos.dylib', 'msl/ios/b-1/a.metallib', 'msl/macos/b-1/a.metallib', 'pso/macos/x.bin', 'romfs.dmstore'):
+            (r / f).parent.mkdir(parents=True, exist_ok=True); (r / f).write_text(f)
+        assert run('write', str(r), '--title', '0100abf008968000').returncode == 0
+        u = run('subset', str(r), str(s), '--platform', 'ios')
+        assert u.returncode == 0, u.stderr
+        have = sorted(p.relative_to(s).as_posix() for p in s.rglob('*') if p.is_file())
+        assert have == ['code/ios.dylib', 'files.tsv', 'manifest.json', 'msl/ios/b-1/a.metallib', 'profile/game.json', 'romfs.dmstore'], have
+        assert json.loads((s / 'manifest.json').read_text())['platforms'] == ['ios'] and not (s / 'pso').exists()
+        assert run('verify', str(s)).returncode == 0 and run('verify', str(r)).returncode == 0   # the source is untouched
+        (r / 'romfs.dmstore').write_text('changed')
+        u = run('subset', str(r), str(Path(t) / 'ios2'), '--platform', 'ios')
+        assert u.returncode != 0 and 'changed: romfs.dmstore' in u.stderr and not (Path(t) / 'ios2').exists(), u.stderr
 
 
 if __name__ == '__main__':

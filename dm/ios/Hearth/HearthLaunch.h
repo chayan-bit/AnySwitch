@@ -4,7 +4,9 @@
 #import "HearthLibrary.h"
 
 HearthLibrary *hearth_library(void);
-HearthGame *hearth_running_game(void);   // nil while no game was launched in this process
+HearthGame *hearth_running_game(void);
+// Games pushed into Documents/Import from the Mac (scripts/push_pack.py) are imported in the background (HearthImport.h); done runs on the main thread when one was added
+void hearth_import_scan(void (^done)(void));   // nil while no game was launched in this process
 // Launch g in this process (Home's tile action). A refused pack shows its reason; with another game running, a dialog offers to close it and restart straight into g.
 // The game boots at once (the host loads in the background); zoom, when given, plays Home's launch animation meanwhile and calls done when the game's screen may replace Home
 void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(void)));

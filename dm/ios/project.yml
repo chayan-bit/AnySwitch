@@ -25,6 +25,8 @@ targets:
       - path: Gen/src         # Source files from the compile commands of dm/host/Makefile (linked in by tools/gen_build.py)
       - path: Gen/main/main.c
         compilerFlags: "-Dmain=dm_main"
+    dependencies:
+      - sdk: libAppleArchive.tbd   # Hearth/HearthImport.m extracts imported games (Apple Archive)
     info:
       path: Sources/Info.plist
       properties:

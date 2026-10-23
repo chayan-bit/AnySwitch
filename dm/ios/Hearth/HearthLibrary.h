@@ -35,6 +35,7 @@
 - (BOOL)deleteGame:(HearthGame *)g error:(NSString **)why;      // an imported game's folder and state; its saves stay. Not the game built into the app. The caller makes sure it is not running
 - (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why;   // this game's save folder, left empty so the old single-game save is not copied back
 - (HearthGame *)gameWithId:(NSString *)titleId;
+- (int)checkPackAt:(NSString *)root why:(NSString **)why;   // dm_pack_check of a folder with its own code and game files (an import, before it replaces anything); 0 = fine
 - (NSString *)saveDirFor:(HearthGame *)g;   // Documents/Users/<uid>/saves/<id>/save; the first time, the single-game app's Documents/save is cloned there (the original is kept)
 - (NSString *)logDirFor:(HearthGame *)g;
 // next.json: what the next process does, {"action": "home"} or {"action": "launch", "id": "<title id>"}. take = read and remove (a crash never loops)
