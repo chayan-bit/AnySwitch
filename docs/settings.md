@@ -103,6 +103,7 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once | system |
 | System | Game language | `DM_LANG` | the Switch languages | en-US | restart | both |
 | System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart | system |
+| Appearance | Appearance | `DM_APPEARANCE` | system, light, dark | system (the iPad's own) | at once | system |
 
 Everything else that the host reads from a `DM_*` variable stays environment-only: logging, traces and dumps, test hooks, file paths, and the per-game compatibility switches that a game profile sets.
 
@@ -201,6 +202,17 @@ An unknown key or a value that does not parse is ignored and logged.
 "Restore defaults" on a page removes the player's values for that page.
 "Restore all defaults" removes them for every page; it asks for a second press so one stray tap does not do it.
 Keys that the environment sets are left alone by both.
+
+## System Settings and a game's Options (Hearth)
+
+The same screen shows Hearth's System Settings and each game's Options; the categories are `DmPage`s (`DmSettingsVC.h`), either a registry section or a page of items built each time it is shown.
+An item is information or an action; an action that removes something asks for a second press, like "Restore all defaults".
+System Settings (`HearthSettingsPages.m`) has the registry's pages in system scope, Appearance among them, then Data Management (sizes per game, Delete game, Delete saves), Signing (this app's team, the days the provisioning profile has left, each game's signing state), About (version, source link, licences, Share log), and Developer once the version line was pressed 7 times.
+A game's Options (a long press on its tile, or + or - on a controller) has Overview (publisher, title ID, size, last played, play time), the rows of scope `game` or `both`, and Manage (Close game while it runs, View log, Delete game, Delete saves).
+"Restore defaults" in Options drops only that game's choices on the page, and there is no "Restore all defaults" there.
+Options learn which rows a game has from what it reported the last time it ran (`State/<title id>.json`, `caps`); before its first start only the rows that need nothing are shown, with a line that says more appear after the first start.
+A change made on Home reaches a paused game at once: the system store and the running game's store share the system layer (`linkSystemLayer:`), and the running game's Options use its live store.
+Appearance sets the windows' light or dark style (`hearth_apply_appearance`); `DM_APPEARANCE` in `env.txt` still wins.
 
 ## Applying changes
 

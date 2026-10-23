@@ -24,6 +24,31 @@ HearthLibrary *hearth_library(void) {
 }
 HearthGame *hearth_running_game(void) { return g_running; }
 
+// Play time (State/<id>.json playSeconds): counted while the game runs in front, not while Home is over it or the app is in the background
+static double g_play_since;
+static void play_start(void) { if (g_running && !g_play_since && !hearth_home_up()) g_play_since = CACurrentMediaTime(); }
+static void play_stop(void) {
+    if (!g_play_since) return;
+    [hearth_library() addPlayTime:CACurrentMediaTime() - g_play_since to:g_running]; g_play_since = 0;
+}
+// What the game provides (plan decision 12), for its Options while it is not running: learned 15 s after the start (the host has loaded its modules by then), again at Home and at close
+static void caps_note(void) {
+    if (!g_running) return;
+    NSMutableDictionary *c = [NSMutableDictionary dictionary];
+    for (NSString *k in @[@"fstep", @"fpscap", @"internalres", @"nvn"]) c[k] = @(dm_capability(k.UTF8String) != 0);
+    if (![[hearth_library() capsOf:g_running] isEqual:c]) { [hearth_library() rememberCaps:c of:g_running]; fprintf(stderr, "hearth: capabilities of %s noted\n", g_running.titleId.UTF8String); }
+}
+static void running_started(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+        [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; play_stop(); }];
+        [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; play_start(); }];
+    });
+    play_start();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ caps_note(); });
+}
+
 static void quit(void) { if (g_running) dm_host_shutdown("close"); else exit(0); }
 // Ask LaunchServices to open this app, then end the process; the open is served after the exit. Two requests and the first completion as the exit point is the pattern spike H2
 // measured (66 of 66 back in the foreground); our own code, after LiveContainer's idea. If no completion comes in 3 s the process ends anyway and the user opens Hearth by hand
@@ -43,6 +68,7 @@ static void relaunch(void) {
 
 void hearth_close(void) {
     fprintf(stderr, "hearth: closing %s\n", g_running.titleId.UTF8String ?: "(no game)");
+    play_stop(); caps_note();
     [hearth_library() writeNext:@{@"action": @"home"}];
     relaunch();
 }
@@ -80,12 +106,13 @@ void hearth_launch(HearthGame *g, UIWindow *window, void (^zoom)(void (^done)(vo
         UIViewController *over = window.rootViewController; while (over.presentedViewController) over = over.presentedViewController;
         confirm(over, [NSString stringWithFormat:@"Close %@ and start %@?", g_running.name, g.name], @"Close and Start", @"switch", ^{
             [hearth_library() writeNext:@{@"action": @"launch", @"id": g.titleId}];
+            play_stop(); caps_note();
             relaunch();
         });
         return;
     }
     if (!hearth_boot_game(g)) { alert(window.rootViewController, @"This game cannot start", @"Its log has the reason (Documents/Logs)."); return; }
-    g_running = g;
+    g_running = g; running_started();
     void (^show)(void) = ^{ window.rootViewController = front_ios_root(); };
     if (zoom) zoom(show); else show();
 }
@@ -94,6 +121,7 @@ void hearth_restart_game(void) {
     if (!g_running) return;
     fprintf(stderr, "hearth: restarting %s for its changed settings\n", g_running.titleId.UTF8String);
     [hearth_library() writeNext:@{@"action": @"launch", @"id": g_running.titleId}];
+    play_stop(); caps_note();
     relaunch();
 }
 
@@ -112,7 +140,7 @@ static UIViewController *game_vc(void) {
 static void home_show(void) {
     UIViewController *root = game_vc(); if (!root || g_overlay || !g_running) return;
     if (root.presentedViewController) { fprintf(stderr, "hearth: HOME ignored: a dialog is up\n"); return; }   // the software keyboard's guest thread waits for its answer
-    dm_home_suspend(1);
+    dm_home_suspend(1); play_stop(); caps_note();
     HearthHomeVC *h = [HearthHomeVC new]; h.overlay = YES; g_overlay = h;
     [root addChildViewController:h];
     h.view.frame = root.view.bounds; h.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; h.view.alpha = 0;
@@ -127,6 +155,7 @@ void hearth_resume(void) {
     UIViewController *root = game_vc(); if (root.presentedViewController) [root dismissViewControllerAnimated:NO completion:nil];   // Home's own dialog (no game dialog can be up: Home does not open over one)
     dm_gamepad_set_capture(nil);   // the controller goes back to the game
     dm_home_suspend(0);
+    play_start();
     hearth_sound(HearthSoundBack);
     [h willMoveToParentViewController:nil];
     [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ h.view.alpha = 0; }
@@ -139,4 +168,4 @@ void hearth_home(void) { if (g_running) dm_home_press(home_deliver); }
 void hearth_home_long(void) { if (g_running) dm_home_press(home_long_deliver); }
 
 // Called by main.m for a launch intent from next.json, before UIApplicationMain: the game boots early, as the single-game app did
-void hearth_mark_running(HearthGame *g) { g_running = g; }
+void hearth_mark_running(HearthGame *g) { g_running = g; running_started(); }

@@ -19,6 +19,8 @@ targets:
       - path: Gen/pack        # The game pack the app boots (DmIOS.app/pack): profile/ (rewriter tables, game.json, shader tables), pso/ios/, font/, meta/, manifest.json; build_ipa.sh adds msl/ios/ and aoc/
         type: folder
         buildPhase: resources
+      - path: Gen/licenses.txt   # the licences of what the app ships (tools/gen_licenses.py), shown by About > Licences
+        buildPhase: resources
       - path: Gen/Assets.xcassets   # app icon (Hearth's mark, drawn by build_ipa.sh with Hearth/Assets/hearth_icon.c)
       - path: Gen/src         # Source files from the compile commands of dm/host/Makefile (linked in by tools/gen_build.py)
       - path: Gen/main/main.c

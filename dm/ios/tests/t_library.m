@@ -135,6 +135,33 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
         lib.bundleId = nil; lib.appSigner = nil;
     } else printf("t_library: section 9 skipped (run through make: it passes a profile)\n");
 
+    // 10. Data Management and Options: sizes by kind, delete game keeps the saves, delete saves sticks (the old single-game save is not copied back), cached capabilities, play time
+    { HearthGame *g = [HearthGame new]; g.titleId = @"0100000000050000"; g.root = [games stringByAppendingPathComponent:g.titleId];
+      NSDictionary *files = @{@"code/ios.dylib": @1000, @"msl/a/b.metallib": @200, @"msl/c.json": @30, @"pso/ios/x.bin": @400, @"romfs.dmstore": @5000, @"aoc/1/romfs.dmstore": @700,
+                              @"profile/game.json": @10, @"meta/icon.jpg": @20, @"manifest.json": @5};
+      for (NSString *rel in files) put([g.root stringByAppendingPathComponent:rel], [@"" stringByPaddingToLength:[files[rel] unsignedIntegerValue] withString:@"x" startingAtIndex:0]);
+      NSString *save = [lib saveDirFor:g]; put([save stringByAppendingPathComponent:@"main"], [@"" stringByPaddingToLength:64 withString:@"s" startingAtIndex:0]);
+      NSDictionary *sz = [lib sizesOf:g];
+      CHECK([sz[@"code"] isEqual:@1000] && [sz[@"shaders"] isEqual:@230] && [sz[@"pipelines"] isEqual:@400] && [sz[@"files"] isEqual:@5000] && [sz[@"addons"] isEqual:@700]
+            && [sz[@"other"] isEqual:@35] && [sz[@"save"] isEqual:@64], "sizes by kind %s", sz.description.UTF8String);
+      CHECK([lib capsOf:g] == nil, "no capabilities before the first start");
+      [lib rememberCaps:@{@"fstep": @YES, @"nvn": @NO} of:g]; [lib addPlayTime:90 to:g]; [lib addPlayTime:30.5 to:g]; [lib markPlayed:g];
+      CHECK([[lib capsOf:g][@"fstep"] boolValue] && ![[lib capsOf:g][@"nvn"] boolValue], "capabilities kept %s", [lib capsOf:g].description.UTF8String);
+      CHECK([lib playTimeOf:g] == 120.5 && g.lastPlayed > 0, "play time %.1f, and markPlayed keeps it", [lib playTimeOf:g]);
+      NSString *why = nil;
+      HearthGame *b = [HearthGame new]; b.titleId = @"0100000000030000"; b.root = [bundle stringByAppendingPathComponent:@"pack"]; b.bundled = YES;
+      CHECK(![lib deleteGame:b error:&why] && why.length && [fm fileExistsAtPath:b.root], "the game built into the app is not deleted (%s)", why.UTF8String);
+      CHECK([lib deleteGame:g error:&why] && ![fm fileExistsAtPath:g.root] && [fm fileExistsAtPath:[save stringByAppendingPathComponent:@"main"]], "deleted, its save kept (%s)", why.UTF8String);
+      CHECK([lib capsOf:g] == nil && [lib playTimeOf:g] == 0, "its state goes with it");
+      put([home stringByAppendingPathComponent:@"Documents/save/main"], @"old single-game save");
+      NSString *bs = [lib saveDirFor:b]; CHECK([fm fileExistsAtPath:[bs stringByAppendingPathComponent:@"main"]], "bundled game: the old save copied once");
+      put([bs stringByAppendingString:@".work/main"], @"working copy");
+      CHECK([lib deleteSavesOf:b error:&why] && ![fm fileExistsAtPath:[bs stringByAppendingString:@".work"]], "delete saves, the working copy too (%s)", why.UTF8String);
+      bs = [lib saveDirFor:b];
+      CHECK(![fm fileExistsAtPath:[bs stringByAppendingPathComponent:@"main"]] && [fm fileExistsAtPath:[home stringByAppendingPathComponent:@"Documents/save/main"]],
+            "deleted saves stay deleted, and the old single-game save is left alone");
+      CHECK([[lib sizesOf:b][@"save"] isEqual:@0], "save size 0 after the delete"); }
+
     [fm removeItemAtPath:t error:nil];
     // menu sounds: short, within full scale, no click at the start or the end, the open chime rises and the close chime falls
     { double rate = 48000;

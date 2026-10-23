@@ -229,10 +229,13 @@ int main(void) { @autoreleasepool {
       EQ(names(dm_hints_for_focus(DmFocusChoice, NO, NO)), @"↔ Change | A Next | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusSlider, NO, NO)), @"↔ Change | B Back | L R Category");   // A does nothing on a slider
       EQ(names(dm_hints_for_focus(DmFocusText, NO, NO)), @"A Edit | B Back | L R Category");       // left / right does nothing on a text row
-      EQ(names(dm_hints_for_focus(DmFocusHomeGame, NO, NO)), @"A Start");                           // Home: B does nothing, so it gets no hint
-      EQ(names(dm_hints_for_focus(DmFocusHomeBlocked, NO, NO)), @"A Details");
+      EQ(names(dm_hints_for_focus(DmFocusHomeGame, NO, NO)), @"A Start | + Options");                           // Home: B does nothing, so it gets no hint
+      EQ(names(dm_hints_for_focus(DmFocusHomeBlocked, NO, NO)), @"A Details | + Options");
+      EQ(names(dm_hints_for_focus(DmFocusAction, NO, NO)), @"A Select | B Back | L R Category");      // a page row that does something; armed, it asks for the second press
+      EQ(names(dm_hints_for_focus(DmFocusAction, NO, YES)), @"A Confirm | B Back | L R Category");
+      EQ(names(dm_hints_for_focus(DmFocusInfo, NO, NO)), @"B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusHomeButton, NO, NO)), @"A Open");
-      EQ(names(dm_hints_for_focus(DmFocusHomeRunning, NO, NO)), @"A Resume | X Close");               // the game under Home: A goes back to it, X offers to close it
+      EQ(names(dm_hints_for_focus(DmFocusHomeRunning, NO, NO)), @"A Resume | X Close | + Options");               // the game under Home: A goes back to it, X offers to close it
       EQ(names(dm_hints_for_focus(DmFocusRestore, NO, NO)), @"A Restore | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, NO)), @"A Restore | B Back | L R Category"); EQ(names(dm_hints_for_focus(DmFocusRestoreAll, NO, YES)), @"A Confirm | B Back | L R Category");
       EQ(names(dm_hints_for_focus(DmFocusRestart, NO, NO)), @"A Restart | B Back | L R Category");
@@ -438,7 +441,7 @@ int main(void) { @autoreleasepool {
     { NSDictionary *want = @{@"DM_LETTERBOX": @"both", @"DM_AMBIENT_LEVEL": @"system", @"DM_UPSCALE": @"both", @"DM_UPSCALE_SHARPNESS": @"both", @"DM_RENDER_SCALE": @"game", @"DM_INTERNAL_RES": @"game",
           @"DM_OPMODE": @"both", @"DM_CONTROLS_LAYOUT": @"both", @"DM_PAD_LAYOUT": @"game", @"DM_CONTROLS_SCALE": @"system", @"DM_CONTROLS_OPACITY": @"system", @"DM_CONTROLS_IDLE_FADE": @"system",
           @"DM_SHAKE_G": @"system", @"DM_VIBRATION": @"both", @"DM_VIBRATION_STRENGTH": @"system", @"DM_VOLUME": @"system", @"DM_FPS_TARGET": @"game", @"DM_PSO_FLEX": @"game", @"DM_SHOW_FPS": @"system",
-          @"DM_LANG": @"both", @"DM_NICK": @"system"};
+          @"DM_LANG": @"both", @"DM_NICK": @"system", @"DM_APPEARANCE": @"system"};
       NSArray *names = @[@"system", @"game", @"both"];
       DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSUInteger n = 0;
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) { n++; CHECK(want[st.key] != nil, "%s has no scope in the table", st.key.UTF8String); if (want[st.key]) EQ(names[(NSUInteger)st.scope], want[st.key]); }

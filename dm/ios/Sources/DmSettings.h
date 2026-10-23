@@ -42,7 +42,8 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 // Where the focus is on the settings screen: what the footer's button hints say follows from it
 typedef NS_ENUM(NSInteger, DmFocusKind) { DmFocusCategory, DmFocusToggle, DmFocusChoice, DmFocusSlider, DmFocusText, DmFocusRestore, DmFocusRestoreAll, DmFocusRestart, DmFocusEditor,
     DmFocusHomeGame, DmFocusHomeBlocked, DmFocusHomeButton,     // Hearth's Home: a game tile, a tile that cannot start (A explains why), a system button,
-    DmFocusHomeRunning };                                        // and the tile of the game paused under Home
+    DmFocusHomeRunning,                                          // and the tile of the game paused under Home
+    DmFocusAction, DmFocusInfo };                                // a page row that does something, or only says something
 // The footer hints {glyph, text} for a focus: only the buttons that do something there (a slider has no A, a locked or disabled row has neither A nor left / right, a restore-all that waits for its second press says Confirm; the text editor has its own Cancel and Save buttons, so the footer shows nothing then)
 NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked, BOOL armed);
 

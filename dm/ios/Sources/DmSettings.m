@@ -223,6 +223,10 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
               @"detail": @"The language the game starts in, when it has it. The game reads it once at start."},
             @{@"key": @"DM_NICK", @"label": @"Player name", @"type": @"text", @"default": @"Player", @"maxLength": @32, @"maxBytes": @32, @"apply": @"restart",
               @"detail": @"The name the game shows for the player, up to 32 characters."}]},
+        @{@"id": @"appearance", @"title": @"Appearance", @"icon": @"circle.lefthalf.filled", @"settings": @[
+            @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",
+              @"options": @[@{@"value": @"system", @"label": @"Same as the iPad"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
+              @"detail": @"Light or dark menus, or follow the iPad's own appearance."}]},
     ]);
 }
 // Where each built-in entry's player choice lives (docs/settings.md); an entry not named here is system
@@ -481,10 +485,10 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
     NSMutableArray *h = [NSMutableArray array];
     if (kind == DmFocusCategory) return @[@[@"A", @"Open"], @[@"B", @"Close"], @[@"L R", @"Category"]];
     if (kind == DmFocusEditor) return @[];   // the editor panel has its own Cancel and Save buttons; a footer would sit behind the soft keyboard
-    if (kind == DmFocusHomeGame) return @[@[@"A", @"Start"]];   // Home has no Back: B does nothing there
-    if (kind == DmFocusHomeBlocked) return @[@[@"A", @"Details"]];
+    if (kind == DmFocusHomeGame) return @[@[@"A", @"Start"], @[@"+", @"Options"]];   // Home has no Back: B does nothing there
+    if (kind == DmFocusHomeBlocked) return @[@[@"A", @"Details"], @[@"+", @"Options"]];
     if (kind == DmFocusHomeButton) return @[@[@"A", @"Open"]];
-    if (kind == DmFocusHomeRunning) return @[@[@"A", @"Resume"], @[@"X", @"Close"]];
+    if (kind == DmFocusHomeRunning) return @[@[@"A", @"Resume"], @[@"X", @"Close"], @[@"+", @"Options"]];
     if (!locked) switch (kind) {
         case DmFocusToggle: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Toggle"]]; break;
         case DmFocusChoice: [h addObject:@[@"↔", @"Change"]]; [h addObject:@[@"A", @"Next"]]; break;
@@ -493,6 +497,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
         case DmFocusRestore: [h addObject:@[@"A", @"Restore"]]; break;
         case DmFocusRestoreAll: [h addObject:@[@"A", armed ? @"Confirm" : @"Restore"]]; break;
         case DmFocusRestart: [h addObject:@[@"A", @"Restart"]]; break;
+        case DmFocusAction: [h addObject:@[@"A", armed ? @"Confirm" : @"Select"]]; break;
         default: break;
     }
     [h addObject:@[@"B", @"Back"]]; [h addObject:@[@"L R", @"Category"]];

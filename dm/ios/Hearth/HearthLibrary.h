@@ -26,6 +26,14 @@
 @property (nonatomic, strong) HearthSigner *appSigner;
 - (NSArray<HearthGame *> *)scan;   // the bundled pack and Games/<id>/, last played first, then by title id; each checked (cached while the pack's key files keep their size and time)
 - (void)markPlayed:(HearthGame *)g;   // State/<id>.json: lastPlayed = now
+- (void)addPlayTime:(double)seconds to:(HearthGame *)g;   // State/<id>.json playSeconds
+- (double)playTimeOf:(HearthGame *)g;
+- (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g;   // what the game provides (dm_capability), learned when it runs (plan decision 12)
+- (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g;   // nil before its first start
+// Bytes per kind: code, shaders (msl/), pipelines (pso/), files (the game's own files), addons (aoc/), other (profile, icon, manifest), save
+- (NSDictionary<NSString *, NSNumber *> *)sizesOf:(HearthGame *)g;
+- (BOOL)deleteGame:(HearthGame *)g error:(NSString **)why;      // an imported game's folder and state; its saves stay. Not the game built into the app. The caller makes sure it is not running
+- (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why;   // this game's save folder, left empty so the old single-game save is not copied back
 - (HearthGame *)gameWithId:(NSString *)titleId;
 - (NSString *)saveDirFor:(HearthGame *)g;   // Documents/Users/<uid>/saves/<id>/save; the first time, the single-game app's Documents/save is cloned there (the original is kept)
 - (NSString *)logDirFor:(HearthGame *)g;

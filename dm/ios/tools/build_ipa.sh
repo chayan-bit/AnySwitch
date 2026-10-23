@@ -197,6 +197,7 @@ Gen/hearth_icon "$AI/icon.png" 1024 || die "draw the app icon"
 printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
 echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
 t "app icon: Hearth's mark (Hearth/Assets/hearth_icon.c)"
+python3 tools/gen_licenses.py "$DM/.." Gen/licenses.txt || die "gen_licenses.py"   # About > Licences: every shipped component's licence
 [ -f "$ICON" ] || t "no game icon ($ICON not found): the game's tile on Home shows a placeholder"
 # The bundled pack's own parts: icon and control data, then manifest.json (pack_manifest.py --bundled: the code is the executable's own and the app's signature seals the files, so no inventory)
 if [ -f "$ICON" ]; then cp "$ICON" Gen/pack/meta/icon.jpg || die "copy $ICON"; fi

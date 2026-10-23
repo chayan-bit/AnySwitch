@@ -17,6 +17,7 @@ BANNED = re.compile(r'\b(Switch|HOME Menu|Joy-?Con|Mii|My Page)\b|(?i:\b(nintend
 # A built app's files: ours or the system's (anywhere but pack/), and the game's (the player's own dump, converted) under pack/ and Frameworks/
 APP_FILES = [
     (r'_CodeSignature/.+|embedded\.mobileprovision|Info\.plist|PkgInfo|Assets\.car|AppIcon[\w@~.-]*\.png|DmIOS', 'ours or the system\'s (signature, plist, asset catalog with Hearth\'s icon, the executable)'),
+    (r'licenses\.txt', 'ours: the licences of the shipped components (dm/ios/tools/gen_licenses.py)'),
     (r'Frameworks/[0-9A-F]{16}\.dylib', 'the game\'s code, rewritten from the player\'s dump'),
     (r'pack/(manifest\.json|profile/.+)', 'ours: the pack index and the tables the converter wrote'),
     (r'pack/font/(standard|nintendo_ext)\.ttf', 'ours or the system\'s: stand-ins for the shared fonts (the file name is the font the game asks for, never shown)'),
@@ -94,10 +95,17 @@ class BrandWords(unittest.TestCase):
             got = sorted(s for _, s in scan_tree(t))
             self.assertEqual(got, ['1x (Switch)', 'Amiibo', 'Joy-Con.png'])   # "switch" as a verb is fine
 
+    def test_the_shipped_licences_have_none(self):   # About > Licences shows this text (dm/ios/tools/gen_licenses.py); every licence it names must still be there
+        sys.path.insert(0, str(ROOT / 'dm/ios/tools'))
+        from gen_licenses import render
+        text = render(ROOT)
+        self.assertEqual(BANNED.findall(text), [])
+        for part in ('libvpx', 'Zstandard', 'stb_vorbis', 'h1k421', 'Advanced Micro Devices', 'deko3d', 'Permission is hereby granted'): self.assertIn(part, text)
+
     def test_a_built_app_inventory(self):
         with tempfile.TemporaryDirectory() as t:
             app = Path(t) / 'DmIOS.app'
-            for rel in ('DmIOS', 'Assets.car', 'PkgInfo', '_CodeSignature/CodeResources', 'Frameworks/0100000000010000.dylib', 'pack/manifest.json', 'pack/meta/icon.jpg', 'pack/font/nintendo_ext.ttf'):
+            for rel in ('DmIOS', 'Assets.car', 'PkgInfo', '_CodeSignature/CodeResources', 'Frameworks/0100000000010000.dylib', 'pack/manifest.json', 'pack/meta/icon.jpg', 'pack/font/nintendo_ext.ttf', 'licenses.txt'):
                 (app / rel).parent.mkdir(parents=True, exist_ok=True); (app / rel).write_bytes(b'')
             (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleDisplayName': 'Hearth'}))
             self.assertEqual(scan_app(app), ([], []))

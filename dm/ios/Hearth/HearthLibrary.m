@@ -90,13 +90,69 @@ static NSString *stamp(NSString *p) {
 }
 
 - (NSString *)statePath:(HearthGame *)g { return [_supportDir stringByAppendingFormat:@"/State/%@.json", g.titleId]; }
-- (void)markPlayed:(HearthGame *)g {
-    NSString *p = [self statePath:g];
-    NSDictionary *old = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:p] ?: NSData.data options:0 error:nil];
-    NSMutableDictionary *st = [old isKindOfClass:NSDictionary.class] ? old.mutableCopy : [NSMutableDictionary dictionary];
-    st[@"lastPlayed"] = @(NSDate.date.timeIntervalSince1970); g.lastPlayed = [st[@"lastPlayed"] doubleValue];
+- (NSDictionary *)stateOf:(HearthGame *)g {
+    id st = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[self statePath:g]] ?: NSData.data options:0 error:nil];
+    return [st isKindOfClass:NSDictionary.class] ? st : @{};
+}
+- (void)updateState:(HearthGame *)g with:(void (^)(NSMutableDictionary *st))change {
+    NSString *p = [self statePath:g]; NSMutableDictionary *st = [[self stateOf:g] mutableCopy];
+    change(st);
     [NSFileManager.defaultManager createDirectoryAtPath:p.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
     [[NSJSONSerialization dataWithJSONObject:st options:0 error:nil] writeToFile:p atomically:YES];
+}
+- (void)markPlayed:(HearthGame *)g {
+    double now = NSDate.date.timeIntervalSince1970; g.lastPlayed = now;
+    [self updateState:g with:^(NSMutableDictionary *st) { st[@"lastPlayed"] = @(now); }];
+}
+- (void)addPlayTime:(double)s to:(HearthGame *)g {
+    if (!(s > 0)) return;
+    [self updateState:g with:^(NSMutableDictionary *st) { st[@"playSeconds"] = @([st[@"playSeconds"] doubleValue] + s); }];
+}
+- (double)playTimeOf:(HearthGame *)g { id v = [self stateOf:g][@"playSeconds"]; return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0; }
+- (void)rememberCaps:(NSDictionary<NSString *, NSNumber *> *)caps of:(HearthGame *)g { [self updateState:g with:^(NSMutableDictionary *st) { st[@"caps"] = caps; }]; }
+- (NSDictionary<NSString *, NSNumber *> *)capsOf:(HearthGame *)g { id c = [self stateOf:g][@"caps"]; return [c isKindOfClass:NSDictionary.class] ? c : nil; }
+
+static unsigned long long tree_size(NSString *path) {   // a file's size, or the sum of the files under a folder
+    NSFileManager *fm = NSFileManager.defaultManager; BOOL dir = NO;
+    if (![fm fileExistsAtPath:path isDirectory:&dir]) return 0;
+    if (!dir) return [[fm attributesOfItemAtPath:path error:nil] fileSize];
+    unsigned long long n = 0;
+    for (NSURL *u in [fm enumeratorAtURL:[NSURL fileURLWithPath:path] includingPropertiesForKeys:@[NSURLFileSizeKey, NSURLIsRegularFileKey] options:0 errorHandler:nil]) {
+        NSNumber *reg = nil, *sz = nil; [u getResourceValue:&reg forKey:NSURLIsRegularFileKey error:nil]; [u getResourceValue:&sz forKey:NSURLFileSizeKey error:nil];
+        if (reg.boolValue) n += sz.unsignedLongLongValue;
+    }
+    return n;
+}
+- (NSDictionary<NSString *, NSNumber *> *)sizesOf:(HearthGame *)g {
+    NSString *r = g.root;
+    unsigned long long code = tree_size([r stringByAppendingPathComponent:@"code"]) + (g.codePath ? tree_size(g.codePath) : 0);
+    unsigned long long files = g.romfsPath ? tree_size(g.romfsPath) : tree_size([r stringByAppendingPathComponent:@"romfs.dmstore"]) + tree_size([r stringByAppendingPathComponent:@"romfs"]);
+    unsigned long long known = 0, all = tree_size(r);
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (NSArray *k in @[@[@"shaders", @"msl"], @[@"pipelines", @"pso"], @[@"addons", @"aoc"]]) { unsigned long long n = tree_size([r stringByAppendingPathComponent:k[1]]); out[k[0]] = @(n); known += n; }
+    known += tree_size([r stringByAppendingPathComponent:@"code"]) + (g.romfsPath ? 0 : files);
+    out[@"code"] = @(code); out[@"files"] = @(files); out[@"other"] = @(all > known ? all - known : 0);
+    out[@"save"] = @(tree_size([[self saveDirFor:g] stringByDeletingLastPathComponent]));
+    return out;
+}
+- (BOOL)deleteGame:(HearthGame *)g error:(NSString **)why {
+    if (g.bundled || ![g.root hasPrefix:[_supportDir stringByAppendingPathComponent:@"Games/"]]) { if (why) *why = @"This game is built into the app and goes only when Hearth is deleted."; return NO; }
+    NSError *e = nil;
+    if (![NSFileManager.defaultManager removeItemAtPath:g.root error:&e]) { if (why) *why = e.localizedDescription; return NO; }
+    [NSFileManager.defaultManager removeItemAtPath:[self statePath:g] error:nil];
+    [_checked removeObjectForKey:g.root];
+    NSLog(@"hearth: deleted the game %@ (its saves are kept)", g.titleId);
+    return YES;
+}
+- (BOOL)deleteSavesOf:(HearthGame *)g error:(NSString **)why {
+    NSString *save = [self saveDirFor:g]; NSError *e = nil; NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *suffix in @[@"", @".work", @".new"]) {   // the committed save and the host's working and pending copies beside it (hle_fs.c)
+        NSString *p = [save stringByAppendingString:suffix];
+        if ([fm fileExistsAtPath:p] && ![fm removeItemAtPath:p error:&e]) { if (why) *why = e.localizedDescription; return NO; }
+    }
+    [fm createDirectoryAtPath:save withIntermediateDirectories:YES attributes:nil error:nil];   // present and empty: saveDirFor does not copy the old single-game save again
+    NSLog(@"hearth: deleted the saves of %@", g.titleId);
+    return YES;
 }
 
 - (NSArray<HearthGame *> *)scan {

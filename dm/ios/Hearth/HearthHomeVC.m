@@ -8,6 +8,7 @@
 #import "HearthSound.h"
 #import "HearthQuickVC.h"
 #import "HearthSleep.h"
+#import "HearthSettingsPages.h"
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
@@ -77,6 +78,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     for (HearthGame *g in games) {
         HearthTile *t = [[HearthTile alloc] initWithGame:g]; t.playing = g == run;
         [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [t addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tileHeld:)]];   // the game's Options
         [_row insertSubview:t belowSubview:_tileRing]; [_tiles addObject:t];
     }
     _empty.hidden = _tiles.count > 0;
@@ -222,10 +224,16 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
         if (!calm) { snap.center = mid; snap.transform = CGAffineTransformMakeScale(2.2, 2.2); }
     } completion:^(BOOL f) { (void)f; t.art.hidden = NO; done(); }];
 }
-- (void)openSettings {
-    if (_settings) return;
+- (void)openSettings { [self showSheet:hearth_system_settings(self.view.bounds.size)]; }
+- (void)openOptions:(HearthGame *)g {
+    __weak HearthHomeVC *w = self;
+    fprintf(stderr, "hearth: Options of %s\n", g.titleId.UTF8String);
+    [self showSheet:hearth_options(g, self.view.bounds.size, ^{ [w closeSettings]; })];   // a deleted game: back to Home, which lists the games again
+}
+// System Settings or a game's Options, over Home; it has the controller until it closes
+- (void)showSheet:(DmSettingsVC *)vc {
+    if (_settings || _quick) return;
     hearth_sound(HearthSoundOpen); [_repeat stop];
-    DmSettingsVC *vc = [[DmSettingsVC alloc] initWithSettings:DmSettings.systemStore size:self.view.bounds.size];
     __weak HearthHomeVC *w = self;
     vc.onClose = ^{ [w closeSettings]; };
     vc.onRestart = ^{ if (hearth_running_game()) hearth_restart_game(); else [w closeSettings]; };   // with no game running the next launch reads the new values anyway
@@ -252,6 +260,12 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     [_focus touched]; [_focus focusZone:ZoneTiles index:(NSInteger)i]; [self showFocus:YES];
     if (t.game.reason) [self explain:t.game]; else [self launch:t];
 }
+- (void)tileHeld:(UILongPressGestureRecognizer *)g {
+    HearthTile *t = (HearthTile *)g.view; NSUInteger i = [_tiles indexOfObject:t];
+    if (g.state != UIGestureRecognizerStateBegan || i == NSNotFound) return;
+    [_focus touched]; [_focus focusZone:ZoneTiles index:(NSInteger)i]; [self showFocus:YES];
+    [self openOptions:t.game];
+}
 - (void)buttonTapped:(HearthRoundButton *)b {
     NSUInteger i = [_buttons indexOfObject:b]; if (i == NSNotFound) return;
     [_focus touched]; [_focus focusZone:ZoneButtons index:(NSInteger)i]; [self showFocus:YES];
@@ -275,7 +289,7 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
 }
 - (void)padState:(uint64_t)m lx:(int32_t)lx ly:(int32_t)ly {
     HearthDir d = dir_of(m, lx, ly);
-    uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_X);
+    uint64_t want = m & (1ull << DMB_A | 1ull << DMB_B | 1ull << DMB_X | 1ull << DMB_PLUS | 1ull << DMB_MINUS);
     if (!_baselined) { _baselined = YES; _prev = want; if (d) [_repeat hold:d step:nil]; return; }   // what is held when Home takes the controller does nothing until released
     uint64_t up = want & ~_prev; _prev = want;
     if (self.presentedViewController) {   // a dialog is up: A answers it (Close, Close and Start, or OK), B cancels
@@ -287,6 +301,7 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
         if (d) { [self go:d]; __weak HearthHomeVC *w = self; [_repeat hold:d step:^NSTimeInterval { [w go:d]; return DM_REPEAT_NEXT; }]; }
     }
     if (up & 1ull << DMB_A) [self activate];
+    if (up & (1ull << DMB_PLUS | 1ull << DMB_MINUS) && _focus.zone == ZoneTiles && _focus.index >= 0) { [_focus showRing]; [self openOptions:_tiles[(NSUInteger)_focus.index].game]; return; }
     if (up & 1ull << DMB_X && _focus.zone == ZoneTiles && _focus.index >= 0 && _tiles[(NSUInteger)_focus.index].playing) { [_focus showRing]; hearth_confirm_close(self); }
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
