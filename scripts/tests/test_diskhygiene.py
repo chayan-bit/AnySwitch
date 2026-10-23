@@ -1,7 +1,7 @@
 """diskhygiene.py: clone, keep-last-N prune to a (fake) trash, the CoreDevice delta cleanup after an install (a fake devicectl, a fake delta folder), retiring the unsigned IPA,
 and the gpuarchiver snapshot/clean. Everything runs in temporary folders; nothing touches a device, the real trash or the real caches.
 Run: python3 -I scripts/tests/test_diskhygiene.py"""
-import os, plistlib, subprocess, sys, tempfile, time, unittest
+import json, os, plistlib, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,6 +117,23 @@ class Delta(Tmp):
         self.assertEqual(rc, 0)
         self.assertEqual(cmds[0][:6], ['xcrun', 'devicectl', 'device', 'install', 'app', '--device'])
         self.assertFalse((root / 'com.chayan.anyswitch.sword').exists()); self.assertIn('freed 1 MB', said[0])
+
+    def test_a_successful_install_records_the_app_and_its_bundle_path(self):
+        def fake(c):   # devicectl writes its result where --json-output points
+            Path(c[c.index('--json-output') + 1]).write_text(json.dumps({'result': {'installedApplications': [
+                {'bundleID': 'com.chayan.anyswitch.sword', 'installationURL': 'file:///b/X/DmIOS.app/'}]}}))
+            return SimpleNamespace(returncode=0)
+        led = self.t / 'conf/installed.json'; led.parent.mkdir(); led.write_text(json.dumps({'OTHER/com.x': {'app': '/a'}}))
+        self.assertEqual(h.install_app('UDID', self.app(), run=fake, delta_root=self.t / 'none', out=print, ledger=led), 0)
+        d = json.loads(led.read_text())
+        self.assertEqual(d['OTHER/com.x'], {'app': '/a'}, 'other records kept')
+        r = d['UDID/com.chayan.anyswitch.sword']
+        self.assertEqual((r['app'], r['url'], r['profile']), (str((self.t / 'DmIOS.app').resolve()), 'file:///b/X/DmIOS.app/', None))
+
+    def test_a_failed_install_records_nothing(self):
+        led = self.t / 'installed.json'
+        h.install_app('UDID', self.app(), run=lambda c: SimpleNamespace(returncode=3), delta_root=self.t, out=print, ledger=led)
+        self.assertFalse(led.exists())
 
     def test_a_failed_install_keeps_the_cache(self):
         root = self.delta('com.chayan.anyswitch.sword')

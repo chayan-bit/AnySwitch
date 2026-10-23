@@ -1,0 +1,13 @@
+# An empty iOS app that only exists so that xcodebuild -allowProvisioningUpdates fetches a fresh free-team profile for a bundle ID (scripts/resign.py).
+# Bundle ID and team come from the xcodebuild command line; nothing here is per machine.
+name: ResignStub
+options: {deploymentTarget: {iOS: "17.0"}}
+targets:
+  ResignStub:
+    type: application
+    platform: iOS
+    sources: [main.c]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic

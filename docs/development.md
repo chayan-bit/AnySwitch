@@ -226,6 +226,19 @@ Builds and device installs used to leave several GB each on the Mac.
 - **CoreDevice delta cache.** Every `devicectl device install app` leaves a full copy of the app in `~/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas/<bundle id>/`.
   Install with `python3 scripts/diskhygiene.py install --device <udid> <signed .app>` instead of the bare devicectl line: after a successful install it deletes that bundle's folder (our `com.chayan.*` bundle IDs only; a failed install keeps it).
   `clean-delta <bundle id>` does the same step on its own.
+  A successful install also records which `.app` the device now has in `~/.config/anyswitch/installed.json` (per machine, not in the repo).
+
+## Weekly re-sign
+
+A free Apple ID signs for 7 days, so `scripts/resign.py` keeps Hearth and WebDriverAgent signed on the devices from the Mac.
+`resign.py check` lists the days left per app per device, as read back from the profiles installed on each device.
+`resign.py run` re-signs only what ends within 48 h (`--force` re-signs now).
+For Hearth, it takes the recorded build, gives it a fresh profile from the same certificate, and installs it after a verified save backup; it then requires the same save hashes after the install.
+For WebDriverAgent, it rebuilds the runner and installs it.
+A launchd agent runs `resign.py run` twice a day.
+Failures post a Notification Center banner that says what to do.
+Per-machine settings (devices, team, identity, paths) live in `~/.config/anyswitch/resign.json`; logs go to `data/resign/log/`.
+A build installed without `diskhygiene.py install` is not re-signed until `resign.py adopt <device> <app>` names it.
 - **One copy of a device build.** `scripts/dev_sign.sh <build dir>` unpacks `app.ipa` into `sign/`, signs and verifies it, and only then moves the unsigned `app.ipa` (the same bytes) to `~/.Trash`; `KEEP_IPA=1` keeps it.
   `diskhygiene.py prune <parent> --sub build` keeps the newest 2 per-step build folders under `<parent>` (`--keep N` changes that) and moves the rest to `~/.Trash`.
   It refuses anything under `backups`, `dump` or `extracted`.
