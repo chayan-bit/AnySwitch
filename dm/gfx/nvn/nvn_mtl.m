@@ -1181,7 +1181,7 @@ void mtl_drain(void) { psoarch_flush(1); flexpso_log(); present_drop_for_suspend
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[112];
+static int g_red_once[113];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -1379,6 +1379,9 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 10: RED_ONCE(1, "buffer textures (TARGET_BUFFER) not implemented"); return nil;
         default: d.textureType = MTLTextureType2D; break;
     }
+    // More levels than the size allows also aborts Metal: Pokémon Sword initializes an 8x8 description with 8 levels that it never draws with, and the render-target heaps size every description
+    NSUInteger big = MAX(MAX(d.width, d.height), d.textureType == MTLTextureType3D ? d.depth : 1), cap = 1; while (big >>= 1) cap++;
+    if (d.mipmapLevelCount > cap) { RED_ONCE(111, "texture has more mip levels than its size allows: %u×%u×%u levels %u (Metal allows %lu) format %#x target %d (first case ser=%llu)", t->d.width, t->d.height, t->d.depth, t->d.levels, (unsigned long)cap, t->d.format, t->d.target, (unsigned long long)t->serial); return nil; }
     d.storageMode = MTLStorageModePrivate;   // Render targets and assets both go in GPU private storage (lossless compression available)
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0);   // Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.

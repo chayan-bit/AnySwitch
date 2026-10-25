@@ -256,7 +256,8 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
-UIViewController *front_ios_root(void) { return [DmGameVC new]; }
+// The game takes the controller when its screen is made: Home takes it back while "Who is playing?" waits for an answer, so the launch's own hand-over came too early
+UIViewController *front_ios_root(void) { dm_gamepad_set_capture(nil); return [DmGameVC new]; }
 
 // The capture album (front.h, hle_album.c), on a game thread. The game's picture is copied before returning (the game reuses its buffer) and encoded in the background
 int front_album_save(const void *rgba, int w, int h) {

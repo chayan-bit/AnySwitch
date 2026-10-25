@@ -51,6 +51,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     int64_t step = L - 0x61600 > L / 2 ? L / 2 + 0x1000 : L - 0x61600;   // B overlaps A and C, C does not overlap A
     tex_t A = tex(0, NVN_FORMAT_R11G11B10F), B = tex(step, NVN_FORMAT_RGBA8), C = tex(2 * step, NVN_FORMAT_R11G11B10F), E = tex(0, NVN_FORMAT_R32F), D = tex(0x4000000, NVN_FORMAT_RGBA8);
     EXPECT("C's guest range is disjoint from A's", 1, C.off >= A.off + (int64_t)A.L.size);
+    {   // Sword initializes an 8x8 description with 8 levels: sizing it for a heap aborted Metal ("can only support a maximum of 4 levels")
+        pool_t q = t_virt; tex_t m = {.magic = MAGIC('T', 'E', 'X', 0), .serial = g_ser++, .pool = &q, .off = 0x8000000};
+        m.d.width = m.d.height = 8; m.d.depth = m.d.samples = 1; m.d.levels = 8; m.d.target = NVN_TEXTURE_TARGET_2D; m.d.format = NVN_FORMAT_RGBA8; m.d.flags = NVN_TEXTURE_FLAGS_COMPRESSIBLE;
+        nvn_tex_layout(&m.d, &m.L); mtl_tex_init(&m);
+        EXPECT("a description with more levels than its size allows is initialized without aborting, and makes no texture", 1, tex_desc(&m, 0) == nil);
+        mtl_alias_drop_pool(&q);
+    }
     // A storage with descriptions the game initializes but uses only one of (Sword): no heap, the used texture stays standalone; a heap comes once a second texture there is used
     {
         pool_t q = t_virt; tex_t X0 = tex_in(&q, 0, NVN_FORMAT_RGBA8, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE), X1 = tex_in(&q, 0, NVN_FORMAT_R32F, W, H, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
