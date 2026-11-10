@@ -8,6 +8,9 @@ namespace Ryujinx.Graphics.Shader
     /// </summary>
     public interface IGpuAccessor : ILogger
     {
+        // Fixed VS capture ABI used by the offline Metal geometry path.
+        bool QueryGeometryInputFixed() => false;
+
         /// <summary>
         /// Reads data from the constant buffer 1.
         /// </summary>
@@ -16,6 +19,32 @@ namespace Ryujinx.Graphics.Shader
         uint ConstantBuffer1Read(int offset)
         {
             return 0;
+        }
+
+        /// <summary>
+        /// Size in bytes of the constant buffer 1 data the host knows (an Ampere jump table ends there at the latest).
+        /// </summary>
+        int QueryConstantBuffer1Size()
+        {
+            return 0;
+        }
+
+        /// <summary>
+        /// NVN2 (Switch 2) compute shaders: the counts of the shader's own driver constant layout in c[0] (uniform buffer entries, storage buffer entries, texture
+        /// handles), its size and the bytes of its push constants, from the control section; null for other shaders.
+        /// </summary>
+        int[] QueryAmpereComputeC0Layout()
+        {
+            return null;
+        }
+
+        /// <summary>
+        /// NVN2 (Switch 2) task and mesh shaders, translated as compute: the byte offsets in shared memory of the stage memory the build reads back (dmsh_meshstage.py): the
+        /// workgroup's number, the stage input (a task's payload), the outputs (a payload, or a mesh shader's attributes) and a mesh shader's primitive bytes; null for other shaders.
+        /// </summary>
+        int[] QueryAmpereStageMemory()
+        {
+            return null;
         }
 
         /// <summary>
@@ -419,6 +448,15 @@ namespace Ryujinx.Graphics.Shader
         SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
             return SamplerType.Texture2D;
+        }
+
+        /// <summary>
+        /// nxnative: a 1D integer-coordinate fetch (TLD / TLDS 1D) of the bound texture handle was translated as a 2D read at (x &amp; 0x3FFF, x &gt;&gt; 14),
+        /// because the texture type query did not say it is a texture buffer.
+        /// </summary>
+        /// <param name="handle">Texture handle</param>
+        void RecordTexelFetch1D(int handle)
+        {
         }
 
         /// <summary>

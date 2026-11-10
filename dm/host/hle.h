@@ -18,15 +18,19 @@ void *objmap_get(const void *guest);
 void objmap_put(const void *guest, void *host);
 void *objmap_del(const void *guest);
 uint64_t now_ns(void);
-// This thread is doing the host's own heavy work (NVN submit / present: encoding Metal commands; on hardware that is the GPU's business and does not occupy a guest core). The same-core preemption approximation (hle_thread.c) does not count it as "running"
-extern __thread _Atomic int dm_host_work;
+// A blocking native HLE wait releases the guest core. With the condition mutex
+// held, enter with 1 before waiting and balance with 0 after reacquiring it.
+void dm_thread_native_wait(int entering);
+void dm_thread_service_connect(void);   // an HLE call that stands for connecting to a service on Horizon: threads started so far get to run (hle_thread.c)
+void dm_thread_service_request(void);   // an HLE call that is a blocking service request on Horizon: the caller gives up its core (hle_thread.c)
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
 int dm_detclock_enabled(void);
 void dm_guest_clock_advanced(void);
 uint64_t dm_guest_frame(void);        // Incremented each time the host presents a frame; unaffected by machine load
 void guest_clock_freeze(int on);
-void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard, DM_SUSPEND_HOME Home); see hle_os.c
-void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
+void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
+void guest_clock_read_wait(void);     // A guest read of the system counter: counts it in dm_clock_reads and waits while the app is in the background (hle_os.c)
+extern __thread uint64_t dm_clock_reads;   // the calling thread's guest reads of the system counter (hle_os.c; thr_yield tells clock waits by them)
 
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
@@ -43,21 +47,31 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
     extern const char cname##_bs[];                                                               \
     __asm__(".text\n.p2align 2\n.globl _" #cname "_bs\n.private_extern _" #cname "_bs\n_" #cname "_bs:\n" \
             "    adrp x16, _" #cname "@PAGE\n    add x16, x16, _" #cname "@PAGEOFF\n    b _dm_bigstack_enter\n"); \
-    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (const void *)cname##_bs, why}; \
+    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)(uintptr_t)cname##_bs, why}; \
     static ret cname(__VA_ARGS__)
+// The game's call site inside a HLE_FORCE_BIG implementation: pass __builtin_return_address(0), which after a stack switch is the entry's own (hle_bigstack.c)
+void *dm_bigstack_caller(void *ra);
 
 // Operation mode (0 handheld / 1 docked): owned by hle_oe.c, and the hid controller style follows it; the front end can switch it at runtime
 int dm_opmode(void);
 void dm_set_opmode(int m);          // On change, push notification 30 / 31 according to the switches the game has turned on
 // Focus (1 foreground / 2 focus lost / 3 background): called by the front end on lifecycle changes; a change pushes notification 15
+// Library applet stand-ins (controller, keyboard, error, Mii, account, shop): on Horizon the applet takes the application's focus until it closes, and the Show call returns after
+// that. DM_APPLET("name"); first in the stand-in's body holds the game out of focus until the body returns, notifying 15 on the way in and out (hle_oe.c). Not for stand-ins that
+// report the applet could not start (RES_FAIL cuts): those never had an applet open
+void dm_applet_enter(const char *name);
+void dm_applet_leave(void);
+static inline void dm_applet_leave_(const char *const *name) { (void)name; dm_applet_leave(); }
+#define DM_APPLET(name) const char *const dm_applet_ __attribute__((cleanup(dm_applet_leave_))) = (name); dm_applet_enter(dm_applet_)
+// Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
+extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag (dm_movie_playing, written by the host at each present: Tears of the Kingdom's step stub caps its first, undecided steps by it), +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
+int dm_movie_playing(void);   // hle_movie.c: a video decoder of the SDK's movie library handed out a picture in the last half second (the frame step then holds 30 fps)
 void dm_focus_set(int st);   // 1 is held at 2 while Home is up (dm_home_suspend)
 // Hearth's Home over the game (hle_oe.c): on suspends the game for the Home reason (focus 2, audio, guest clock, graphics), off resumes it and sets focus 1. dm_home_press calls
 // deliver at once, or, while the game blocks HOME (oe::BeginBlockingHomeButton), at its last End or after 10 s, on whatever thread that happens: deliver hops to the main thread itself
 void dm_home_suspend(int on);
 int dm_home_active(void);
 int dm_home_press(void (*deliver)(void));   // 1 = delivered at once
-// Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
-extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag, +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
 // What the loaded build can do, asked by the settings screen to show only the rows that have an effect: "fstep" the frame-step stubs (frame cap and render scale), "fpscap" a frame cap
 // of any kind (the stubs, or an engine frame limit kept in game memory: hle_fpslock.c), "internalres" render targets above the Switch's resolution and "nvn" the flexible pipelines (both: the game draws with NVN). 0 for a name it does not know. Valid once the game's modules are loaded
 int dm_capability(const char *name);

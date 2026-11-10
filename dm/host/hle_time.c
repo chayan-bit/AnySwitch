@@ -22,9 +22,14 @@ HLE_FORCE("_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyCl
     int64_t s = (int64_t)(clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1000000000ull);
     memcpy(out, &s, 8); memcpy(out + 8, "dmhost-steady-01", 16); return RES_OK;
 }
+HLE_FORCE("_ZN2nn4time38GetStandardSteadyClockCurrentTimePointEPNS0_20SteadyClockTimePointE", "steady clock (the free function form, SDK 20) → host monotonic clock", Result, h_time_SteadyNowFn, uint8_t *out) { return h_time_SteadyNow(out); }
 HLE_FORCE("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", "user clock → host time()", Result, h_time_GetCurrentTime, int64_t *out) {
     int64_t ft = fixed_time(); *out = ft >= 0 ? ft : time(NULL); return RES_OK;
 }
+// The adjustable user clock (Animal Crossing: New Horizons 3.0.3, whose days follow it): the SDK keeps it in a MonotonicSystemClock that Adjust sets from the user clock's context, and its
+// GetCurrentTime reads the time service's shared memory, which the host never maps (an abort in MonotonicSystemClock::GetCurrentTime, sdk+0x4421cc on that build). On the host the user clock
+// is the host's own clock, so it is this one too; Adjust runs natively (it reads the user clock context, a host take-over) and only sets the SDK's copy
+HLE_FORCE("_ZN2nn4time25AdjustableUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", "adjustable user clock → host time(), as the user clock", Result, h_time_AdjGetCurrentTime, int64_t *out) { return h_time_GetCurrentTime(out); }
 // The C library's real-time clock (SDK 17): clock_gettime(CLOCK_REALTIME) calls the source that nntimeStartup selects once time::Initialize succeeds (sdk+0x8e414: 1 = the standard user clock,
 // 2 = the adjustable one; 0, the system tick, before that), and std::chrono::system_clock::now() throws on its failure. The SDK's getters ask the time service: Ace Attorney Investigations
 // Collection called std::terminate at its first real-time read, right after the first-boot language dialog (main+0x3f3f68; found by armyja, GitHub issue #18). The host user clock, to the nanosecond
@@ -35,6 +40,13 @@ static int h_time_timespec(int64_t *ts) {
 }
 HLE_FORCE("_ZN2nn4time41GetStandardUserSystemClockCurrentTimespecEP8timespec", "C library real-time clock from the user clock → host real time", int, h_time_StdTimespec, int64_t *ts) { return h_time_timespec(ts); }
 HLE_FORCE("_ZN2nn4time43GetAdjustableUserSystemClockCurrentTimespecEP8timespec", "C library real-time clock from the adjustable user clock → host real time", int, h_time_AdjTimespec, int64_t *ts) { return h_time_timespec(ts); }
+// The C library's monotonic clock (SDK 22): musl's clock_gettime dispatches CLOCK_MONOTONIC to the steady clock through an ifunc over this symbol, whose SDK implementation asks the time service's
+// shared memory, which the host never maps. Unbound, the call fails and std::chrono::steady_clock::now() throws std::system_error: Well Dweller reached that at its first frame timer read (sdk+0x5f2e58
+// → std::terminate). The host's monotonic clock is the steady clock here, so clock_gettime and the steadiness agree
+static int h_time_mono_timespec(int64_t *ts) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); ts[0] = t.tv_sec; ts[1] = t.tv_nsec; return 0;
+}
+HLE_FORCE("_ZN2nn4time37GetStandardSteadyClockCurrentTimespecEP8timespec", "C library monotonic clock from the steady clock → host monotonic time", int, h_time_MonoTimespec, int64_t *ts) { return h_time_mono_timespec(ts); }
 // User clock context (0x20 bytes: s64 offset + the steady time point it was made at; user time = offset + a steady time point of the same source ID, the snapshot below fills its +0x00 the same way).
 // The SDK reads it from the time service's shared memory, which the host never opens: it returns 0x74 and writes nothing. Unity's DateTime.UtcNow (Engage main+0x4ad40c; Ace Attorney Investigations
 // 1&2 per PR #14) then never starts its clock and reads 0001-01-01. Unity takes its time from GetCurrentTime plus system ticks and only compares the context to notice the clock being set, so like a
@@ -76,39 +88,73 @@ HLE_FORCE("_ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv", "ne
 // Clock snapshot (Tears of the Kingdom: CreateWithStandardSystemClock asks the time service, which the host never opens → abort in sm::Initialize). 0xD0 bytes, laid out
 // as Ryujinx lays out the service's ClockSnapshot and as this SDK's constructor clears it (its last store is the byte at +0xcd): +0x00 user clock context {offset,
 // steady time point}, +0x20 network clock context, +0x40 user time, +0x48 network time, +0x50 / +0x58 user / network calendar, +0x60 / +0x78 their additional info,
-// +0x90 steady time point, +0xa8 location name (0x24), +0xcc automatic correction, +0xcd type. Offline, the network fields stay 0, so the SDK's CalculateSpanBetween
-// uses the steady time points (same source ID)
+// +0x90 steady time point, +0xa8 location name (0x24), +0xcc automatic correction, +0xcd type. A steady time point is {int64 seconds, 16-byte source ID} (h_time_SteadyNow).
+// Offline, the network fields stay 0, so CalculateSpanBetween (below) uses the steady time points (same source ID)
 HLE_FORCE("_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", "snapshot from the time service; the host fills it on the spot (offline: network clock 0)", Result, h_time_Snapshot, uint8_t *s) {
     memset(s, 0, 0xd0);
     uint8_t tp[0x18]; h_time_SteadyNow(tp);
     int64_t now; h_time_GetCurrentTime(&now);
-    h_time_GetContext(s); memcpy(s + 0x40, &now, 8);   // the same user clock context GetSystemClockContext hands out: it changes only when the clock is set, as the comparisons below expect
+    h_time_GetContext(s);   // +0x00: the user clock context, the same in every snapshot until the host clock is set (worked out per snapshot it moved by a second at random, a "clock change" to the user difference below)
+    memcpy(s + 0x40, &now, 8);
     h_time_ToCalendarTime((CalendarTime *)(s + 0x50), (CalendarAdditionalInfo *)(s + 0x60), &now);
     memcpy(s + 0x90, tp, 0x18);
     tzset(); strlcpy((char *)s + 0xa8, tzname[0] && *tzname[0] ? tzname[0] : "UTC", 0x24);
+    s[0xcd] = 1;   // The SDK passes type 1 for standard snapshots, 2 for adjustable snapshots; 0 is uninitialized.
     return RES_OK;
 }
-// Snapshot comparisons, IPC calls to the time service in SDK 7 (Pokémon Sword aborted in the first after its new-game naming, sdk+0x3839b0), computed as the service does
-// (Ryujinx / yuzu IStaticService 400 / 501). Steady time points match when their clock source IDs (+0x08 of a time point) are the same.
-static int tp_same_source(const uint8_t *a, const uint8_t *b) { return !memcmp(a + 8, b + 8, 16); }
-// User clock moved by hand between two snapshots: the difference of the user context offsets, 0 when nothing changed, the steady clock restarted, or both have
-// automatic correction on and either network context follows its own steady clock (the change came from the network, not the user)
-HLE_FORCE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_", "time service; computed from the two snapshots (nn::TimeSpan in ns)",
-          int64_t, h_time_UserClockDiff, const uint8_t *a, const uint8_t *b) {
-    if (!memcmp(a, b, 0x20) || !tp_same_source(a + 0x08, b + 0x08)) return 0;
-    int64_t d = (*(const int64_t *)b - *(const int64_t *)a) * 1000000000;
-    if (!a[0xcc] || !b[0xcc]) return d;
-    return tp_same_source(a + 0x28, a + 0x90) || tp_same_source(b + 0x28, b + 0x90) ? 0 : d;
+// The adjustable user clock already reads host time, so both snapshots share the fill path.
+// Its SDK entry otherwise dereferences the time-service session, which the host never opens.
+HLE_FORCE("_ZN2nn4time13ClockSnapshot31CreateWithAdjustableSystemClockEPS1_", "adjustable clock snapshot from host time; the host has no time service session", Result, h_time_AdjSnapshot, uint8_t *s) {
+    h_time_Snapshot(s);
+    s[0xcd] = 2;
+    return RES_OK;
 }
-// Time between two snapshots: by their steady time points (+0x90) when the source matches, else by their network times (+0x48), else "time not found"
-#define RES_TIME_NOT_FOUND 0x19074u   // time module 116, description 200
-HLE_FORCE("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", "time service; computed from the two snapshots", Result, h_time_SpanBetween,
-          int64_t *out, const uint8_t *a, const uint8_t *b) {
+// Arithmetic on two snapshots: the SDK hands both to the time service (a call through its session, AbortImpl when there is none: STEINS;GATE RE:BOOT's and Tears of the Kingdom's SDK;
+// Tears of the Kingdom imports both); the host computes what the service does (as Ryujinx's time service). TimeSpan is nanoseconds. CalculateSpanBetween returns bool, not a Result:
+// true when the span was stored (SDK 12 to 20 end it with `cset w0, eq` on the service's result, Metroid Dread's sdk+0x3ab540, Tears of the Kingdom's sdk+0x440f60); a Result 0 read as false
+// (Super Smash Bros. Ultimate's Spirit Board refilled at every visit, found by MacNativeGames)
+static int64_t snap64(const uint8_t *s, int off) { int64_t v; memcpy(&v, s + off, 8); return v; }
+static int same_source(const uint8_t *a, const uint8_t *b, int tp) { return !memcmp(a + tp + 8, b + tp + 8, 16); }   // the source IDs of the steady time points at +tp
+HLE_FORCE("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", "span between two snapshots (time service): their steady time points, else their network times",
+          unsigned, h_time_SpanBetween, int64_t *out, const uint8_t *a, const uint8_t *b) {
     int64_t s;
-    if (tp_same_source(a + 0x90, b + 0x90)) s = *(const int64_t *)(b + 0x90) - *(const int64_t *)(a + 0x90);
-    else if (*(const int64_t *)(a + 0x48) && *(const int64_t *)(b + 0x48)) s = *(const int64_t *)(b + 0x48) - *(const int64_t *)(a + 0x48);
-    else return RES_TIME_NOT_FOUND;
-    *out = s * 1000000000; return RES_OK;
+    if (same_source(a, b, 0x90)) s = snap64(b, 0x90) - snap64(a, 0x90);
+    else if (snap64(a, 0x48) && snap64(b, 0x48)) s = snap64(b, 0x48) - snap64(a, 0x48);
+    else return 0;   // no common clock: the service answers "not found", *out untouched (as the SDK leaves it)
+    *out = s * 1000000000; return 1;
+}
+// How far the user moved the user clock between two snapshots (asked at Pokémon: Let's Go's first save, PR #36): the change of the user clock offset, 0 when the two contexts' steady
+// sources differ or both snapshots have automatic correction on. The snapshots carry h_time_GetContext's context, renewed when the host clock is set, so that shows up here
+HLE_FORCE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_", "user clock change between two snapshots (time service): from their user clock offsets",
+          int64_t, h_time_UserDiff, const uint8_t *a, const uint8_t *b) {
+    if (!same_source(a, b, 0x08) || (a[0xcc] && b[0xcc])) return 0;
+    return (snap64(b, 0x00) - snap64(a, 0x00)) * 1000000000;
+}
+// A periodic benefit (Tetris 99 2.5.0's daily reward, asked right after its first save at the title): the public entry aborts unless g_pStaticService, the time service session that
+// Initialize opens, is set (OnAssertionFailure from sdk+0x375b84 on its SDK 6.4 sdk), and the host's Initialize take-over opens none. Past that check it only tail-calls detail:: with the
+// same arguments (SDK 6.5 and 20.5). detail:: compares the snapshots' fields (CalculateSpanBetween and the user clock difference above) and asks the service two things, both taken over below:
+// when the context's snapshot and this one differ in automatic correction, when automatic correction was last switched; when they differ in location name, the device's location and when it was set
+HLE_FORCE("_ZN2nn4time39ClaimPeriodicBenefitWithUserSystemClockEPNS0_27PeriodicBenefitClaimContextERKNS0_13ClockSnapshotERKNS_8TimeSpanES8_PKNS0_25CheckCalendarTimeCallbackE",
+          "periodic benefit claim (time service session check); the SDK's detail implementation compares the snapshots", uint64_t, h_time_ClaimBenefit,
+          void *ctx, const uint8_t *snap, const int64_t *max_penalty, const int64_t *acceptable, const void *callback) {
+    static uint64_t (*impl)(void *, const uint8_t *, const int64_t *, const int64_t *, const void *);
+    if (!impl && !(impl = guest_sym("_ZN2nn4time6detail39ClaimPeriodicBenefitWithUserSystemClockEPNS0_27PeriodicBenefitClaimContextERKNS0_13ClockSnapshotERKNS_8TimeSpanES9_PKNS0_25CheckCalendarTimeCallbackE")))
+        die("time: the sdk has ClaimPeriodicBenefitWithUserSystemClock but not its detail:: implementation");
+    uint64_t r = impl(ctx, snap, max_penalty, acceptable, callback);
+    LOG("time: periodic benefit claim → %u", (unsigned)r);
+    return r;
+}
+// The two service questions of the claim above (each through g_pStaticService in the SDK, which the host never sets). A saved claim context from a Switch (a location such as Asia/Tokyo where the
+// host's is its zone abbreviation, automatic correction on) or a Mac whose time zone changed reaches them. The host knows neither moment, so the time point comes back cleared: its source ID matches
+// no snapshot's, and the claim then uses only the snapshots (it takes the time point only when its source ID is the current snapshot's steady clock's, SDK 6.5's detail:: +0x2e8 and +0x3b0)
+HLE_FORCE("_ZN2nn4time6detail56GetStandardUserSystemClockAutomaticCorrectionUpdatedTimeEPNS0_20SteadyClockTimePointE",
+          "when automatic correction was last switched (time service); not known on the host: a time point of no clock", Result, h_time_AutoCorrUpdated, uint8_t *tp) {
+    memset(tp, 0, 0x18); return RES_OK;
+}
+HLE_FORCE("_ZN2nn4time6detail35GetDeviceLocationNameAndUpdatedTimeEPNS0_12LocationNameEPNS0_20SteadyClockTimePointE",
+          "device location and when it was set (time service): the host's zone, as in its snapshots, and a time point of no clock", Result, h_time_LocUpdated, char *name, uint8_t *tp) {
+    memset(name, 0, 0x24); tzset(); strlcpy(name, tzname[0] && *tzname[0] ? tzname[0] : "UTC", 0x24);
+    memset(tp, 0, 0x18); return RES_OK;
 }
 // The reverse: local calendar → absolute seconds (13 Sentinels). Around a daylight-saving switch one local time maps to 0 or 2 absolute seconds; the host's mktime gives one
 HLE_FORCE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE",

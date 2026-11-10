@@ -8,7 +8,7 @@
 static int refusals(const char *dir) {
     NSMutableDictionary *ok = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[@(dir) stringByAppendingPathComponent:@"game.json"]] options:NSJSONReadingMutableContainers error:nil];
     NSDictionary *cases = @{@"schema": @{@"schema": @999}, @"missing key mem_alias": @{@"mem_alias": NSNull.null}, @"mem_used": @{@"mem_used": @"0x10"},
-                            @"fps_hold": @{@"fps_hold": @1}, @"fps_target": @{@"fps_target": @45}, @"render_cond": @{@"render_cond": @3}, @"unknown key": @{@"typo_key": @1},
+                            @"fps_hold": @{@"fps_hold": @2}, @"fps_target": @{@"fps_target": @45}, @"render_cond": @{@"render_cond": @3}, @"unknown key": @{@"typo_key": @1},
                             @"modules": @{@"modules": @[]}, @"program_id": @{@"program_id": @"12"}, @"feedback_snap": @{@"feedback_snap": @"XYZ"}, @"nvn_api": @{@"nvn_api": @[@55]}};
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_profile.%d", getpid()]];
     [NSFileManager.defaultManager createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:nil];

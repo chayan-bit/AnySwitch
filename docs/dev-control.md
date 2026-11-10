@@ -107,7 +107,7 @@ Stick vectors: `L(x,y)` and `R(x,y)`, with x and y from -1 to 1 (up is +y), so `
 Names are case-insensitive.
 The `DM_KEYS` seconds stamps (`8:A`) are refused, because the channel counts frames only; use `fN:` or `wait(N)`.
 Examples: `f1200:A`, `A*13/45`, `hold(ZL+LUp) wait(60) release`, `L(-0.25,-1)~90`, `T0.31x0.62`.
-The parser is `dm/host/devctl.c`; its unit test is `dm/host/tests/t_devctl.c` (27 checks, `make -C dm/host/tests run`).
+The parser is `dm/host/devctl.c`; its unit test is `dm/host/tests/t_devctl.c` (27 checks, `make -C dm/host/tests GAME=<id> run`).
 
 ### Client (`scripts/dmctl`)
 

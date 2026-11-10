@@ -1,9 +1,8 @@
 #include "../nvn/nvn_mtl.m"
-int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]) { (void)p; (void)stage; memset(key, 0, 8); return 0; }   // shader keys from hle_nvn.c: this test does not link it, so a zero key (the missing stub broke the link)
 
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
-module_t g_mod[MAX_MOD]; int g_nmod;
+module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 
@@ -16,7 +15,7 @@ int main(void) {
     failed += tex_need_pfv(MTLPixelFormatRGBA8Unorm, MTLPixelFormatR32Uint) != 1;
     tex_t t = {.magic=MAGIC('T', 'E', 'X', 0), .serial = 70001};
     t.d.width = 4; t.d.height = 1; t.d.depth = 1; t.d.levels = 1; t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = NVN_FORMAT_RGBA8;
-    mtl_init(); mtl_tex_init(&t);   // a live texture (TextureInitialize): replacements of a texture the game never initialized go to the dead-serial table (tex_put), not g_by_serial
+    mtl_init();
     MTLTextureDescriptor *d = tex_desc(&t, 0);
     failed += (d.usage & MTLTextureUsagePixelFormatView) != 0;
     id<MTLTexture> base = [g_dev newTextureWithDescriptor:d];

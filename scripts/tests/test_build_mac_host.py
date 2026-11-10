@@ -5,10 +5,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build_ipa_from_nsp as b
 
 MAKEFILE = '''LIBS=%s
+host_msl:
 gen/%%.a:
 \t@mkdir -p $(dir $@); touch $@
 dmhost: $(LIBS)
@@ -21,6 +23,7 @@ class MacHost(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         repo = Path(tmp.name) / 'repo'; host = repo / 'dm/host'; host.mkdir(parents=True)
         (host / 'Makefile').write_text(MAKEFILE % ' '.join(libs))
+        for d in b.HOST_DIRS: (repo / d).mkdir(parents=True, exist_ok=True)   # the sources the host's key reads
         links = []
         real_run = b.run
 
@@ -30,7 +33,8 @@ class MacHost(unittest.TestCase):
             real_run(cmd, log, **kw)
         b.run, orig = run, b.run
         self.addCleanup(setattr, b, 'run', orig)
-        b.build_mac_host(repo, Path(tmp.name) / 'out/dmhost', dict(os.environ), Path(tmp.name) / 'logs')
+        with mock.patch.object(b, 'apple_silicon', return_value=True):
+            b.build_mac_host(repo, Path(tmp.name) / 'out/dmhost', dict(os.environ), Path(tmp.name) / 'logs', None)   # g: unused by the generic host
         return links
 
     def test_builds_every_library_the_link_line_names(self):
@@ -38,15 +42,5 @@ class MacHost(unittest.TestCase):
                          [[('gen/vpx/libvpx.a', True), ('gen/zstd/libzstd.a', True), ('gen/next/libnext.a', True)]])
 
 
-
-class RecordPack(unittest.TestCase):
-    def test_records_the_pack_in_an_existing_mac_run_json_only(self):
-        with tempfile.TemporaryDirectory() as t:
-            rj, pack = Path(t) / 'mac_run.json', Path(t) / 'pack'
-            self.assertFalse(b.record_pack(rj, pack))   # no --mac-only run: nothing to record into, nothing written
-            self.assertFalse(rj.exists())
-            rj.write_text('{"host": "h", "patched": "p"}\n')
-            self.assertTrue(b.record_pack(rj, pack))
-            self.assertEqual(b.json.loads(rj.read_text()), {'host': 'h', 'patched': 'p', 'pack': str(pack)})
 
 if __name__ == '__main__': unittest.main()

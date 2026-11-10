@@ -24,7 +24,7 @@ extern NSNotificationName const DmSettingDidChangeNotification;   // object: the
 @property (nonatomic, readonly) NSInteger decimals;                 // slider: decimals shown (derived from step x scale unless the entry says "decimals")
 @property (nonatomic, readonly) NSUInteger maxLength, maxBytes;     // text: at most this many characters (composed sequences) and, when maxBytes is not 0, UTF-8 bytes
 @property (nonatomic, readonly) NSString *requires;                 // capability the build must have for the row to be shown ("fstep": the frame-step stubs), or nil
-@property (nonatomic, readonly) NSString *enabledWhenKey, *enabledEquals, *enabledNotEquals;   // `enabledWhen`: {"key": "DM_X", "equals": "v"} or {"key": "DM_X", "notEquals": "v"}: the entry has an effect only then, else the screen shows it disabled (nil when it always has one)
+@property (nonatomic, readonly) NSString *enabledWhenKey, *enabledEquals, *enabledNotEquals;   // `enabledWhen`: {"key": <a DM_ key>, "equals": "v"} or {"key": <a DM_ key>, "notEquals": "v"}: the entry has an effect only then, else the screen shows it disabled (nil when it always has one)
 @property (nonatomic, readonly) NSString *def;                      // registry default as a string
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *defaultAtFps;   // `defaultAtFps`: {"30": "sharp"}: the default while the game's frame rate target (DmSettings.frameTarget) is that many fps; any other target uses `def`. Live entries only. Nil when the default does not depend on it
 @property (nonatomic, readonly) BOOL exportDefault;                 // `exportDefault`: the default is exported to the environment like a player's value, because the code that reads the key has another default of its own (off)
@@ -93,7 +93,7 @@ NSArray<NSArray<NSString *> *> *dm_hints_for_focus(DmFocusKind kind, BOOL locked
 + (NSDictionary<NSString *, NSString *> *)builtinScopes;   // key: "game" or "both" for the built-in entries that are not system-only
 + (NSString *)internalResDetailForMemory:(unsigned long long)bytes;      // the Internal resolution row's detail: with a memory note on devices with 8 GB or less (NSProcessInfo.physicalMemory)
 + (NSArray<NSDictionary *> *)gameSectionsFromFile:(NSString *)path;       // a pack's profile/settings.json: {"sections": [...]} in the same form, entries without a scope get scope game; empty when absent or invalid (logged)
-+ (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {"DM_KEY": "value"}}; empty when absent or invalid (logged)
++ (NSDictionary<NSString *, id> *)gameDefaultsFromFile:(NSString *)path;   // the same file's {"defaults": {<a DM_ key>: "value"}}; empty when absent or invalid (logged)
 @end
 
 void dm_settings_set_game(NSString *titleId, NSString *root);   // before the first +shared: the launched game, whose pack supplies profile/settings.json (game rows and defaults) and whose layer the shared store uses

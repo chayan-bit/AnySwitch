@@ -1,4 +1,4 @@
-"""romstore.py build + romstore_tool verify on a synthetic RomFS (no game data): every file reads back through the host's reader byte for byte, duplicate
+"""romstore.py build + romstore_tool verify on a synthetic RomFS (no game data; a folder and the RomFS image of it): every file reads back through the host's reader byte for byte, duplicate
 content is stored once, a traced read puts its chunks first in the pack, and damage to the pack or the index is caught.
 Needs python-zstandard (nix-shell -p 'python3.withPackages(ps:[ps.zstandard])') and clang. Run: python3 -I dm/tools/tests/test_romstore.py"""
 import hashlib
@@ -86,6 +86,14 @@ def main():
         small = t / 'small'; small.mkdir(); (small / 'one.bin').write_bytes(b'hello' * 10)
         run('build', small, t / 'small.dmstore', '--avg', 1024); assert index(t / 'small.dmstore')['dict_size'] == 0
         run('verify', t / 'small.dmstore', small)
+        # a RomFS image (the NSP script's RomFS.img, dm/tools/romfs_image.py) gives the same store as its folder: same files, same chunks, and it verifies against the folder
+        img = t / 'RomFS.img'
+        subprocess.run([sys.executable, str(TOOL.parents[1] / 'romfs_image.py'), root, img], check=True, capture_output=True)
+        from_img = t / 'image.dmstore'
+        run('build', img, from_img, '--avg', 1024, '--dict-size', 4096, '--trace', trace)
+        run('verify', from_img, root)
+        ii = index(from_img)
+        assert (ii['n_files'], ii['n_chunks'], ii['n_refs'], ii['files']) == (ix['n_files'], ix['n_chunks'], ix['n_refs'], ix['files']), 'an image builds the store its folder builds'
         # a store does not hold a file the directory lacks
         extra = t / 'extra'; shutil.copytree(small, extra); (extra / 'two.bin').write_bytes(b'x')
         run('verify', t / 'small.dmstore', extra, ok=False)

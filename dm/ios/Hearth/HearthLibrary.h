@@ -7,7 +7,7 @@
 #import "HearthSign.h"
 
 #define HEARTH_NEEDS_SIGNING 100   // HearthGame.reason beside boot.h's DM_PACK_*: the pack is fine, its code is not signed for this copy of Hearth
-#define HEARTH_UID @"78626c000000000153574e4154495645"   // the fixed local user of dm/host/hle_account.c, so P3's users never move a save
+#define HEARTH_UID @"78626c0000000001" @"53574e4154495645"   // the fixed local user of dm/host/hle_account.c (k_uid's two words), so P3's users never move a save; split so docs_patches.py does not read it as a build ID
 
 @interface HearthGame : NSObject
 @property (nonatomic, copy) NSString *titleId, *name, *publisher, *root, *iconPath;

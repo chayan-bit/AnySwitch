@@ -1,259 +1,293 @@
-# In-app settings screen (iOS)
+# Settings
 
-The settings screen is the player's way to change how the app presents and controls the game, without editing files.
-It looks like the Switch's System Settings: categories on the left, the chosen category's rows on the right, rounded rows, an amber ring with a slowly breathing glow on the focused item, and the button hints at the bottom.
-It follows the system's light or dark appearance and works on the iPad and the iPhone.
+This page is upstream's (seedds/nxnative) single-game launcher; AnySwitch's iOS app is Hearth, whose settings screen is [hearth-settings.md](hearth-settings.md).
 
-## Opening and closing
+The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
 
-- Touch: the gear button at the top, right of the frame-rate counter's place.
-- Controller: hold the + and - buttons together for 0.8 seconds.
-- Hardware keyboard: Cmd and comma.
-- Closing: B on the category list, the X button, the gear again, or the + and - chord again.
-- On a hardware keyboard the arrows, Return, Escape, and the square brackets act as the D-pad, A, B, and L / R.
-The button hints at the bottom show only what the focused row does (a slider has no A, a text row has no left / right, a row the environment locks has neither).
+- [Tested defaults](#tested-defaults)
+- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
+- [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
+- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
+- [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
+- [In-game menu](#in-game-menu)
+- [TV](#tv)
+- [Settings in a file](#settings-in-a-file)
 
-While the screen is open the game is out of focus (the same hook the app uses when it loses focus, `dm_focus_set(2)`) and receives no input.
-The physical controller belongs to the screen (`dm_gamepad_set_capture` in `DmGamepad.m`); touches are covered by the screen itself.
-The + and - buttons reach the game for the first 0.8 seconds of the chord, because the game cannot know a chord is coming.
+## Tested defaults
 
-## Controller navigation
+Each game comes with the settings it was tested with: its profile in this repository says, for example, that Breath of the Wild runs with Frame buffering and Metal 4 pipelines on, because that combination held a steady 60 fps on an iPhone 17 Pro Max. Those are the defaults the settings screen shows the first time.
 
-| Input | On the category list | On the rows |
-| --- | --- | --- |
-| D-pad or left stick up / down | previous / next category | previous / next row |
-| D-pad or left stick right | move into the rows | next value, slider step up, toggle on |
-| D-pad or left stick left | nothing | previous value, slider step down, toggle off (on the reset, restore-all and restart rows: back to the list) |
-| A | move into the rows | toggle, next value, open the editor of a text row, or press the reset, restore-all or restart row (restore-all asks for a second press) |
-| B | close the screen | back to the category list |
-| L / R (also ZL / ZR) | previous / next category | previous / next category |
+When you change a setting and tap **Play**, the app keeps your choice, also when a later build of the app ships other defaults. A setting you leave at its default is not stored: it follows the defaults of the build you have, so a newer build's tested settings reach you without doing anything. **Reset to tested defaults** at the bottom sets every setting back to its default, and **Play** then forgets your choices, so the game's defaults apply again. For testing, a line in `Documents/env.txt` overrides any setting ([Settings in a file](#settings-in-a-file)).
 
-Holding a direction repeats it after 0.4 seconds.
-A button that is already held when the screen opens does nothing until it is released.
+A Mac app carries the same list (`Contents/Resources/dm/launcher.json`), without the iPhone's own Frame-rate counter and Touch feedback, for a front end that starts the app with the chosen values ([Front ends](frontends.md)).
 
+## Game
 
-## The registry
+### Frame rate
 
-Every setting is one entry in `DmSettings.m` (`builtinSections`), so the screen and the apply code never name a setting by hand.
-Adding a setting is one table entry plus, for a live setting, one line in `settingChanged:` of `front_ios.m` that hands the value to the code that uses it.
-An entry has a key, a label, a detail line, a type, its range or options, a default, when it applies, and optionally a capability it requires.
+Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way.
 
-| Field | Meaning |
-| --- | --- |
-| `key` | The environment variable the rest of the app reads, for example `DM_LETTERBOX`. |
-| `label`, `detail` | The row's title and its one-line description. |
-| `plistKey` | The Info.plist key that sets the default for a build, or none. |
-| `type` | `toggle`, `choice`, `slider` or `text`; see below. |
-| `default` | The value as a string. |
-| `defaultAtFps` | Optional, live entries only: `{"30": "sharp"}` replaces `default` while the game's frame rate target is that many fps (see "Frame rate dependent defaults"). A value that does not parse, or a restart entry, is skipped and logged. |
-| `exportDefault` | Optional: the default is exported to the environment like a player's value. For a key whose code has another default of its own (the flexible pipelines are off in the host and on in the app); without it a registry default is not exported. |
-| `apply` | `restart` when a change needs a new launch (the row says "Applies after a restart"); absent means it applies at once. |
-| `requires` | A capability the build must have for the row to be shown; see below. Absent means always shown. |
+On a Mac, a game checked at that speed (Fire Emblem Fortune's Weave, Mario & Luigi: Brothership) also offers **120 fps**. It needs a screen that shows 120 Hz, and uses more GPU and power. When frames do not fit, during movies, or on a slower screen, the game drops to 60 for a while, so it keeps its real speed. If you see the frame rate move between 60 and 120 and would rather it stayed still, choose 60.
 
-Types and their fields:
+### Dynamic resolution
 
-| Type | Fields | Shown as |
-| --- | --- | --- |
-| `toggle` | none | an on / off switch |
-| `choice` | `options`, each `{value, label, aliases}` | a selector that steps through the options |
-| `slider` | `min`, `max`, `step`, optional `scale` and `suffix` for the display, optional `decimals` | a slider; the value is clamped to the range and snapped to the step, and shown as value times `scale` followed by `suffix` (0.5 with scale 100 and suffix `%` is 50%); `decimals` defaults to what the step times the scale needs |
-| `text` | optional `maxLength` (default 64) and `maxBytes` | a row that opens an editor panel in the screen's own style (a live n/limit counter, a visible refusal at the limit and for an empty text; Return or Save stores it, Escape, B or Cancel drops it, and the controller and the key commands pause meanwhile); the value is trimmed, may not hold control characters, and is cut at a whole character to both limits |
+Off, the default, keeps the 3D picture at full size. On lets the game lower its resolution when frames run heavy and raise it again when they fit, as on the Switch: steadier frame rate, at times a softer picture. Only games whose resolution control the app can hold offer it (NieR:Automata, Ocarina of Time).
 
-Sections that share an `id` are merged into one page, so a game's entries can join a built-in page.
-A page with no available entry is not listed.
+### Render scale
 
-### Capabilities
+The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed there and the game's own dynamic resolution is off; 100 % keeps the game's own. Lower can be lighter on the GPU but is blurrier; the HUD and text keep their sharpness. Only games the app can scale offer it.
 
-A row with `requires` appears only when the running build has that capability, so a setting that would do nothing is never offered.
-The capability comes from what the build actually has, not from a title.
-`front_ios.m` answers for the screen:
+Hades II goes up to 300 %: it renders its whole picture, the HUD and text included, at 1280x720 docked and handheld, and above 100 % it renders larger instead of being scaled up: 150 % is 1920x1080, 200 % 2560x1440, 300 % 3840x2160. Sharper on a large screen or window, at more GPU time (about 2.5 times the GPU time at 200 % on an Apple M6); on a small screen the difference is slight. [Its note](../dm/games/0100A00019DE0000/README.md#rendering) has the measurements.
 
-| Capability | True when |
-| --- | --- |
-| `fstep` | The game's modules carry the rewriter's frame-step stubs (`dm_fps_state` is set by the loader). |
-| `fpscap` | Either the frame-step stubs, or an engine frame limit that the host keeps in game memory (`hle_fpslock.c`). |
-| `haptics` | The device has a haptic engine, or a controller with haptics is connected. |
-| `internalres` | The game draws with NVN (a module references `nvnBootstrapLoader`), whose Metal layer can draw render targets above the Switch's resolution. A Vulkan game does not have it. |
-| `nvn` | The same test, for what only the NVN layer does that is not about resolution: the flexible pipelines. |
+### Console mode
 
-A value that is stored for a hidden row is kept and still applies; the row only is not offered.
+**Docked** renders at the Switch's TV resolution, **Handheld** at its lower handheld resolution, which is lighter on the phone and can give a higher frame rate.
 
-### The built-in entries
+### Upscaling
 
-| Category | Setting | Key | Values | Default | Applies | Scope |
-| --- | --- | --- | --- | --- | --- | --- |
-| Display | Bars around the picture | `DM_LETTERBOX` | ambient, black | ambient | at once | both |
-| Display | Ambient brightness | `DM_AMBIENT_LEVEL` | 20 to 100 percent | 50 percent | at once | system |
-| Display | Upscaling | `DM_UPSCALE` | bilinear, sharp | sharp at 30 fps, bilinear at 60 fps (see below) | at once | both |
-| Display | Sharpening (only under Sharp) | `DM_UPSCALE_SHARPNESS` | 0 to 100 percent | 80 percent | at once | both |
-| Display | Render scale (`fstep`) | `DM_RENDER_SCALE` | 50 to 100 percent | 100 percent | restart | game |
-| Display | Internal resolution (`internalres`) | `DM_INTERNAL_RES` | 1x (original), 1.5x, 2x | 1x | restart | game |
-| Display | Console mode | `DM_OPMODE` | auto, handheld (0), docked (1) | docked (a game that needs Handheld sets it in its pack defaults) | restart | both |
-| Controls | Touch controls | `DM_CONTROLS_LAYOUT` | auto, overlay | auto | at once | both |
-| Controls | Controls size | `DM_CONTROLS_SCALE` | 0.75 to 2.5 | 1 | at once | system |
-| Controls | Controls opacity | `DM_CONTROLS_OPACITY` | 30 to 100 percent | 100 percent | at once | system |
-| Controls | Fade when idle | `DM_CONTROLS_IDLE_FADE` | on, off | on | at once | system |
-| Controls | Touch layout | `DM_PAD_LAYOUT` | game's choice, 2D, 3D | game's choice | at once | game |
-| Controls | Shake sensitivity | `DM_SHAKE_G` | 0.5 to 4.0 G, a lower number reacts to a gentler shake | 1.5 G | at once | system |
-| Controls | Vibration (`haptics`) | `DM_VIBRATION` | on, off | on | at once | both |
-| Controls | Vibration strength (`haptics`) | `DM_VIBRATION_STRENGTH` | 0 to 100 percent | 100 percent | at once | system |
-| Audio | Volume | `DM_VOLUME` | 0 to 100 percent | 100 percent | at once | system |
-| Performance | Frame rate cap (`fpscap`) | `DM_FPS_TARGET` | game decides, 30, 60 | game decides | restart | game |
-| Performance | Flexible pipelines (`nvn`) | `DM_PSO_FLEX` | on, off | on | restart | game |
-| Performance | Frame rate counter | `DM_SHOW_FPS` | on, off | off | at once | system |
-| System | Game language | `DM_LANG` | the Switch languages | en-US | restart | both |
-| System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart | system |
-| Appearance | Appearance | `DM_APPEARANCE` | system, light, dark | system (the device's own) | at once | system |
+A game that renders below the screen's resolution is scaled up to the screen. **Standard**, the default, scales smoothly; **MetalFX** uses Apple's MetalFX upscaler, which sharpens edges and text as it scales.
 
-Everything else that the host reads from a `DM_*` variable stays environment-only: logging, traces and dumps, test hooks, file paths, and the per-game compatibility switches that a game profile sets.
+```mermaid
+flowchart LR
+    G["Game's picture<br/>handheld 1280x720<br/>docked 1920x1080"] --> S{Upscaling}
+    S -->|Standard| B["Smooth scaling"]
+    S -->|MetalFX| M["MetalFX: sharper edges and text"]
+    B --> D["Screen<br/>2868x1320 on an iPhone 17 Pro Max"]
+    M --> D
+```
 
-### Shake sensitivity (`DM_SHAKE_G`)
+Breath of the Wild renders 1280x720 in handheld mode. Docked it renders its world at 900p and scales that to 1080p itself, before the app sees the picture. MetalFX works in either mode: handheld saves the most GPU time and heat, docked looks sharper than smooth scaling. Rendering at the screen's resolution stays the sharpest picture, where the GPU can afford it.
 
-Shaking the device (iPhone or iPad) shakes the controller in games that read its motion.
-The accelerometer in `DmGamepad.m` counts a flick as a shake when its acceleration, beyond a slowly followed gravity, exceeds the threshold.
-The threshold is the **Shake sensitivity** slider on the Controls page, 0.5 to 4.0 G with 1.5 G as the default, and a change applies at once.
-A lower value makes the shake easier to trigger and suits the heavier iPad; a higher one needs a sharper flick.
-A line `DM_SHAKE_G=1.0` in `Documents/env.txt` overrides the slider (the row is then dimmed and locked), as for any setting.
-The log says which threshold is in use at start (`front end: shaking the device (iPhone or iPad) shakes the controller (threshold ... G)`) and the peak of each detected shake.
+- **When to change it:** turn it on if the picture looks soft and the device has GPU time to spare: on a Mac, or on an iPhone in handheld mode at 30 fps. For long sessions at 60 fps on an iPhone leave it at Standard.
+- **Cost:** more GPU time each frame, which can increase heat on an iPhone. [Breath of the Wild's measurements](../dm/games/01007EF00011E000/README.md#upscaling-current) cover Mac and iPhone; the matching iPhone Standard run and MetalFX's share of the thermal cost remain unmeasured. Nothing changes while the game's picture is as large as the screen. Unsupported devices and sizes use Standard scaling.
+- **On the Mac:** choose **MetalFX** under **Upscaling** in the [settings window](#the-mac-settings-window)'s Advanced settings, or set `DM_PRESENT_UPSCALE=metalfx` in its `env.txt` (off by default). It helps in a large window or on a 4K screen.
 
-### Internal resolution (`DM_INTERNAL_RES`)
+### Game's upscaler
 
-The game draws its render targets at 1x, 1.5x or 2x the Switch's resolution, and the frame is presented from the larger picture.
-The row appears only for a game that draws with NVN (the `internalres` capability), 1x is the default on every device, and a change applies on the next start.
-A scaled target takes S² times the memory of the 1x one: 2.25 times at 1.5x and 4 times at 2x.
-When the memory left to the app drops below 768 MB (`RS_MEM_GUARD_MB` in `nvn_mtl.m`), new targets stay at 1x, so the game keeps running with part of the picture at 1x instead of being closed by the system.
-On a device with 8 GB of memory or less, the row's description adds a note to that effect; 2x stays selectable there.
-The log names the scale at start (`internal resolution: 2x (DM_INTERNAL_RES)`), each target demoted to 1x and the reason, and with the perf report the live scaled targets and their memory (`internal resolution memory: ...`).
+Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's.
 
-### Upscaling (`DM_UPSCALE`)
+```mermaid
+flowchart LR
+    R["Game's render<br/>e.g. 960x540"] --> U{Game's upscaler}
+    U -->|Game's own| N["The game's network<br/>3.5-5 ms on an M1"]
+    U -->|MetalFX| M["MetalFX spatial scaler<br/>about 1 ms on an M1"]
+    N --> O["Game's output, e.g. 1920x1080<br/>then the game draws its HUD"]
+    M --> O
+```
 
-The picture is enlarged from the game's resolution to the screen either by the plain bilinear stretch or by AMD FidelityFX Super Resolution 1 (Sharp), with `DM_UPSCALE_SHARPNESS` as the strength of its sharpening pass.
-Sharp costs a few milliseconds of GPU time per frame (about 4 ms at a tablet's screen size): an eighth of a 30 fps frame, a quarter of a 60 fps one.
-So the default depends on the frame rate: **Sharp for a game that runs at 30 fps, Bilinear for one that runs at 60** (see below).
-Either way the row stays on the Display page and the player can pick the other one at any time.
-It has no effect at 1.5x and 2x internal resolution, where the picture is not enlarged.
+- **When to change it:** when the game falls short of its frame rate in busy scenes because of GPU time: Donkey Kong Bananza's upscaler is the largest single piece of a heavy frame on an M1 (3.5-5 ms of about 24 in handheld mode). Compare the look side by side before keeping it.
+- **Cost:** none in GPU time (it saves 2.5-4 ms a frame in that case); the picture is Apple's scaler's rather than the game's. Frames where the game renders at its output size are not upscaled and keep the game's shader either way. Devices without MetalFX keep the game's upscaler.
+- **Not the same as [Upscaling](#upscaling):** that one scales the finished picture, HUD included, to the screen; this one replaces the game's own step inside the frame. Both can be on.
 
-### Frame rate dependent defaults
+### Game language
 
-An entry with `defaultAtFps` has a default that follows the game's frame rate target, `DmSettings.frameTarget` (30 or 60; 0 while unknown).
-The app takes it from the host (`mtl_fps_target()`: the frame cap of the profile or the player when there is one, else the present interval the game itself asks for, where an interval of 2 held for a second means 30), reads it at start and again every second, so it is also right for a game that starts at 60 and settles at 30 after its first second.
-The effective default is then, after the earlier sources of "Where values come from": the entry's `defaultAtFps` value for the current target, else its `default`.
-When the target moves, the entries whose effective default changes with it are announced like a change made in the screen, so the picture switches at once and the row shows the new value.
-The Mac host does not read the target: with no `DM_UPSCALE` set it keeps the bilinear stretch.
+The game's own languages. The app was packed with one of them; pick another here without repacking. A game packed from a dump or a NUP may come without its list: every language is offered then, with a note, and a game that lacks the one you pick may show another.
 
-A choice the player made is stored even when it equals the default of that moment (other entries drop a value that equals the default), because the default moves: Bilinear picked in a 60 fps game must not turn into Sharp when a later start finds 30 fps.
-"Restore defaults" drops the choice, so the default of the moment applies again.
-A `settings.json` of the player from an older build loads unchanged: a stored Sharp stays Sharp.
-One thing an older build cannot tell: a player who had explicitly picked Bilinear while it was the default has nothing stored, and so gets the new Sharp default at 30 fps; picking Bilinear again keeps it.
-A game can still pin it with `"defaults": {"DM_UPSCALE": "bilinear"}` in its `settings.json`, which beats the frame rate default.
+### Picture
 
-### Flexible pipelines (`DM_PSO_FLEX`)
+iPhone and iPad. **Fit**, the default, shows the game's picture (16:9, or the taller one of [Picture shape](#picture-shape)) as large as it fits, with black bars where the screen has another shape. **Fill** enlarges it until it covers the whole screen and crops what lies outside; nothing is stretched. An iPhone loses some of the top and bottom, an iPad some of each side, so health bars, subtitles or maps near the edges can be cut off. A picture that fills the screen without cropping needs a patch for each game that renders a wider view. Fill applies in landscape; in portrait the picture stays fitted above the controls, and on a TV it is always fitted.
 
-The flexible pipelines (`dm/gfx/nvn/nvn_flexpso.m`, `dm/gfx/README.md`) make the game's graphics pipelines on background threads from a pipeline archive shipped in the app, so most are ready before their first draw; a draw whose pipeline is not ready yet waits for it and is never skipped.
-The row is on the Performance page for a game that draws with NVN (the `nvn` capability), is **on by default**, and a change applies on the next start.
-The row's detail says what it costs: it can make the first launch slightly slower, and it avoids hitches while playing.
-The host itself defaults to off (the Mac host, its tests and tools), so the entry has `exportDefault`: the app hands its default over to the environment.
-`build_ipa.sh` builds the pipeline archive by default (`PSO_FLEX=0` leaves it out).
+### Picture shape
 
-### Per-game files
+Games whose profile supports it (Breath of the Wild, Animal Crossing: New Horizons). **iPhone Duo screen (1.43:1)** renders a taller picture of the Duo's own shape: the sides of 16:9 with more above and below, and the HUD at the screen's edges. **16:9** is the Switch's picture. The taller picture has about a quarter more pixels, so it runs a little slower and warmer.
 
-A game profile can ship `dm/games/<title id>/settings.json`, which `tools/build_ipa.sh` copies to `pack/profile/settings.json` in the app.
-It holds two optional keys:
+### Frame-rate counter
 
-- `"defaults": {"DM_KEY": "value"}` replaces the registry default for that game, for any registered key.
-  A game default is not the player's choice: the screen shows it as the default, "Restore defaults" returns to it, and it is exported to the environment like a player's value so the host sees it.
-  A value that does not parse, or a key that is not registered, is ignored and logged.
-- `"sections": [...]` adds categories of its own, each `{"id", "title", "icon" (an SF Symbol name), "settings": [...]}` with entries in the form above.
-  A section whose `id` matches a built-in one adds its entries to that page.
+Shows the frames per second at the top left.
 
-Invalid entries are skipped and logged, never fatal; a key that is already registered is skipped too.
-The frame rate cap's default must follow the profile's `fps_target`, so a game with an `fps_target` ships `{"defaults": {"DM_FPS_TARGET": "<fps_target>"}}`; `dm/games/tests/test_settings_defaults.py` checks that.
+## Controls
 
-## Where values come from
+### Touch feedback
 
-From highest to lowest priority:
+A light tap from the phone when you press an on-screen button.
 
-1. The environment: `Documents/env.txt` (turned into environment variables by `main.m`), or a real environment variable.
-   This is the developer's override, so the screen shows the row dimmed with "Set in env.txt" and refuses changes.
-2. The player's choice for this game (entries of scope game or both), then the player's system choice, both in `Documents/settings.json` (not the save folder, so a save restore never touches it).
-3. The Info.plist default (`plistKey`, written by `project.yml` and `build_ipa.sh`).
-4. The game's own default (`"defaults"` in `pack/profile/settings.json`).
-5. The default for the game's frame rate target (`defaultAtFps`, only the entries that have one).
-6. The registry default.
+### Game rumble
 
-The file holds only what the player changed: `{"version": 2, "system": {"DM_CONTROLS_SCALE": "1.4"}, "games": {"<title id>": {"DM_LETTERBOX": "black"}}}`.
-A version 1 file (`{"version": 1, "values": {...}}`) is read as the system layer, so the single game's old choices still apply, and it is written as version 2 on the first change.
-Every change merges into the file on disk key by key, so a store of the system settings and a store of a game over the same file do not undo each other's changes.
+The game's vibration, on the phone or on a connected controller.
 
-## Scopes
+### Rumble strength
 
-Each entry names where the player's choice lives with `"scope"`.
-`system` (the default) is one value for every game: Volume, Controls size, Player name.
-`game` is per game only and is not shown in the system settings: Render scale, Frame rate cap, Touch layout.
-`both` is a system value that a game may override: Bars around the picture, Upscaling, Console mode, Game language.
-A pack's own entries (`profile/settings.json`) are `game` unless they name a scope.
-The Scope column of the table above is the built-in list (`DmSettings.builtinScopes`), and `t_settings.m` checks it.
-In a game's settings, a `both` row says "System setting" until the player changes it for that game; the row then says it is for this game only, and holding it (Use system setting) drops the game's choice.
-Choosing the system value again also drops it, so a later system change still reaches the game.
-"Restore defaults" in a game's settings drops that game's choices and the system-only values of the page; the system values of `both` rows stay.
-Console mode Auto is resolved when the game starts: Docked while an external display is connected, else Handheld.
-An unknown key or a value that does not parse is ignored and logged.
-`dm_settings_boot()` (called from `main.m`, after `env.txt` is loaded) exports the player's, the Info.plist's and the game's default values as environment variables for the code that reads them itself; a registry default is the code's own default and is not exported (unless the entry has `exportDefault`), and neither is a frame rate dependent default (the front end hands that one to the graphics layer itself).
-"Restore defaults" on a page removes the player's values for that page.
-"Restore all defaults" removes them for every page; it asks for a second press so one stray tap does not do it.
-Keys that the environment sets are left alone by both.
+How strong the game's vibration is, from 0 to 300 %.
 
-## System Settings and a game's Options (Hearth)
+### Rumble cutoff
 
-The same screen shows Hearth's System Settings and each game's Options; the categories are `DmPage`s (`DmSettingsVC.h`), either a registry section or a page of items built each time it is shown.
-An item is information or an action; an action that removes something asks for a second press, like "Restore all defaults".
-System Settings (`HearthSettingsPages.m`) has the registry's pages in system scope, Appearance among them, then Data Management (sizes per game, Delete game, Delete saves), Signing (this app's team, the days the provisioning profile has left, each game's signing state), About (version, source link, licences, Share log), and Developer once the version line was pressed 7 times.
-A game's Options (a long press on its tile, or + or - on a controller) has Overview (publisher, title ID, size, last played, play time), the rows of scope `game` or `both`, and Manage (Close game while it runs, View log, Delete game, Delete saves).
-"Restore defaults" in Options drops only that game's choices on the page, and there is no "Restore all defaults" there.
-Options learn which rows a game has from what it reported the last time it ran (`State/<title id>.json`, `caps`); before its first start only the rows that need nothing are shown, with a line that says more appear after the first start.
-A change made on Home reaches a paused game at once: the system store and the running game's store share the system layer (`linkSystemLayer:`), and the running game's Options use its live store.
-Appearance sets the windows' light or dark style (`hearth_apply_appearance`); `DM_APPEARANCE` in `env.txt` still wins.
+A controller's vibration weaker than this stays off, and the rest is spread over the full range. Off (0 %) by default. A controller with rotating motors can rumble all the time in a game that sends a quiet texture: Mario Kart 8 Deluxe needs about 45 % to rumble only on crashes and drifts. The phone's own vibration is not affected.
 
-## Applying changes
+### Press a button to join
 
-Live settings apply as soon as they change (`settingChanged:` in `front_ios.m`):
+Off by default: each controller is a player as soon as it connects, in the order the system lists them. On: a controller becomes a player only when you press one of its buttons, as the lowest player free, so the players choose their order and how many play. That press also reaches the game. When a game asks for more players than have joined, a prompt over the game waits for the others to press a button; B closes it.
 
-- `DM_LETTERBOX` calls `mtl_letterbox_set` and lays the screen out again.
-- `DM_AMBIENT_LEVEL` calls `mtl_ambient_level_set`, a small hook in `dm/gfx/nvn/nvn_ambient.h` that replaces the fixed `AMB_DARK` in the present stage.
-- `DM_CONTROLS_LAYOUT`, `DM_CONTROLS_SCALE` and `DM_CONTROLS_OPACITY` go to `DmGamepad.m`.
-- `DM_SHAKE_G` goes to `dm_gamepad_shake_g`; the accelerometer handler reads the threshold on every sample.
-- `DM_VOLUME` goes to `dm_audio_volume`: a gain the sound card callback reads, with no allocation and no lock.
-  The slider is a loudness curve (the gain is the square of the slider, so half way is 12 dB down) and a change ramps across one block so it does not click.
-- `DM_VIBRATION` and `DM_VIBRATION_STRENGTH` go to `dm_haptics_enable` and `dm_haptics_strength`.
-- `DM_SHOW_FPS` adds or removes the counter.
+## Performance
 
-A restart-only setting is stored at once and shows a "Restart now" row at the top of its page, because the running game cannot change it.
-The row closes the game; progress that was not saved in the game is lost, which the row says.
-The settings are kept, so the next start applies them.
+These settings change how the app hands frames to the screen and how it prepares the GPU's work. The game's tested defaults are a good start; change them when a game stutters, runs hot, or you want less latency.
 
-## Vibration
+### Frame buffering
 
-The game's HD rumble reaches the screen's two settings through three small pieces:
+Each finished frame is copied into a buffer of two images that the screen shows from, so the game can start its next frame at once instead of waiting for the screen to give its image back.
 
-- `dm/host/hle_vibration.c` answers the game's `nn::hid` vibration calls.
-  With haptic hardware the game sees vibration devices: left and right for handheld or dual Joy-Con, one otherwise.
-  The latest value of each device is kept in a lock-free mailbox, so the game thread only stores and never waits, and a burst of values collapses to what the engine can play.
-  Without hardware the game sees no devices, as before.
-- `DmHapticMap.h` turns a value into Core Haptics terms.
-  A Switch value is two bands, each an amplitude from 0 to 1 and a frequency in Hz.
-  The intensity is the energy of the two amplitudes, `sqrt(low^2 + high^2)` capped at 1, times the strength setting; an amplitude under 2 percent is not played.
-  The sharpness is where the amplitude-weighted mean frequency sits between 40 Hz (0) and 1252 Hz (1) on a log scale, so the idle 160 Hz band is 0.40 and the idle 320 Hz band 0.60.
-  A value that the game stopped sending for half a second counts as silence, so a game that never sends a closing zero does not leave the device buzzing.
-- `DmHaptics.m` plays it.
-  A controller with haptics plays the left and right devices on its left and right actuators (a game that asked for one device drives both); with no controller the device's own haptic engine plays, which an iPad does not have.
-  One poll thread at 60 Hz reads the mailbox and moves the intensity and sharpness of a looping continuous event with dynamic parameters.
+```mermaid
+sequenceDiagram
+    participant Game as Game (CPU)
+    participant GPU
+    participant Screen
+    Note over Game,Screen: Frame buffering off
+    Game->>GPU: frame 1
+    GPU->>Screen: frame 1, shown at the next refresh
+    Note over GPU: idle until the screen gives the image back
+    Screen-->>Game: image free again
+    Game->>GPU: frame 2
+    Note over Game,Screen: Frame buffering on
+    Game->>GPU: frame 1, then a copy into the buffer
+    Note over Game: image free at once
+    Game->>GPU: frame 2
+    GPU->>Screen: frame 1 from the buffer, at the next refresh
+    Note over GPU: keeps working: frame 2 while frame 1 is on screen
+```
 
-## Tests and checks
+Without it the GPU idles between frames, and iOS reads that idle time as room to spare: it lowers the GPU's clock, and the frames take longer still. On an iPhone 17 Pro Max, Breath of the Wild fell to 30 fps without frame buffering and held 60 with it.
 
-`make -C dm/ios/tests run` builds and runs `t_settings.m` and `t_haptics.c` on the Mac.
-`t_settings.m` checks the registry's parsing and validation, the precedence order, the persisted file, live notifications, reset and reset-all, the restart-pending state, per-game sections and defaults, capabilities, text limits, the slider display, the frame rate dependent defaults (Upscaling at 30 and 60 fps, a stored choice winning over them) and the flexible pipelines row.
-`t_haptics.c` checks the amplitude and frequency mapping.
-`make -C dm/host/tests run` includes `t_vib` (the vibration mailbox and the hid answers) and the master volume checks of `t_audio`.
-`python3 -I dm/games/tests/test_settings_defaults.py` checks the per-game files.
-Check the screen itself on both an iPad and an iPhone, in light and dark appearance, with the focus on each kind of row, and drive it with a controller as well as by touch.
-Check the player name editor with the touch keyboard and with a hardware keyboard, and the vibration rows with a controller attached and without.
+- **When to change it:** turn it off if you notice the controls lag behind and the game holds its frame rate without it.
+- **Cost:** up to one frame more latency between your input and the screen (about 28 ms more on an iPhone 17 Pro Max), and two more frame-sized images in memory.
+
+### Metal 4 pipelines
+
+Before the GPU can draw something, the app has to build a *pipeline* for it: the game's shaders compiled for the iPhone's GPU, with the drawing settings. Building one takes tens of milliseconds, so a scene full of new ones stutters. With Metal 4 pipelines the app keeps what it built in a pipeline archive on the phone, and builds most pipelines in a few microseconds from a shared base.
+
+```mermaid
+flowchart TD
+    start([Game starts]) --> prepare["Prepare, before the first frame:<br/>build what the archive<br/>and the prewarm lists name"]
+    prepare --> pre{"Prebuild done for<br/>this game version?"}
+    pre -->|no: first start,<br/>game or app update| prebuild["Pipeline prebuild:<br/>a stand-in for every shader pair<br/>(Preparing pipelines, a few minutes, once)"]
+    prebuild --> archive
+    pre -->|yes| draw
+    draw{"A draw needs<br/>a pipeline"}
+    draw -->|built already| ok[Draw]
+    draw -->|never seen| stand{"Stand-in for its<br/>shader pair?"}
+    stand -->|yes| hybrid["Draw with the stand-in<br/>(hybrid pipeline)"]
+    hybrid --> bg[Build the real pipeline<br/>in the background]
+    stand -->|no| wait["Build it now:<br/>the game waits, a stutter"]
+    bg --> archive[(Pipeline archive<br/>and prewarm list)]
+    wait --> archive
+    archive -.->|next start| prepare
+```
+
+At start, before the game's first frame, the app prepares what it already knows: the pipelines in the archive and those the prewarm lists name (one comes with the game, one grows on the phone as you play); with a warm archive that takes well under a second. A pipeline never seen before is drawn meanwhile with a stand-in for its pair of shaders, a *hybrid* pipeline that reads the draw's vertices in a general way and draws the same picture, while the real pipeline is built in the background and archived for the next start.
+
+- **When to change it:** turn it off only if a game crashes or runs out of memory with it.
+- **Cost:** memory for the archive while the game runs, and storage on the phone.
+
+### Pipeline prebuild
+
+Builds a stand-in for every pair of shaders the game has (15,767 for Breath of the Wild) and puts them into the pipeline archive, so that a scene you have never seen has a stand-in for each of its draws instead of a stutter. It runs before the game's first frame, behind a **Preparing pipelines** screen: the first start waits a few minutes for it, once, and so does the first start after a game update or an app update that brings new shaders. Every other start skips it. It needs Metal 4 pipelines, and its row shows only while that option is on.
+
+Built in the background while playing instead, the stand-ins took an iPhone 17 Pro Max's GPU from about 13 to 15–18 ms a frame in Breath of the Wild, so the app does the work up front.
+
+- **When to change it:** turn it off if you don't want to wait at that first start.
+- **Cost:** on, a wait of a few minutes once. Off, no wait, but a pipeline seen for the first time makes the game stall briefly while it is built, until the archive holds it.
+
+### Encode thread
+
+The app turns the game's graphics commands into Metal commands on a thread of its own instead of the game's submitting thread, so the game's thread can go on sooner (in Breath of the Wild about 4 ms per frame instead of 8). Frame buffering needs it for games that present their frames from another thread than the one that draws them. It is on by default on the iPhone; on the Mac it is off, where it lowered the typical frame time but made the slowest frames slower.
+
+- **When to change it:** leave it on unless a game misbehaves with it; turning it off is a diagnostic step.
+
+### Hold frames when late
+
+For games whose frame rate the app controls ([Frame rate](#frame-rate)). With 60 fps chosen, each frame is meant to stay on screen for one refresh. When a frame comes late, the app can either slow the game down to 30 fps for a while, or keep 60 and show late frames as they come.
+
+```mermaid
+flowchart LR
+    subgraph on["Hold frames when late: on"]
+        direction LR
+        a60["60 fps:<br/>each frame shown<br/>for 1 refresh"] -->|3 late frames in a row| a30["30 fps:<br/>each frame shown<br/>for 2 refreshes"]
+        a30 -->|frames fit again| a60
+    end
+    subgraph off["Hold frames when late: off"]
+        direction LR
+        b60["60 fps:<br/>each frame shown<br/>for 1 refresh"] -->|a late frame| late["shown one<br/>refresh later"]
+        late --> b60
+    end
+```
+
+- **On** (the default for most games): an even 30 fps (or 20) in heavy scenes instead of a mix of 30 and 60.
+- **Off:** the game keeps aiming at 60; a late frame is shown one refresh later and the next one goes on as usual, so heavy scenes look less even but stay closer to 60 on average.
+- **When to change it:** turn it off if the game often falls to 30 fps although it is only slightly late.
+
+### Performance HUD
+
+Apple's performance overlay over the game: frame rate, frame and GPU times, memory. Useful to see what a setting changes; leave it off for play.
+
+### Reset to tested defaults
+
+Sets every setting back to the game's tested default; **Play** then forgets your choices, so those defaults apply, and those of later builds too ([Tested defaults](#tested-defaults)). Settings fixed by `Documents/env.txt` stay as the file says.
+
+## The Mac settings window
+
+A Mac app ([A Mac app](development.md#a-mac-app)) shows its settings in a window before the game starts. They are the same settings as on the iPhone, with the same defaults. The window shows the most used ones first: **Frame rate**, **Render scale**, **Console mode**, **Game language**, **Display mode** and **Game rumble**, when the game has them. **Render scale** shows the picture's size in pixels beside the percentage for the chosen **Console mode**, when the game's profile has it (Breath of the Wild: 1600 × 900 docked, 1280 × 720 handheld at 100 %). The others are under **Advanced settings**, in the usual sections, with **Reset to tested defaults**. The window remembers whether Advanced settings is open. **Frame-rate counter** and **Touch feedback** are only on the iPhone.
+
+Click **Play** (or press Return) to start the game. **Quit**, ⌘Q or closing the window ends the app without the game. The app remembers your choices for that game, and a game started without the window, from a front end or with the window turned off, uses them too ([Saved choices](frontends.md#saved-choices)). A setting fixed by an `env.txt` or by the program that started the app is shown greyed out.
+
+Turn off **Show this window at launch** to start the game at once with your choices. Hold Option while the app opens to see the window again. `DM_LAUNCHER=0` in the app's `env.txt` (`~/Library/Application Support/nxnative/<title ID>/env.txt`) or in its environment, or opening it with `open <app> --args --no-launcher`, also skips the window; your choices still apply. `DM_SAVED_CHOICES=0` starts with the tested defaults instead.
+
+### Display mode
+
+**Window** or **Fullscreen**: how the game's window opens. ⌃⌘F or the green button changes it while you play. In an `env.txt`: `DM_FULLSCREEN=1` or `0`.
+
+### Switch 2 controllers
+
+**Off** by default. On, the game takes Joy-Con 2 and Pro Controller 2 over Bluetooth: hold the small Sync button on one during the game, until its player lights sweep, to pair it with this Mac; after that a press of any of its buttons connects it ([Switch 2 controllers](playing.md#switch-2-controllers-mac)). macOS asks for Bluetooth access the first time, and again after the app is packed again. In an `env.txt`: `DM_SW2=1`.
+
+### Cloud saves folder
+
+**Choose a folder…** picks the iCloud Drive folder the game's save is synced through, the one the iPhone app chose in its launcher's **Cloud saves**, or the game's own folder inside it, named after its title ID ([Cloud saves](#cloud-saves)); **Turn off** stops it. Off by default. macOS may ask once whether the app may open iCloud Drive; if the game log says `this app may not open iCloud Drive`, allow it in System Settings › Privacy & Security › Files and Folders. In an `env.txt`: `DM_SAVE_SYNC=<folder>`, or `DM_SAVE_SYNC=icloud` for iCloud Drive › nxnative Saves; the window then shows it fixed.
+
+## Cloud saves
+
+The Mac app and the iPhone app of one game can share a save through iCloud Drive. Choose the same iCloud Drive folder on both: **Cloud saves** › **Choose a folder…** in the Mac settings window, and **Cloud saves** in the iPhone launcher (any folder, for instance one named **nxnative Saves**). Each game keeps one file there, `<title ID>/save.dmsync`, which holds the whole save.
+
+When the game starts, it brings the save from iCloud Drive in if only that one changed since the last sync; a few seconds after the game saves, it sends its save if only this one changed. The iPhone app also sends when it goes to the background, and the Mac app once the game has quit. If you played on both without the save getting across in between, the newer save wins.
+
+A save that is replaced, on the device or in iCloud Drive, is kept first, beside the save in a folder named after it with `-backups` (on the iPhone `save-backups` in the Files app, under the app's name; on the Mac `~/Library/Application Support/nxnative/<title ID>/save-backups`): `<date> local` holds this device's save, `<date> cloud` the one that was in iCloud Drive. The newest 10 of each kind stay, and older ones are removed; other folders you put there are left alone.
+
+iCloud Drive takes a moment to carry a file from one device to the other. Quit the game on one device and give it a few seconds before you start it on the other. Without a connection, or when the save in iCloud Drive has not arrived in time, the game plays on with the save it has and sends it later. If the save in iCloud Drive changed meanwhile, the game sends nothing that session, and the next start decides between the two as above. The game log says what came in and what went out (lines starting with `save sync:`).
+
+## In-game menu
+
+On the iPhone and iPad the gear at the top centre of the touch controls opens a menu while the game runs; it stays when a controller hides the other controls. It holds **Console mode**, **Picture** and the **Frame-rate counter**, then **Controller layout** (**2D**, **3D**, and **Tap**, no controls and every touch to the game, in handheld mode), **Touch feedback** and **Game rumble**: the settings that take effect at once. A choice opens to show its options, the current one ticked. The menu's text keeps one size whatever the system text size, so it stays short over the game. A change is remembered as on the settings screen, which shows it at the next start; a setting `Documents/env.txt` fixes is shown, not changed. The other settings need the game to start again, so they are only on the settings screen: close the app fully and open it again.
+
+Console mode changes as on a Switch put in or taken out of its dock. While a TV shows the game it stays **Docked**, and the mode you pick applies when the TV is disconnected. **Docked** removes the Tap layout, as a docked Switch reads no touch screen.
+
+## TV
+
+Connect a TV or monitor by cable, or start Screen Mirroring to an Apple TV or AirPlay TV. The game fills it in 16:9 at up to 1080p and switches to **Docked**; the iPhone or iPad keeps the controls. Disconnect to bring the game back to the device in its earlier mode. AirPlay adds some delay; a cable has almost none.
+
+## Settings in a file
+
+A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under the app's name) sets a setting from the file: the settings screen shows it greyed out, and the file wins over your choice and the game's default. Fully close and reopen the app after editing the file. The variables:
+
+| Setting | Variable | Values |
+|---|---|---|
+| Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (Mac, games with `fps_max 120`) |
+| Render scale | `DM_RENDER_SCALE` | `0.5` to `1.0` (Hades II: to `3.0`) |
+| Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
+| Game language | `DM_LANG` | a language code, such as `ja` |
+| Display mode (Mac) | `DM_FULLSCREEN` | `1` fullscreen, `0` a window |
+| Cloud saves folder (Mac) | `DM_SAVE_SYNC` | a folder; `icloud`: iCloud Drive › nxnative Saves; `0`: off |
+| Picture (iPhone and iPad) | `DM_PICTURE_FIT` | `fit` 16:9 with black bars, `fill` covers the screen, cropped |
+| Picture shape | `DM_SCREEN_ASPECT` | `auto` the app window's own shape where it is taller than 16:9 (iPad 4:3, iPhone Duo 1.43:1), else 16:9 (iOS only); `1.43` the iPhone Duo's shape, `0` 16:9 |
+| Frame-rate counter | `DM_SHOW_FPS` | `1`, `0` |
+| Touch feedback | `DM_TOUCH_HAPTICS` | `1`, `0` |
+| Game rumble | `DM_RUMBLE` | `1`, `0` |
+| Rumble strength | `DM_RUMBLE_GAIN` | `0` to `3` |
+| Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
+| Press a button to join | `DM_PAD_PRESS_TO_JOIN` | `1`, `0` |
+| Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
+| Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
+| Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
+| Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
+| Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |
+| Encode thread | `DM_NVN_ENC_THREAD` | `1`, `0` |
+| Hold frames when late | `DM_FPS_HOLD` | `on`, `off` |
+| Performance HUD | `DM_METAL_HUD` | `1`, `0` |
+
+`DM_LAUNCHER=0` skips the settings screen; the choices you saved there still apply. `DM_SAVED_CHOICES=0` starts with the tested defaults and keeps your saved choices for later. How the settings are listed for each game: [dm/games/settings.tsv](../dm/games/settings.tsv).

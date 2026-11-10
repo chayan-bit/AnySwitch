@@ -24,6 +24,7 @@
 #include "dm.h"
 #include "dm_input.h"
 #include "front.h"
+#include "haptics_apple.h"
 #import "DmPadBits.h"
 #import "DmSettings.h"
 
@@ -186,7 +187,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             if ([lay isEqualToString:@"auto"] && [st setValue:old.boolValue ? @"3d" : @"2d" forKey:@"DM_PAD_LAYOUT"]) lay = [st valueForKey:@"DM_PAD_LAYOUT"];
             [NSUserDefaults.standardUserDefaults removeObjectForKey:k_layout_key];
         }
-        _full = [lay isEqualToString:@"auto"] ? g_profile.pad_full : [lay isEqualToString:@"3d"];
+        _full = [lay isEqualToString:@"auto"] ? DM_GAME_PAD_LAYOUT == 1 : [lay isEqualToString:@"3d"];
         [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
@@ -214,7 +215,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 - (void)settingChanged:(NSNotification *)n {   // the Touch layout row (and the button's own change, which is already shown)
     if (![n.object isEqual:@"DM_PAD_LAYOUT"]) return;
     NSString *v = n.userInfo[@"value"];
-    [self setFull:[v isEqualToString:@"auto"] ? g_profile.pad_full : [v isEqualToString:@"3d"]];
+    [self setFull:[v isEqualToString:@"auto"] ? DM_GAME_PAD_LAYOUT == 1 : [v isEqualToString:@"3d"]];
 }
 
 // ---- Layout (points; computed inside the safe area) ----
@@ -509,6 +510,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
 static void read_pad(GCExtendedGamepad *g) {
     uint64_t m = 0;
+    dm_haptics_apple_controller(0, g.controller);   // the game's rumble goes to the controller in use (haptics_apple.m; the same controller again changes nothing)
     #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
     K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
     K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
@@ -539,7 +541,7 @@ static BOOL pads_attach(void) {   // every connected controller reports to read_
         any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
         read_pad(c.extendedGamepad);
     }
-    if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+    if (!any) { dm_haptics_apple_controller(0, nil); pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
     return any;
 }
 - (void)padsChanged {

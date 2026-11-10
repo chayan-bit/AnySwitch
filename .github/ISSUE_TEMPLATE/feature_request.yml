@@ -10,8 +10,8 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: What problem does it solve
-      description: What you cannot do today, or what is hard.
+      label: What is missing
+      description: The problem it solves, what you cannot do today, or what is hard.
     validations:
       required: true
   - type: textarea

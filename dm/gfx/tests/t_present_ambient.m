@@ -7,7 +7,7 @@ uint64_t g_t0_ns;
 int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }   // Tests use host-thread stacks.
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
-module_t g_mod[MAX_MOD]; int g_nmod;
+module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
@@ -48,7 +48,7 @@ static void render_m4(id<MTLTexture> src, id<MTLTexture> dst, int slot) {
     [g_present_alloc4[slot] reset];
     id<MTL4CommandBuffer> cb = g_present_cb[slot];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[slot]];
-    int ok = present_encode_m4(cb, src, dst, NULL, slot); (void)ok;
+    int ok = present_encode_m4(cb, src, dst, NULL, g_present_uv[slot], NULL); (void)ok;
     [cb endCommandBuffer];
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     MTL4CommitOptions *o = [MTL4CommitOptions new];
@@ -169,6 +169,7 @@ static void shots(const char *dir) {
     }
 }
 int main(void) { @autoreleasepool {
+    setenv("DM_NVN_PASSGPU", "1", 0);   // upstream's pg_on times passes only when asked (no longer with the performance overlay)
     mtl_init();
     CHECK("per-pass GPU timing is on", pg_on());
     check_quads(1376, 1032, "4:3 drawable, 16:9 frame");

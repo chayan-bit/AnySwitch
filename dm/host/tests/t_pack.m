@@ -56,7 +56,7 @@ static void expect(const char *name, const char *want) {   // want NULL: bootabl
 static int preload_argc; static char *preload_argv[2];
 void dm_host_preload_start(int argc, char **argv) { preload_argc = argc; preload_argv[0] = argv[0]; preload_argv[1] = argv[1]; }
 
-static const char *ENVS[] = {"DM_PROFILE_DIR", "DM_CODE", "DM_ROMFS", "DM_NVN_SHMAP", "DM_MSL_DIR", "DM_PSO_ARCHIVE", "DM_PSO_FLEX_ARCHIVE", "DM_FONT_DIR", "DM_AOC_DIR"};
+static const char *ENVS[] = {"DM_PROFILE_DIR", "DM_CODE", "DM_ROMFS", "DM_NVN_SHMAP", "DM_MSL_DIR", "DM_PSO_BUNDLE", "DM_FONT_DIR", "DM_AOC_DIR"};
 static void check(const char *name, int ok, const char *detail) {
     n++; if (!ok) fails++;
     printf("%s %s%s%s\n", ok ? "✓" : "✗", name, detail ? ": " : "", detail ?: "");
@@ -74,23 +74,11 @@ static void boot_cases(void) {
     int missing = dm_boot_env(root);
     check("defaults: required parts", env_is("DM_PROFILE_DIR", "profile") && env_is("DM_CODE", "code/macos.dylib") && env_is("DM_NVN_SHMAP", "profile/shader_map.tsv") && env_is("DM_MSL_DIR", "msl/macos"), NULL);
     check("defaults: the caller's value wins", !strcmp(getenv("DM_ROMFS"), "/caller/romfs.dmstore"), getenv("DM_ROMFS"));
-    check("defaults: 4 absent optional parts left unset", missing == 4 && env_is("DM_PSO_ARCHIVE", NULL) && env_is("DM_PSO_FLEX_ARCHIVE", NULL) && env_is("DM_FONT_DIR", NULL) && env_is("DM_AOC_DIR", NULL), NULL);
+    check("defaults: 3 absent optional parts left unset", missing == 3 && env_is("DM_PSO_BUNDLE", NULL) && env_is("DM_FONT_DIR", NULL) && env_is("DM_AOC_DIR", NULL), NULL);
     for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
-    sh("mkdir -p '%s/aoc/1' '%s/font' '%s/pso/macos' && : > '%s/pso/macos/pso_archive.metallib'", root, root, root, root);
+    sh("mkdir -p '%s/aoc/1' '%s/font' '%s/pso/macos' && : > '%s/pso/macos/manifest.tsv'", root, root, root, root);
     missing = dm_boot_env(root);
-    check("defaults: present optional parts", missing == 1 && env_is("DM_ROMFS", "romfs.dmstore") && env_is("DM_AOC_DIR", "aoc") && env_is("DM_FONT_DIR", "font") && env_is("DM_PSO_ARCHIVE", "pso/macos/pso_archive.metallib") && env_is("DM_PSO_FLEX_ARCHIVE", NULL), NULL);
-    // One file per GPU architecture: this GPU's own file wins over the plain one, another GPU's file is never taken
-    NSString *arch = MTLCreateSystemDefaultDevice().architecture.name; char rel[300];
-    sh("mkdir -p '%s/pso/macos' && : > '%s/pso/macos/pso_flex.metallib' && : > '%s/pso/macos/pso_flex_applegpu_other.metallib'", root, root, root);
-    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
-    dm_boot_env(root);
-    check("per-GPU part: another GPU's file is not taken", env_is("DM_PSO_FLEX_ARCHIVE", "pso/macos/pso_flex.metallib"), getenv("DM_PSO_FLEX_ARCHIVE"));
-    snprintf(rel, sizeof rel, "pso/macos/pso_flex_%s.metallib", arch.UTF8String);
-    sh("[ -z '%s' ] || : > '%s/%s'", arch.UTF8String, root, rel);
-    for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
-    dm_boot_env(root);
-    check("per-GPU part: this GPU's file wins over the plain one", arch.length && env_is("DM_PSO_FLEX_ARCHIVE", rel), getenv("DM_PSO_FLEX_ARCHIVE"));
-    sh("rm -f '%s/pso/macos/pso_flex'*.metallib", root);
+    check("defaults: present optional parts", missing == 0 && env_is("DM_ROMFS", "romfs.dmstore") && env_is("DM_AOC_DIR", "aoc") && env_is("DM_FONT_DIR", "font") && env_is("DM_PSO_BUNDLE", "pso/macos"), NULL);
     for (size_t i = 0; i < sizeof ENVS / sizeof *ENVS; i++) unsetenv(ENVS[i]);
     manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI + 1, DM_SHADER_ABI, title);
     check("dm_boot_game refuses a stale pack and boots nothing", dm_boot_game(root) == 1 && !preload_argc && env_is("DM_CODE", NULL), NULL);
@@ -113,7 +101,7 @@ int main(int argc, char **argv) {
 
     valid_pack(); expect("correct pack", NULL);
     valid_pack(); manifest(DM_PACK_FORMAT + 1, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, title); expect("pack format + 1", "pack format 2, this engine 1"); check("reason: a stale pack is DM_PACK_REBUILD", g_rc == DM_PACK_REBUILD, NULL);
-    valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA + 1, DM_CODE_ABI, DM_SHADER_ABI, title); expect("profile schema + 1", "profile schema 2, this engine 1: re-run build_ipa_from_nsp.py --pack (profile)");
+    valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA + 1, DM_CODE_ABI, DM_SHADER_ABI, title); char sw[96]; snprintf(sw, sizeof sw, "profile schema %d, this engine %d: re-run build_ipa_from_nsp.py --pack (profile)", DM_PROFILE_SCHEMA + 1, DM_PROFILE_SCHEMA); expect("profile schema + 1", sw);
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI + 1, DM_SHADER_ABI, title); expect("code ABI + 1", "code ABI 2, this engine 1: re-run build_ipa_from_nsp.py --pack (rewrite stage)");
     valid_pack(); manifest(DM_PACK_FORMAT, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI + 1, title); expect("shader ABI + 1", "shader ABI 2, this engine 1: re-run build_ipa_from_nsp.py --pack (shader stages)");
     valid_pack(); manifest(DM_PACK_FORMAT - 1, DM_PROFILE_SCHEMA, DM_CODE_ABI, DM_SHADER_ABI, title); expect("pack format - 1", "pack format 0, this engine 1");

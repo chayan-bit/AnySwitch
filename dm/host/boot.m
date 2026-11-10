@@ -121,18 +121,6 @@ int dm_pack_check(const char *root, char *why, size_t n) {
     @autoreleasepool { return check(@(root), why, n); }
 }
 
-// A part that is large per GPU architecture ships one file per architecture, <name>_<arch>.<ext> (pso_flex_applegpu_g17p.metallib): the flexible pipeline archive holds a copy of every pipeline for each
-// architecture and is capped in size, so one archive for two GPU families would carry half the pipelines of each. The file for this GPU is taken when the pack has it, else the plain <name>.<ext>.
-static NSString *for_this_gpu(NSString *root, NSString *rel) {
-    static NSString *arch; static dispatch_once_t once;
-    dispatch_once(&once, ^{ id<MTLDevice> d = MTLCreateSystemDefaultDevice(); arch = d.architecture.name ?: @""; });
-    if (!arch.length) return rel;
-    NSString *own = [[rel stringByDeletingPathExtension] stringByAppendingFormat:@"_%@.%@", arch, rel.pathExtension];
-    if (![NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:own]]) return rel;
-    LOG("pack: %s for this GPU (%s)", own.lastPathComponent.UTF8String, arch.UTF8String);
-    return own;
-}
-
 // The environment contract (docs/development.md "Game packs"): each default below applies only where the caller has not set the variable; optional parts that are absent are named in the log
 int dm_boot_env(const char *root) {
     @autoreleasepool {
@@ -142,8 +130,7 @@ int dm_boot_env(const char *root) {
         struct { const char *env; NSString *rel; int required; const char *without; } d[] = {
             {"DM_PROFILE_DIR", @"profile", REQUIRED, NULL}, {"DM_CODE", code, OPTIONAL, "the code this executable embeds"}, {"DM_ROMFS", @"romfs.dmstore", REQUIRED, NULL},
             {"DM_NVN_SHMAP", @"profile/shader_map.tsv", REQUIRED, NULL}, {"DM_MSL_DIR", msl, REQUIRED, NULL},
-            {"DM_PSO_ARCHIVE", for_this_gpu(r, [pso stringByAppendingPathComponent:@"pso_archive.metallib"]), OPTIONAL, "pipelines compile on first use"},
-            {"DM_PSO_FLEX_ARCHIVE", for_this_gpu(r, [pso stringByAppendingPathComponent:@"pso_flex.metallib"]), OPTIONAL, "flexible pipelines compile on workers"},
+            {"DM_PSO_BUNDLE", pso, OPTIONAL, "no offline pipeline archive: the device builds its pipeline bases on the first start"},   // dm/gfx/tools/pso_offline.py's folder (nvn_mtl.m pso_bundle_open)
             {"DM_FONT_DIR", @"font", OPTIONAL, "the system's shared-font stand-ins"}, {"DM_AOC_DIR", @"aoc", OPTIONAL, "no add-on content"}};
         int missing = 0;
         for (size_t i = 0; i < sizeof d / sizeof *d; i++) {

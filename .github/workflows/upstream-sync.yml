@@ -1,0 +1,103 @@
+# Weekly (and on demand) check of upstream seedds/nxnative main: when it has commits main lacks, open or update one PR from sync/upstream-<date> into main.
+# A clean merge is pushed as a merge commit; a conflicting one pushes upstream's main as the branch and lists the conflicting files in the PR, to be resolved locally (docs/development.md, Syncing with upstream).
+# Only git metadata moves here: no game data, keys or builds exist on the runner, and nothing but the default GITHUB_TOKEN is used.
+# Limits of the default token: a push whose commits change .github/workflows is refused (the token has no workflows permission), so then an issue lists the sync instead;
+# PRs it opens start no CI runs of their own (close and reopen the PR, or push to it, to run CI); the repository must allow Actions to create pull requests (Settings, Actions, General).
+name: upstream-sync
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'   # Mondays 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: https://github.com/seedds/nxnative.git
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          echo "UP_SHA=$(git rev-parse --short=8 upstream/main)" >> "$GITHUB_ENV"
+
+      - name: Merge
+        id: merge
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor upstream/main origin/main; then echo "main already has upstream $UP_SHA"; echo "state=current" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # One sync PR at a time: an open one is updated, else a new branch is named by today's date
+          br=$(gh pr list --state open --base main --json headRefName --jq '[.[].headRefName | select(startswith("sync/upstream-"))][0] // empty')
+          pr_open=${br:+yes}
+          br=${br:-sync/upstream-$(date -u +%Y-%m-%d)}
+          echo "branch=$br" >> "$GITHUB_OUTPUT"; echo "pr_open=${pr_open:-no}" >> "$GITHUB_OUTPUT"
+          if [ -n "$pr_open" ] && git fetch --no-tags origin "$br" && git merge-base --is-ancestor upstream/main FETCH_HEAD; then echo "$br already has upstream $UP_SHA"; echo "state=current" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Build on the open PR's branch when it holds someone's resolution (anything beyond upstream's commits), so their work is kept; else start from main
+          base=origin/main; old=""
+          if [ -n "$pr_open" ]; then old=$(git rev-parse FETCH_HEAD); fi
+          echo "old=$old" >> "$GITHUB_OUTPUT"   # the push's lease: the branch as fetched, or absent
+          if [ -n "$pr_open" ] && ! git merge-base --is-ancestor FETCH_HEAD upstream/main; then base=FETCH_HEAD; fi
+          git checkout -B "$br" "$base"
+          if git merge --no-ff --no-edit -m "chore(sync): merge seedds/nxnative main $UP_SHA" upstream/main; then
+            echo "state=clean" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "state=conflict" >> "$GITHUB_OUTPUT"
+            if [ "$base" = origin/main ]; then git checkout -B "$br" upstream/main; fi   # the PR then shows upstream's main and GitHub marks it as conflicting
+          fi
+          echo "commits=$(git rev-list --count origin/main..upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Push and open or update the PR
+        if: steps.merge.outputs.state == 'clean' || steps.merge.outputs.state == 'conflict'
+        env:
+          BR: ${{ steps.merge.outputs.branch }}
+          STATE: ${{ steps.merge.outputs.state }}
+          PR_OPEN: ${{ steps.merge.outputs.pr_open }}
+          COMMITS: ${{ steps.merge.outputs.commits }}
+          OLD: ${{ steps.merge.outputs.old }}
+        run: |
+          set -uo pipefail
+          {
+            echo "Upstream seedds/nxnative main is at \`$UP_SHA\`; main lacks $COMMITS of its commits."
+            echo
+            if [ "$STATE" = clean ]; then
+              echo "It merges cleanly: this branch holds the merge commit. Build and run the tests locally before merging (docs/development.md, Syncing with upstream)."
+            else
+              echo "It does not merge cleanly. Resolve it locally (docs/development.md, Syncing with upstream) and push the merge to this branch. Conflicting files:"
+              echo
+              # shellcheck disable=SC2016  # the backticks are Markdown
+              sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            fi
+            echo
+            echo "Opened by .github/workflows/upstream-sync.yml."
+          } > "$RUNNER_TEMP/body.md"
+          if ! git push --force-with-lease="refs/heads/$BR:$OLD" origin "HEAD:refs/heads/$BR"; then
+            # Most often upstream changed .github/workflows, which the default token may not push: report it as an issue
+            title="Upstream sync: seedds/nxnative main needs a local merge"
+            n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+            { echo "The workflow could not push \`$BR\` (most likely upstream's commits change .github/workflows, which the default token may not push)."; echo; cat "$RUNNER_TEMP/body.md"; } > "$RUNNER_TEMP/issue.md"
+            if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"; fi
+            exit 0
+          fi
+          title="chore(sync): merge seedds/nxnative main $UP_SHA"
+          if [ "$PR_OPEN" = yes ]; then gh pr edit "$BR" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          else gh pr create --base main --head "$BR" --title "$title" --body-file "$RUNNER_TEMP/body.md"; fi

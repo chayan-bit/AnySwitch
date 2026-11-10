@@ -14,6 +14,8 @@ static int checks, fails;
 static char g_code[16]; static int g_net, g_calls;
 int dm_guest_as_contains(uintptr_t a) { (void)a; return 0; }   // hle_bigstack.c asks it; no guest here
 void front_error(const char *code, int network) { snprintf(g_code, sizeof g_code, "%s", code); g_net = network; g_calls++; }   // the front end: record what it was asked to show
+void dm_applet_enter(const char *name) { (void)name; }   // upstream's hle_err.c now holds the game out of focus (DM_APPLET); no applet state here
+void dm_applet_leave(void) {}
 
 int main(void) {
     char c[16];

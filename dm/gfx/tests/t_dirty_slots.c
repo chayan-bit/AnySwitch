@@ -4,9 +4,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
-module_t g_mod[MAX_MOD];
+module_t *g_mod;
 int g_nmod;
 module_t *module_of(const void *p) { (void)p; return NULL; }
 void crash_install(void);
@@ -100,24 +101,27 @@ int main(void) {
     nvn_dirty_remove_range(pa);
     munmap(blk, 4 * pg);
 
-    // Pages written since the stamp as runs of byte offsets (a packaged texture compares only these with its snapshot): texture from 0x800 over 4 pages, pages 1, 2 and 4 written
-    uint8_t *rb = mmap(NULL, 5 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (rb == MAP_FAILED) { perror("mmap"); exit(2); }
-    nvn_dirty_add_range(rb, 5 * pg);
-    uint8_t *tx = rb + 0x800; size_t tl = 4 * pg; size_t run[4][2]; int nr = -1;
-    nvn_dirty_protect(tx, tl); stamp = nvn_dirty_now();
-    EXPECT("runs: nothing written, 0 pages", 0, nvn_dirty_runs(NULL, tx, tl, stamp, run, 4, &nr));
-    rb[pg + 5] = 1; rb[2 * pg + 7] = 1; rb[4 * pg + 9] = 1;
-    EXPECT("runs: 3 pages written", 3, nvn_dirty_runs(NULL, tx, tl, stamp, run, 4, &nr));
-    EXPECT("runs: pages 1-2 and 4 make 2 runs", 2, nr);
-    EXPECT("run 1 starts at page 1, as an offset from the texture", (long long)(pg - 0x800), run[0][0]);
-    EXPECT("run 1 ends at page 3", (long long)(3 * pg - 0x800), run[0][1]);
-    EXPECT("run 2 starts at page 4", (long long)(4 * pg - 0x800), run[1][0]);
-    EXPECT("run 2 is clipped to the texture end", (long long)tl, run[1][1]);
-    EXPECT("runs: more runs than room gives -1", -1, nvn_dirty_runs(NULL, tx, tl, stamp, run, 1, &nr));
-    rb[0x10] = 1;   // page 0, before the texture but on its first page
-    EXPECT("runs: the first page counts from the texture start", 0, nvn_dirty_runs(NULL, tx, tl, stamp, run, 4, &nr) == 4 ? (long long)run[0][0] : -1);
-    nvn_dirty_remove_range(rb);
-    munmap(rb, 5 * pg);
+    // Written pages but those holding a byte of the host's own write (nvn_dirty_since_except: a GPU copy's bytes the host wrote into a texture's storage, nvn_mtl.m pkg_copy_absorb)
+    uint8_t *st8 = mmap(NULL, 8 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (st8 == MAP_FAILED) { perror("mmap"); exit(2); }
+    nvn_dirty_add_range(st8, 8 * pg);
+    const void *span = nvn_dirty_span(st8, 8 * pg);
+    nvn_dirty_protect(st8, 8 * pg);
+    stamp = nvn_dirty_now();
+    uintptr_t ex[2][2] = {{(uintptr_t)st8 + pg + 0x100, (uintptr_t)st8 + 3 * pg - 0x100}, {(uintptr_t)st8 + 6 * pg + 0x800, (uintptr_t)st8 + 6 * pg + 0x900}}, first = 0;
+    EXPECT("nothing written: no page but the host's", 0, (long long)nvn_dirty_since_except(span, st8, 8 * pg, stamp, (const uintptr_t (*)[2])ex, 2, &first));
+    dm_guest_write_prepare(st8 + pg + 0x100, 2 * pg - 0x200); memset(st8 + pg + 0x100, 6, 2 * pg - 0x200);
+    dm_guest_write_prepare(st8 + 6 * pg + 0x800, 0x100); memset(st8 + 6 * pg + 0x800, 7, 0x100);
+    EXPECT("only the host's own writes: none counted", 0, (long long)nvn_dirty_since_except(span, st8, 8 * pg, stamp, (const uintptr_t (*)[2])ex, 2, &first));
+    EXPECT("the same writes without the exception: 3 pages", 3, (long long)nvn_dirty_since_except(span, st8, 8 * pg, stamp, NULL, 0, &first));
+    EXPECT("... the first of them is page 1", 1, (long long)((first - (uintptr_t)st8) / pg));
+    st8[4 * pg + 8] = 8;   // a game write beside them
+    first = 0;
+    EXPECT("a game write on another page is counted", 1, (long long)nvn_dirty_since_except(span, st8, 8 * pg, stamp, (const uintptr_t (*)[2])ex, 2, &first));
+    EXPECT("... and found there", 4, (long long)((first - (uintptr_t)st8) / pg));
+    EXPECT("a span the write is not in: none", 0, (long long)nvn_dirty_since_except(span, st8 + 5 * pg, 3 * pg, stamp, (const uintptr_t (*)[2])ex, 2, NULL));
+    EXPECT("an untracked span: SIZE_MAX", 1, nvn_dirty_since_except(NULL, &stamp, sizeof stamp, 0, NULL, 0, NULL) == SIZE_MAX);
+    nvn_dirty_remove_range(st8);
+    munmap(st8, 8 * pg);
     return g_fail != 0;
 }

@@ -106,6 +106,8 @@ static void amb_fill(amb_u *u, NSUInteger srcW, NSUInteger srcH, NSUInteger cx, 
 }
 
 // ---- Metal 4 (the live present): per ring slot targets and uniforms, resident for the queue ----
+// The ring slot of a present's UV buffer: the live present passes g_present_uv[slot], an offscreen present (screenshot) one of its own (-1: black bars, no timing)
+static int present_uv_slot(id<MTLBuffer> uvb) { for (int i = 0; i < 3; i++) if (g_present_uv[i] == uvb) return i; return -1; }
 static id<MTLTexture> g_amb_a[3], g_amb_b[3]; static NSUInteger g_amb_dw[3], g_amb_dh[3];
 static id<MTLBuffer> g_amb_ub[3];
 static id<MTL4CounterHeap> g_amb_heap;
@@ -133,8 +135,8 @@ static id<MTL4CounterHeap> amb_heap(void) {
     if (!g_amb_heap) MLOG("[RED] ambient letterbox GPU timing off: cannot create the counter heap: %s", er.localizedDescription.UTF8String);
     return g_amb_heap;
 }
-static void amb_ts(id<MTL4RenderCommandEncoder> en, int slot, int idx, int end) {   // idx 0 = A, 1 = B, 2 = final pass, 3 = EASU
-    id<MTL4CounterHeap> h = amb_heap(); if (!h) return;
+static void amb_ts(id<MTL4RenderCommandEncoder> en, int slot, int idx, int end) {   // idx 0 = A, 1 = B, 2 = final pass, 3 = EASU; slot -1 (an offscreen present) is not timed
+    id<MTL4CounterHeap> h = slot < 0 ? nil : amb_heap(); if (!h) return;
     [en writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed afterStage:end ? MTLRenderStageFragment : MTLRenderStageVertex intoHeap:h atIndex:(NSUInteger)(slot * AMB_TS + idx * 2 + end)];
 }
 static id<MTL4RenderCommandEncoder> amb_pass_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> dst, int slot, int idx) {
@@ -206,7 +208,7 @@ static void amb_feedback(int slot) {
     const MTL4TimestampHeapEntry *ts = d.length >= 8 * sizeof *ts ? d.bytes : NULL;
     if (!ts) return;
     double ms[4] = {0, 0, 0, 0};
-    for (int i = 0; i < 4; i++) { uint64_t a = ts[2 * i].timestamp, b = ts[2 * i + 1].timestamp; if (a && b && b >= a) ms[i] = (b - a) * g_pg_ns / 1e6; }
+    for (int i = 0; i < 4; i++) { uint64_t a = ts[2 * i].timestamp, b = ts[2 * i + 1].timestamp; if (a && b && b >= a) ms[i] = (b - a) * 1e3 / (double)[g_dev queryTimestampFrequency]; }
     [g_amb_heap invalidateCounterRange:r];
     pthread_mutex_lock(&g_amb_mu);
     for (int i = 0; i < 4; i++) if (ms[i] > 0) { g_amb_sum[i] += ms[i]; g_amb_n[i]++; g_amb_lsum[i] += ms[i]; g_amb_ln[i]++; }

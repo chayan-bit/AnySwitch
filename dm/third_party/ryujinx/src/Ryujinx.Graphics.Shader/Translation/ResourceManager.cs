@@ -52,10 +52,14 @@ namespace Ryujinx.Graphics.Shader.Translation
         public int LocalVertexIndexInstanceRateMemoryId { get; private set; }
         public int LocalGeometryOutputVertexCountMemoryId { get; private set; }
         public int LocalGeometryOutputIndexCountMemoryId { get; private set; }
+        public int LocalGeometryPrimitiveOpenMemoryId { get; private set; }
 
         public ShaderProperties Properties { get; }
 
         public ResourceReservations Reservations { get; }
+
+        // nxnative: TranslationFlags.MetalUniformBounds
+        public bool UniformBounds { get; set; }
 
         public ResourceManager(ShaderStage stage, IGpuAccessor gpuAccessor, ResourceReservations reservations = null)
         {
@@ -65,8 +69,10 @@ namespace Ryujinx.Graphics.Shader.Translation
             _stage = stage;
             _stagePrefix = GetShaderStagePrefix(stage);
 
-            _cbSlotToBindingMap = new SetBindingPair[18];
-            _sbSlotToBindingMap = new SetBindingPair[16];
+            // Constant buffer banks 0-17 (Maxwell's), 24: NVN2's push constants (c[24]), and 25: the uniform slots' sizes (Constants.NxUniformSizesBank)
+            _cbSlotToBindingMap = new SetBindingPair[Constants.NxUniformSizesBank + 1];
+            // Storage buffers the global-to-storage pass found: the stage's storage buffer table and, for compute, its uniform buffer address table (NVN 16 + 16 slots)
+            _sbSlotToBindingMap = new SetBindingPair[32];
             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
             _sbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
 
@@ -122,6 +128,20 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
+        // nxnative: the scratch of Ampere HMMA (InstEmitAmpereTensor.AHmma, helper dmsh_hmma16816_f16): a shared memory of its own, 256 words for each subgroup of the
+        // workgroup, made the first time an HMMA needs it
+        public int HmmaScratchMemoryId { get; private set; } = -1;
+
+        public int GetHmmaScratchMemoryId(int subgroups)
+        {
+            if (HmmaScratchMemoryId < 0)
+            {
+                HmmaScratchMemoryId = Properties.AddSharedMemory(new MemoryDefinition("hmma_scratch", AggregateType.Array | AggregateType.U32, 256 * subgroups));
+            }
+
+            return HmmaScratchMemoryId;
+        }
+
         public void SetVertexAsComputeLocalMemories(ShaderStage stage, InputTopology inputTopology)
         {
             LocalVertexDataMemoryId = AddMemoryDefinition("local_vertex_data", AggregateType.Array | AggregateType.FP32, Reservations.OutputSizePerInvocation);
@@ -137,7 +157,29 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 LocalGeometryOutputVertexCountMemoryId = AddMemoryDefinition("local_geometry_output_vertex", AggregateType.U32);
                 LocalGeometryOutputIndexCountMemoryId = AddMemoryDefinition("local_geometry_output_index", AggregateType.U32);
+                if (Reservations.GeometryInputFixed)
+                    LocalGeometryPrimitiveOpenMemoryId = AddMemoryDefinition("local_geometry_primitive_open", AggregateType.U32);
             }
+        }
+
+        // nxnative: the pool table entry a raw global memory helper chose last in this invocation (GlobalToStorage.TryGenerateRawStorageOp), one word for each helper, zero at the start
+        public int AddRawLastEntryMemory()
+        {
+            return Properties.AddLocalMemory(new MemoryDefinition($"gmem_last_{Properties.LocalMemories.Count}", AggregateType.U32, 1, zeroInit: true));
+        }
+
+        // nxnative: words 1 to 3 of a raw vector load (GlobalToStorage.TryGenerateRawStorageOp), one for the shader: the helper writes them and the loads of those words read them
+        // right after its call, before any other access
+        private int _rawVectorMemoryId = -1;
+
+        public int GetRawVectorMemory()
+        {
+            if (_rawVectorMemoryId < 0)
+            {
+                _rawVectorMemoryId = Properties.AddLocalMemory(new MemoryDefinition("gmem_vec", AggregateType.Array | AggregateType.U32, 3));
+            }
+
+            return _rawVectorMemoryId;
         }
 
         private int AddMemoryDefinition(string name, AggregateType type, int arrayLength = 1)
@@ -154,6 +196,56 @@ namespace Ryujinx.Graphics.Shader.Translation
                 _cbSlotToBindingMap[slot] = setAndBinding;
                 string slotNumber = slot.ToString(CultureInfo.InvariantCulture);
                 AddNewConstantBuffer(setAndBinding.SetIndex, setAndBinding.Binding, $"{_stagePrefix}_c{slotNumber}");
+
+                // nxnative: a game uniform slot's reads are bounded by the size the game bound (NoteUniformRead)
+                if (UniformBounds && slot >= Constants.NxFirstUniformSlot && slot < Constants.NxFirstUniformSlot + Constants.NxUniformSlots)
+                {
+                    Properties.AddBoundedConstantBuffer(setAndBinding.Binding, slot - Constants.NxFirstUniformSlot);
+                }
+            }
+
+            return setAndBinding.Binding;
+        }
+
+        // nxnative: each read of a game uniform slot, as the structured program meets it (TranslationFlags.MetalUniformBounds). A read at a fixed offset needs no code: the
+        // slot's extent of such reads goes to the host (BufferDescriptor.FixedSize), which gives a binding shorter than it zeros up to there. A read at a computed offset is
+        // compared with the slot's size in the size table, which only a shader with such a read declares (CodeGen/Spirv/Instructions.cs TryGenerateBoundedUniformLoad)
+        public void NoteUniformRead(int binding, bool fixedOffset, int word)
+        {
+            if (!Properties.BoundedConstantBuffers.TryGetValue(binding, out int sizeIndex))
+            {
+                return;
+            }
+
+            if (fixedOffset)
+            {
+                Properties.FixedUniformWords[sizeIndex] = Math.Max(Properties.FixedUniformWords[sizeIndex], word + 1);
+            }
+            else
+            {
+                Properties.UniformSizesBinding = GetUniformSizesBinding();
+            }
+        }
+
+        // nxnative: the size table, bank Constants.NxUniformSizesBank: one u32 a game uniform slot, in uint4 data[4] (a std140 array of u32 would take 16 bytes an element).
+        // Declared at the shader's first read of a game uniform slot at a computed offset (NoteUniformRead)
+        private int GetUniformSizesBinding()
+        {
+            int slot = Constants.NxUniformSizesBank;
+            SetBindingPair setAndBinding = _cbSlotToBindingMap[slot];
+
+            if (setAndBinding.Binding < 0)
+            {
+                setAndBinding = _gpuAccessor.CreateConstantBufferBinding(slot);
+                _cbSlotToBindingMap[slot] = setAndBinding;
+
+                StructureType type = new(new[]
+                {
+                    new StructureField(AggregateType.Array | AggregateType.Vector4 | AggregateType.U32, "data", (Constants.NxUniformSlots + 3) / 4),
+                });
+
+                Properties.AddOrUpdateConstantBuffer(new(BufferLayout.Std140, setAndBinding.SetIndex, setAndBinding.Binding, $"{_stagePrefix}_c{slot.ToString(CultureInfo.InvariantCulture)}", type));
+                SetUsedConstantBufferBinding(setAndBinding.Binding);
             }
 
             return setAndBinding.Binding;
@@ -395,6 +487,26 @@ namespace Ryujinx.Graphics.Shader.Translation
             return new SetBindingPair(setIndex, binding);
         }
 
+        // nxnative: the types other instructions gave the texture whose handle word is at the given offset of constant buffer cbufSlot (whatever sampler it was paired with),
+        // for BindlessElimination.TryTableHandle; arrays of handles are left out
+        public List<SamplerType> GetTextureTypes(int cbufSlot, int textureOffset, bool isImage)
+        {
+            List<SamplerType> types = new();
+
+            foreach ((TextureInfo info, TextureMeta meta) in isImage ? _usedImages : _usedTextures)
+            {
+                (int offset, _, _) = TextureHandle.UnpackOffsets(info.Handle);
+                (int slot, _) = TextureHandle.UnpackSlots(info.CbufSlot, cbufSlot);
+
+                if (info.ArrayLength == 1 && meta.AccurateType && slot == cbufSlot && offset == textureOffset)
+                {
+                    types.Add(meta.Type);
+                }
+            }
+
+            return types;
+        }
+
         private static TextureMeta MergeTextureMeta(TextureMeta meta, TextureMeta existingMeta)
         {
             meta.Set = existingMeta.Set;
@@ -464,7 +576,10 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 if (setAndBinding.Binding >= 0 && _usedConstantBufferBindings.Contains(setAndBinding.Binding))
                 {
-                    descriptors[descriptorIndex++] = new BufferDescriptor(setAndBinding.SetIndex, setAndBinding.Binding, slot);
+                    // nxnative: the bytes of a game uniform slot read at fixed offsets (NoteUniformRead)
+                    int fixedSize = Properties.BoundedConstantBuffers.TryGetValue(setAndBinding.Binding, out int sizeIndex) ? Properties.FixedUniformWords[sizeIndex] * 4 : 0;
+
+                    descriptors[descriptorIndex++] = new BufferDescriptor(setAndBinding.SetIndex, setAndBinding.Binding, slot, fixedSize);
                 }
             }
 

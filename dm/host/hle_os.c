@@ -54,6 +54,16 @@ static int detclock_cfg(void) {
 }
 static uint64_t wall_guest_ns(void) { return atomic_load(&g_gfz) ? atomic_load(&g_gfrozen) : now_ns() - atomic_load(&g_glag); }
 uint64_t guest_ns(void) { return atomic_load(&g_gdet_on) ? atomic_load(&g_gdet) : wall_guest_ns(); }
+uint64_t guest_ns_at_host_time(uint64_t host_ns) {
+    if (atomic_load(&g_gdet_on)) return atomic_load(&g_gdet);
+    if (atomic_load(&g_gfz)) return atomic_load(&g_gfrozen);
+    uint64_t lag = atomic_load(&g_glag);
+    return host_ns >= lag ? host_ns - lag : 0;
+}
+// The system counter on that clock: 19.2 MHz on the Switch, 31.25 MHz (32 ns a tick) on the Switch 2, whose SDK reads cntpct_el0 and converts with that rate
+// (nn::os::GetSystemTickFrequency answers 0x1dcd650, sdk 20.5.19 Ounce). Read at 19.2 MHz, every tick span a Switch 2 game measured came out 1.63 times too short, and the
+// same clock's GPU timestamps 1.63 times too late: Donkey Kong Bananza's frame-rate controller took its frame for seconds long and held it at 20 fps (present interval 3)
+uint64_t guest_ticks(void) { return dm_sdk_ounce() ? guest_ns() / 32 : guest_ns() * 12 / 625; }
 int dm_detclock_enabled(void) { return detclock_cfg() && atomic_load(&g_gdet_on); }
 void dm_guest_frame_tick(void) {
     crash_watch_frame();
@@ -79,7 +89,10 @@ static pthread_mutex_t g_gfz_mu = PTHREAD_MUTEX_INITIALIZER; static unsigned g_g
 // Home over the game (DM_SUSPEND_HOME) parks the guest the same way: the app stays in the foreground, but the game is just as suspended
 #define GFZ_PARK (1u << 1 | 1u << DM_SUSPEND_HOME)
 static pthread_cond_t g_gfz_cv = PTHREAD_COND_INITIALIZER; static _Atomic int g_gfz_bg;
+// Each read also counts on the reading thread: a run of yields whose passes read the clock is a wait for a time, which the yield back-off sleeps from its start (hle_thread.c thr_yield)
+__thread uint64_t dm_clock_reads;
 void guest_clock_read_wait(void) {
+    dm_clock_reads++;
     if (!atomic_load(&g_gfz_bg) || atomic_load(&dm_host_work)) return;
     pthread_mutex_lock(&g_gfz_mu);
     while (g_gfz_reasons & GFZ_PARK) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
@@ -122,12 +135,13 @@ HLE_FORCE("_ZN2nn6crypto36GenerateCryptographicallyRandomBytesEPvm", "csrng serv
 // The profile's game_env (KEY=VALUE, separated by spaces; DM_GAME_ENV overrides it, also from Documents/env.txt) answers getenv for those names; any other name goes to the SDK's own getenv
 static const char **g_env_kv;   // "KEY=VALUE" strings, NULL-terminated
 static void game_env_init(void) {
-    const char *e = getenv("DM_GAME_ENV"); if (!e) e = g_profile.game_env;
+    const char *e = getenv("DM_GAME_ENV"); if (!e) e = DM_GAME_ENV;
     int n = 0; for (const char *p = e; *p; p++) n += *p == '=';
     if (!(g_env_kv = calloc((size_t)n + 1, sizeof *g_env_kv))) die("game_env allocation failed");
     char *s = strdup(e); int k = 0;
     for (char *t = strtok(s, " "); t && k < n; t = strtok(NULL, " ")) if (strchr(t, '=')) g_env_kv[k++] = t;
     if (k) LOG("game environment (%s): %s", getenv("DM_GAME_ENV") ? "DM_GAME_ENV" : "game profile game_env", e);
+    else free(s);   // no accepted entry points into the copy
 }
 static const char *const *game_env(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, game_env_init); return g_env_kv; }
 HLE_FORCE("getenv", "the game profile's game_env answers its names; the SDK's own getenv (an empty environ on Horizon) the rest", char *, g_getenv, const char *name) {

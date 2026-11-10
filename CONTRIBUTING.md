@@ -20,6 +20,12 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Measure, then change.**
   Put the evidence for a fix (a crash address, a census, a measurement) in the code comment next to it.
 
+## Reporting a problem
+
+Open an issue with the bug report form, and attach the whole log of the run.
+`python3 scripts/bug_report.py <title ID | path to the .app | NSP folder>` (from upstream) collects the commit, shader chain version, device, settings and the Mac logs into one zip; add `--ios-log log.txt` for a log from the iPad or iPhone.
+It reads only text logs and settings, never game files or keys, and writes your home folder as `~`; still look at the zip before you attach it.
+
 ## Development setup
 
 You need a Mac with Apple silicon, [Xcode](https://apps.apple.com/app/xcode/id497799835) (the Metal and iOS toolchains), and Python 3.
@@ -52,7 +58,7 @@ brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 ```
 
-Build and test with plain `make`, for example `make -C dm/host/tests run`.
+Build and test with plain `make`, for example `make -C dm/host/tests GAME=<id> run`.
 Wrappers that queue heavy jobs on a particular machine are a personal convenience and are not part of the project.
 
 The packing script, its options, building by hand and per-game notes are in [docs/development.md](docs/development.md).
@@ -68,7 +74,7 @@ The packing script, its options, building by hand and per-game notes are in [doc
 | `dm/ios/` | The iOS app shell, the settings screen, `tools/build_ipa.sh` |
 | `dm/games/` | One game profile per title: `game.tsv` plus generated shader tables. See [dm/games/README.md](dm/games/README.md) |
 | `dm/third_party/` | Code from other projects with its licenses. See [THIRD_PARTY.md](THIRD_PARTY.md) |
-| `docs/` | Documentation, indexed in [docs/README.md](docs/README.md). `docs/internals` holds the porting and debugging notes |
+| `docs/` | Documentation, indexed in [docs/README.md](docs/README.md). `docs/agents` holds the porting and debugging notes |
 
 ## Running the tests
 
@@ -77,7 +83,7 @@ The rest needs a Metal device or the iOS toolchain and runs locally.
 
 | Suite | Command | CI |
 |---|---|---|
-| Host unit tests (no game files, a profile only) | `make -C dm/host/tests run` | yes |
+| Host unit tests (no game files, a profile only) | `make -C dm/host/tests GAME=<id> run` | yes |
 | Python: profiles | `python3 -I dm/games/tests/test_gpu_timestamps_default.py` | yes |
 | Python: ExeFS patches (needs `lz4`, `capstone`) | `python3 -I dm/tools/tests/test_exefs_patches.py` | yes |
 | Python: checkpoints | `python3 -I scripts/tests/test_checkpoint.py` | yes |
@@ -87,7 +93,6 @@ The rest needs a Metal device or the iOS toolchain and runs locally.
 | Texture sub-module | `make -C dm/gfx/tex/tests run` | local only |
 | Metal example | `make -C dm/gfx/metal run` | local only |
 | iOS front end (Foundation parts, Mac) | `make -C dm/ios/tests run` | local only |
-| Pipeline archive (`test_psoarch.py`, needs the `t_psoarch` binary and `metal-tt`) | `make -C dm/gfx/tests GAME=0100F43008C44000 t_psoarch`, then `python3 dm/gfx/tests/test_psoarch.py` | local only |
 
 `GAME` and `DM_GAME` take a game profile's title ID and have no default.
 The profile named above is only an example; any profile works for suites that read its tracked tables.
@@ -97,7 +102,7 @@ Add a test with every fix or feature, and fix a failing or flaky test you meet e
 
 1. Run `scripts/build_ipa_from_nsp.py` on the game's NSP folder with your own keys.
    With no matching profile it writes a survey (`<title ID>_survey/survey.md`) and a provisional profile outside the repository, then packs a best-effort IPA.
-2. Bring the game up with the [internals and porting notes](docs/internals/README.md): extraction, binary survey, host bring-up failures, graphics, debugging.
+2. Bring the game up with the [internals and porting notes](docs/agents/README.md): extraction, binary survey, host bring-up failures, graphics, debugging.
 3. Move the profile into `dm/games/<base game title ID>/` as described in [dm/games/README.md](dm/games/README.md): `game.tsv` (with a `name` row, which the README table and the Mac window title use) and the generated tables (`shader_map.tsv`, `shader_facts.tsv`, `shader_pairs.tsv`, `c1_full.tsv`, `cb_extent.tsv`, `pso_manifest.tsv`, `dmsh_chain.h`).
    The tables hold hashes, shader keys and file paths inside the game, never game bytes.
 4. Check `python3 dm/games/game.py list` shows it, and that the host tests still pass.

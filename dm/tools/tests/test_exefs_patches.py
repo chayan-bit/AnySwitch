@@ -130,7 +130,7 @@ class Rewriter(unittest.TestCase):
     def run_rewriter(self, patches=True):
         env = {k: v for k, v in os.environ.items() if k != 'DM_EXEFS_PATCHES'}
         if patches: env['DM_EXEFS_PATCHES'] = str(self.root / 'patches')
-        return subprocess.run([sys.executable, '-I', str(TOOLS / 'patch_nso.py'), str(self.root / 'main.nso'), str(self.root / 'out'), 'main'], capture_output=True, text=True, env=env)
+        return subprocess.run([sys.executable, str(TOOLS / 'patch_nso.py'), str(self.root / 'main.nso'), str(self.root / 'out'), 'main'], capture_output=True, text=True, env=env)
 
     def put_ips(self, recs): (self.root / 'patches' / f'{BID}.ips').write_bytes(ips(recs))
     def sites(self):

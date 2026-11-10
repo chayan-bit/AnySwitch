@@ -6,10 +6,11 @@ These pages are for working on it.
 | Page | Covers |
 |---|---|
 | [development.md](development.md) | Setup, how it is built, the packing script's options, building by hand on the Mac, adding a game, power and performance notes, per-game notes, the tools in `dm/tools` |
-| [settings.md](settings.md) | The in-app settings screen: opening it, controller navigation, the settings registry, per-game sections, tests |
+| [hearth-settings.md](hearth-settings.md) | The in-app settings screen: opening it, controller navigation, the settings registry, per-game sections, tests |
+| [settings.md](settings.md) | Upstream's launcher settings (`dm/games/settings.tsv`); AnySwitch's iOS app is Hearth, whose screen is in hearth-settings.md |
 | [exefs-patches.md](exefs-patches.md) | Applying community ExeFS patches (IPS, IPS32, `.pchtxt`) at build time: formats, matching, conflict rules |
 | [dev-control.md](dev-control.md) | Checkpoint saves and the dev input channel for driving a game frame by frame from the Mac |
-| [internals/README.md](internals/README.md) | Internals and porting notes: extraction, binary survey, host bring-up failure catalogue, graphics specifics, debugging recipes |
+| [agents/README.md](agents/README.md) | Internals and porting notes: extraction, binary survey, host bring-up failure catalogue, graphics specifics, debugging recipes |
 
 Documentation that lives next to the code:
 

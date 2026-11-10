@@ -388,7 +388,7 @@ static DmSettings *options_store(HearthGame *g) {
     DmSettings *s = [DmSettings storeForGame:g.titleId packRoot:g.root];
     if ([hearth_running_game().titleId isEqual:g.titleId]) return s;   // the live store: the game reported its capabilities (front_ios.m)
     NSDictionary *caps = [hearth_library() capsOf:g];
-    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : [caps[c] boolValue]; };   // before the first start: only the rows that need nothing
+    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_can_vibrate() : [caps[c] boolValue]; };   // before the first start: only the rows that need nothing
     return s;
 }
 DmSettingsVC *hearth_options(HearthGame *g, CGSize size, void (^gone)(void)) {

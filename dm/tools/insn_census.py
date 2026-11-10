@@ -4,24 +4,17 @@
 counter-timer reads (cntpct/cntvct/cntfrq), and any use of x18/w18 (Apple's kernel clobbers x18).
 Linear sweep over text, leaving out the data blocks patch_nso.py leaves alone (nso_code.py); literal pools / jump tables inside text can add a few false positives.
 Usage: insn_census.py <module.nso> [--sites <tsv out>]"""
-import collections, os, struct, sys
+import collections, os, sys
 import re
-import capstone, lz4.block
+import capstone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import nso_code
+import nso, nso_code
 
 X18 = re.compile(r'\b[xw]18\b')   # not '#0x18' immediates
 
 def image_of(path):   # (text segment offset, text size, the image of all three segments)
-    d = open(path, 'rb').read()
-    flags = struct.unpack_from('<I', d, 0xc)[0]
-    segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
-    csz = struct.unpack_from('<III', d, 0x60)
-    img = bytearray(segs[2][1] + segs[2][2])
-    for i, (fo, mo, sz) in enumerate(segs):
-        raw = d[fo:fo + csz[i]]
-        img[mo:mo + sz] = lz4.block.decompress(raw, uncompressed_size=sz) if flags >> i & 1 else raw
-    return segs[0][1], segs[0][2], img
+    m = nso.cli_read(path)
+    return m.segments[0][0], m.text_end, m.image
 
 def main():
     path = sys.argv[1]; sites_out = sys.argv[sys.argv.index('--sites') + 1] if '--sites' in sys.argv else None
@@ -42,6 +35,8 @@ def main():
             for reg in ('tpidrro_el0', 'tpidr_el0', 'cntpct_el0', 'cntvct_el0', 'cntfrq_el0', 'cntpctss_el0', 'cntvctss_el0'):
                 if reg in ops: kind = '%s %s' % (mn, reg); break
         if kind is None and X18.search(ops): kind = 'x18 use'
+        # sub sp, sp, xN: may leave sp misaligned, which Apple's kernel faults (patch_nso.py site_sp_align)
+        if kind is None and mn == 'sub' and re.fullmatch(r'sp, sp, x\d+', ops): kind = 'sub sp, sp, xN'
         if kind: c[kind] += 1; sites.append((addr, kind, mn, ops))
     print('%s: %d instructions decoded (%d undecodable words)' % (path, total, undecoded))
     if data: print('  data blocks left out: %s' % ', '.join('%#x..%#x' % b for b in data))

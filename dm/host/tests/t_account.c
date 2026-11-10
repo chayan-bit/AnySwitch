@@ -8,6 +8,8 @@ static int checks, fails;
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; printf("  ✗ line %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 void hle_signal_system_event(void *ev) { (void)ev; }
 int dm_guest_as_contains(uintptr_t a) { (void)a; return 0; }   // no guest address space: big-stack hooks run on the host stack
+void dm_applet_enter(const char *name) { (void)name; }   // upstream's hle_account.c now holds the game out of focus (DM_APPLET); no applet state here
+void dm_applet_leave(void) {}
 static int g_sel_ret; static char g_sel_uid[33];
 int front_user_select(char out[33]) { if (g_sel_ret > 0) memcpy(out, g_sel_uid, 33); return g_sel_ret; }   // the front end's picker: answer as configured
 
@@ -27,7 +29,7 @@ int main(void) {
     CHECK(h_acc_UserCount(&n) == RES_OK && n == 1, "count %d", n);
     CHECK(h_acc_ListAll(&n, out, 8) == RES_OK && n == 1 && same(out[0], uid_of(U1)), "list: the fixed user");
     h_acc_GetNick(nick, &out[0]); CHECK(!strcmp(nick, "Solo"), "nickname %s", nick);
-    CHECK(h_acc_LoadImage(&sz, buf, sizeof buf, &out[0]) != RES_OK && sz == 0, "no image");
+    CHECK(h_acc_LoadImage(&sz, buf, sizeof buf, &out[0]) == RES_OK && sz == 670 && buf[0] == 0xff && buf[1] == 0xd8, "no image: the built-in plain JPEG (upstream #1118)");
     // 2. three users (one line malformed, one with a bad uid), the second preselected
     f = fopen(users, "w");
     fprintf(f, "%s\tChayan\t\n", U1);
@@ -53,7 +55,7 @@ int main(void) {
     memset(buf, 0, sizeof buf);
     CHECK(h_acc_LoadImage(&sz, buf, sizeof buf, &u) == RES_OK && sz == 1000 && buf[999] == (999 & 0xff) && buf[1000] == 0, "copied");
     CHECK(h_acc_LoadImage(&sz, buf, 10, &u) != RES_OK, "too small a buffer fails");
-    u = uid_of(U3); CHECK(h_acc_LoadImage(&sz, buf, sizeof buf, &u) != RES_OK && sz == 0, "a missing file: no image");
+    u = uid_of(U3); CHECK(h_acc_LoadImage(&sz, buf, sizeof buf, &u) == RES_OK && sz == 670, "a missing file: the built-in plain JPEG");
     // 4. the user selector: the front end's choice, its cancel, or the preselected user when there is no front end window
     g_sel_ret = 1; memcpy(g_sel_uid, U3, 33); Uid s;
     CHECK(h_acc_ShowSel(&s, NULL) == RES_OK && same(s, uid_of(U3)), "picked the third user");

@@ -31,7 +31,7 @@ The deeper write-up is in [docs/development.md](docs/development.md) and [dm/gfx
   Repeat builds reuse every stage whose inputs did not change.
 - **In-app settings screen.**
   A gear button (or + and - held together on a controller) opens a screen styled after the Switch's System Settings, driven by touch, controller or keyboard.
-  Settings, their values and how they are stored: [docs/settings.md](docs/settings.md).
+  Settings, their values and how they are stored: [docs/hearth-settings.md](docs/hearth-settings.md).
 - **Ambient letterbox fill.**
   Where the picture does not fill the screen, as with a 16:9 game on a 4:3 iPad, the bars show a blurred, dimmed copy of the live frame instead of black.
   Brightness is a setting; `black` turns it off.
@@ -42,10 +42,10 @@ The deeper write-up is in [docs/development.md](docs/development.md) and [dm/gfx
   A connected game controller hides them.
 - **Precompiled pipeline archives.**
   Compiled GPU pipelines are shipped inside the IPA, so a known pipeline is created without a driver compile and the first-use stutter goes away.
-  Harvest, build and run-time lookup: [dm/gfx/README.md](dm/gfx/README.md#precompiled-pipeline-archives).
-- **Packed shader libraries.**
-  The translated shaders ship as a few hundred packed Metal libraries instead of one file per shader; the app opens them once in the background and keeps them, so a scene change no longer opens a library per new shader.
-  How packs are built, loaded and shipped: [dm/gfx/README.md](dm/gfx/README.md#shader-packs).
+  How the archive is made offline and opened: [docs/development.md](docs/development.md#the-pipeline-archive-made-offline).
+- **One shader library file.**
+  The translated shaders ship as one image, `b-<chain>.img`, that the app reads in place instead of one file per shader (upstream's design since the 2026-11 sync).
+  How it is built and shipped: [docs/development.md](docs/development.md#the-packing-script-in-detail).
 - **Community ExeFS patches.**
   IPS, IPS32 and `.pchtxt` patches are applied at build time: [docs/exefs-patches.md](docs/exefs-patches.md).
 - **For developers: checkpoint saves and a dev input channel.**
@@ -102,7 +102,7 @@ Test reports for a title or a build go in a [compatibility report](https://githu
 
 ## Requirements
 
-- A Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835), Python 3, and either [Nix](https://nixos.org/download) or [Homebrew](https://brew.sh).
+- A Mac with [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2 (the shader chain is locked to Xcode 27.2's Metal compiler, `dm/gfx/tools/dmsh_chain.lock`), Python 3, and either [Nix](https://nixos.org/download) or [Homebrew](https://brew.sh).
 - iOS or iPadOS 26 or later, on an iPad with an M1 chip or later, or an iPhone 15 Pro or newer (A17 Pro chip or later).
   The games' textures are BC-compressed, and older iPhones cannot read that format.
 - Your own game dump (NSP files; an XCI cartridge dump works for the base game) and the `prod.keys` of your console.
@@ -188,7 +188,7 @@ A connected game controller hides the touch controls and keeps every button.
 
 **Settings.**
 The gear button at the top (or + and - held together on a controller, or Cmd and comma on a keyboard) opens the settings screen.
-It changes the bars around the picture, how the picture is enlarged (Upscaling: Sharp by default for games that run at 30 fps, Bilinear for 60 fps ones), the flexible pipelines (on by default), the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/settings.md](docs/settings.md).
+It changes the bars around the picture, how the picture is enlarged (Upscaling: Sharp by default for games that run at 30 fps, Bilinear for 60 fps ones), the flexible pipelines (on by default), the size and opacity of the touch controls, the frame-rate counter, the game language, the player name, the volume, vibration and shake sensitivity: [docs/hearth-settings.md](docs/hearth-settings.md).
 A choice you make is kept over these defaults.
 
 **Shaking.**
@@ -221,7 +221,7 @@ It does not include, distribute or require any game, firmware or key.
 Contributions are welcome: bug fixes, new game profiles, compatibility reports, docs.
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 Report security problems as described in [SECURITY.md](SECURITY.md).
-The docs are indexed in [docs/README.md](docs/README.md), and the porting and debugging notes for contributors are in [docs/internals](docs/internals/README.md).
+The docs are indexed in [docs/README.md](docs/README.md), and the porting and debugging notes for contributors are in [docs/agents](docs/agents/README.md).
 
 ## Credits and acknowledgements
 

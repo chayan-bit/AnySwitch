@@ -24,12 +24,12 @@ static void show(const char *code, const char *what) {
 }
 void dm_err_show_result(Result r) { char c[16]; dm_err_code_result(r, c); show(c, "Result"); }
 
-HLE_FORCE_BIG("_ZN2nn3err9ShowErrorENS_6ResultE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowError, Result r) { dm_err_show_result(r); }
-HLE_FORCE_BIG("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowCode, uint64_t code) {
+HLE_FORCE_BIG("_ZN2nn3err9ShowErrorENS_6ResultE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowError, Result r) { DM_APPLET("error"); dm_err_show_result(r); }
+HLE_FORCE_BIG("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowCode, uint64_t code) { DM_APPLET("error");
     char c[16]; dm_err_code_pair((uint32_t)code, (uint32_t)(code >> 32), c); show(c, "ErrorCode");
 }
 // ErrorResultVariant: a state (1 Result, 2 ErrorCode, from memory, unverified) then the value; the raw bytes are logged so the layout can be checked on the first real call
-HLE_FORCE_BIG("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowVar, const uint32_t *v) {
+HLE_FORCE_BIG("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; Hearth's dialog (front_error)", void, h_err_ShowVar, const uint32_t *v) { DM_APPLET("error");
     LOG("err: ErrorResultVariant %08x %08x %08x %08x", v[0], v[1], v[2], v[3]);
     char c[16];
     if ((v[0] & 0xff) == 1) dm_err_code_result(v[1], c);
@@ -37,7 +37,7 @@ HLE_FORCE_BIG("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display
     else c[0] = 0;   // no code: the generic dialog
     show(c, "ErrorResultVariant");
 }
-HLE_FORCE_BIG("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch; Hearth's dialog (front_error)", void, h_err_AocVer, void) { show("", "add-on content version mismatch"); }
-HLE_FORCE_BIG("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version mismatch; Hearth's dialog (front_error)", void, h_err_AppVer, void) { show("", "game version mismatch"); }
+HLE_FORCE_BIG("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch; Hearth's dialog (front_error)", void, h_err_AocVer, void) { DM_APPLET("error"); show("", "add-on content version mismatch"); }
+HLE_FORCE_BIG("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version mismatch; Hearth's dialog (front_error)", void, h_err_AppVer, void) { DM_APPLET("error"); show("", "game version mismatch"); }
 // Pokémon Legends: Z-A (SDK 19): the application's own error screen (a number and two messages; the layout is not known, so only the generic dialog)
-HLE_FORCE_BIG("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; Hearth's dialog (front_error)", void, h_err_ShowApp, const void *arg) { (void)arg; show("", "ApplicationErrorArg"); }
+HLE_FORCE_BIG("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; Hearth's dialog (front_error)", void, h_err_ShowApp, const void *arg) { DM_APPLET("error"); (void)arg; show("", "ApplicationErrorArg"); }

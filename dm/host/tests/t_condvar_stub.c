@@ -6,13 +6,21 @@ struct dm_profile g_profile;   // the game profile (profile.m): the unit test ha
 uint64_t g_t0_ns;
 void crash_thread_init(void) {}
 void guest_thread_init(void) {}
-__attribute__((weak)) void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)sp; ((void (*)(uint64_t))entry)(arg); abort(); }   // t_sync: a C entry on the host stack, which must end in ExitThread (weak: t_gate_cost links the real one from entry.S)
+void guest_thread_set_id(uint64_t id) { (void)id; }
+void guest_gate_stack(int own_stack) { (void)own_stack; }
+// The notification scheduler test supplies a C entry for real thread SVCs.
+#ifndef DM_TEST_THREAD_ENTER
+void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)entry; (void)arg; (void)sp; abort(); }
+#endif
 void *guest_sym(const char *name) { (void)name; return NULL; }
+// The pause tests supply a module_of that reports guest code per thread (the SIGUSR2 handler declines to stop host code).
+#ifndef DM_TEST_MODULE_OF
 module_t *module_of(const void *p) { (void)p; return NULL; }
+#endif
 #include <mach/mach_time.h>
 uint64_t now_ns(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); return mach_absolute_time() * tb.numer / tb.denom; }
-_Atomic int g_test_det; _Atomic uint64_t g_test_guest_ns;   // t_sync drives the deterministic guest clock through these
-uint64_t guest_ns(void) { return g_test_det ? g_test_guest_ns : now_ns(); }
-int dm_detclock_enabled(void) { return g_test_det; }
+uint64_t guest_ns(void) { return now_ns(); }
+int dm_detclock_enabled(void) { return 0; }
+__thread uint64_t dm_clock_reads;   // guest clock reads per thread (hle_os.c in the host; thr_yield reads it)
 __thread _Atomic int dm_host_work;   // referenced by hle_thread.c; in the host it is defined in hle_nvn.c
-pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;   // dm.h declares them; the host defines them in loader.c
+pthread_key_t g_key18;   // read by hle_thread.c's SVC entry and pause signal; in the host it is defined in loader.c (never created here: those paths do not run)

@@ -68,6 +68,31 @@ def walk(root):
     return dirs, files
 
 
+def walk_image(img):
+    """walk() over a RomFS image (dm/tools/romfs.py: DMROMFS1, the NSP script's RomFS.img): the same lists, each file a range of the image (off, size); an image's directories are sorted by name already."""
+    sys.path.insert(0, str(HERE.parent))
+    import romfs
+    m, phys = romfs.Image(img), os.fsencode(os.path.abspath(img))
+    dirs, files, ks = [dict(name=b'', parent=0, phys=phys)], [], [0]
+    for i, k in enumerate(ks):   # ks grows while it is walked, as dirs does
+        a, b, _, _, t, _ = m.entry(k)
+        subs = [j for j in range(a, a + b) if not m.entry(j)[4]]
+        fs = [j for j in range(a, a + b) if m.entry(j)[4]]
+        dirs[i]['dir_first'], dirs[i]['dir_count'] = len(dirs), len(subs)
+        dirs[i]['file_first'], dirs[i]['file_count'] = len(files), len(fs)
+        dirs += [dict(name=m.name(j), parent=i, phys=phys) for j in subs]; ks += subs
+        files += [dict(name=m.name(j), parent=i, phys=phys, off=m.entry(j)[0], size=m.entry(j)[1]) for j in fs]
+    return dirs, files
+
+
+def size_of(f):
+    return f['size'] if 'off' in f else os.stat(f['phys']).st_size
+
+
+def scan_line(f):   # romstore_tool scan's input: a path, or "\1<offset> <length> <path>" for a range of an image
+    return f['phys'] if 'off' not in f else b'\1%d %d ' % (f['off'], f['size']) + f['phys']
+
+
 def guest_path(dirs, f):
     parts, d = [f['name']], f['parent']
     while d: parts.append(dirs[d]['name']); d = dirs[d]['parent']
@@ -77,7 +102,7 @@ def guest_path(dirs, f):
 def scan(files, avg):
     """Per file, its chunk list [(sha, length)] from romstore_tool scan."""
     p = subprocess.Popen([tool(), 'scan', str(avg)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    feeder = threading.Thread(target=lambda: (p.stdin.write(b'\0'.join(f['phys'] for f in files) + b'\0'), p.stdin.close()))
+    feeder = threading.Thread(target=lambda: (p.stdin.write(b'\0'.join(scan_line(f) for f in files) + b'\0'), p.stdin.close()))
     feeder.start()
     data = p.stdout.read(); feeder.join()
     if p.wait(): sys.exit('romstore_tool scan failed')
@@ -125,7 +150,7 @@ class Source:
             if len(fds) >= 32:
                 for k in list(fds)[:16]: os.close(fds.pop(k))
             fd = fds[fi] = os.open(self.files[fi]['phys'], os.O_RDONLY)
-        b = os.pread(fd, ln, off)
+        b = os.pread(fd, ln, off + self.files[fi].get('off', 0))
         if len(b) != ln: sys.exit(f'short read: {os.fsdecode(self.files[fi]["phys"])}')
         return b
 
@@ -137,8 +162,8 @@ def pad8(b):
 def build(a):
     import zstandard
     t0 = time.time()
-    dirs, files = walk(a.romfs)
-    total = sum(os.stat(f['phys']).st_size for f in files)
+    dirs, files = walk_image(a.romfs) if os.path.isfile(a.romfs) else walk(a.romfs)
+    total = sum(size_of(f) for f in files)
     say(f'walk: {len(dirs)} directories, {len(files)} files, {total / 1e9:.3f} GB')
     lists = scan(files, a.avg)
     ids, where, refs = {}, [], []   # unique chunk number per SHA-256, (file, offset, length) of its first occurrence, per file [(end, chunk)]
@@ -148,7 +173,7 @@ def build(a):
             c = ids.get(sha)
             if c is None: c = ids[sha] = len(where); where.append((fi, off, ln))
             off += ln; r.append((off, c))
-        if off != os.stat(files[fi]['phys']).st_size: sys.exit(f'scan does not cover {os.fsdecode(files[fi]["phys"])}')
+        if off != size_of(files[fi]): sys.exit(f'scan does not cover {os.fsdecode(files[fi]["phys"])}')
         refs.append(r)
     del lists
     unique = sum(w[2] for w in where)

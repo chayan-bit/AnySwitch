@@ -40,7 +40,7 @@ static int entry_count(void) {
     h_fs_ReadDirectory(&n, e, h, 32); h_fs_CloseDirectory(h); return (int)n;
 }
 static void *create_race(void *p) { return (void *)(uintptr_t)h_fs_CreateFile(p, 0); }
-module_t g_mod[MAX_MOD]; int g_nmod;   // Module table (MountSave picks save fixes by main build ID): this unit test loads no modules
+module_t *g_mod; int g_nmod;   // Module table (MountSave picks save fixes by main build ID): this unit test loads no modules
 struct dm_profile g_profile;   // no game profile: every value is 0
 int dm_account_is_preselected(const void *uid) { return !uid || ((const unsigned long long *)uid)[0] == 1; }   // hle_account.c: Uid {1, x} or none is the preselected user
 int main(void) {
@@ -115,3 +115,8 @@ int main(void) {
 }
 // the guest address space (hle_svc.c): the unit test has none, so every stack is a host stack (hle_bigstack.c)
 int dm_guest_as_contains(uintptr_t a) { (void)a; return 0; }
+// main's imports (loader.c) and the MiiModel stand-in (hle_mii.c): no main module, no system data
+void *guest_sym(const char *name) { (void)name; return NULL; }
+int dm_game_imports(const char *prefix) { (void)prefix; return 0; }
+int dm_mii_standin(const char *dir) { (void)dir; return 0; }
+void dm_thread_service_request(void) {}

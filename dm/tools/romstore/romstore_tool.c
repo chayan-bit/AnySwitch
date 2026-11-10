@@ -1,5 +1,5 @@
 // Helper of romstore.py (the chunk store builder) and its check, in C for speed:
-//   romstore_tool scan <avg chunk size> < paths        cuts each file (NUL-separated paths on stdin) into content-defined chunks and writes one 40-byte record
+//   romstore_tool scan <avg chunk size> < paths        cuts each file (NUL-separated paths on stdin; "\1<offset> <length> <path>" names a range of a RomFS image) into content-defined chunks and writes one 40-byte record
 //                                                      per chunk to stdout: u32 file number, u32 length, SHA-256
 //   romstore_tool verify <store> <RomFS dir> [threads]  reads every file of the directory back through the host's reader (dm/host/romstore.c): whole-file SHA-256,
 //                                                      then random reads (offsets, lengths across chunk ends, short reads at the end of the file) compared byte for byte;
@@ -36,11 +36,21 @@ static size_t cut(const uint8_t *p, size_t n, uint32_t avg) {
     for (; i < n; i++) { h = (h << 1) + G[p[i]]; if (!(h & ml)) return i + 1; }
     return n;
 }
-static const uint8_t *map_file(const char *path, size_t *n) {
+// A file, or "<offset> <length> <path>" after a 0x01 byte: that range of a RomFS image (romstore.py walk_image). *base is what to munmap, *bn its length
+static const uint8_t *map_file(const char *line, size_t *n, void **base, size_t *bn) {
+    unsigned long long off = 0, len = 0; int at = 0; const char *path = line;
+    if (line[0] == 1) { if (sscanf(line + 1, "%llu %llu %n", &off, &len, &at) != 2 || !at) { fprintf(stderr, "romstore_tool: bad range line\n"); exit(1); } path = line + 1 + at; }
     int fd = open(path, O_RDONLY); struct stat st;
     if (fd < 0 || fstat(fd, &st)) { fprintf(stderr, "romstore_tool: %s: %s\n", path, strerror(errno)); exit(1); }
-    *n = (size_t)st.st_size; const uint8_t *p = (const uint8_t *)"";
-    if (*n && (p = mmap(NULL, *n, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) { fprintf(stderr, "romstore_tool: mmap %s: %s\n", path, strerror(errno)); exit(1); }
+    if (line[0] != 1) len = (unsigned long long)st.st_size;
+    else if (off > (unsigned long long)st.st_size || len > (unsigned long long)st.st_size - off) { fprintf(stderr, "romstore_tool: range past the end of %s\n", path); exit(1); }
+    size_t pg = (size_t)getpagesize(), lead = (size_t)(off % pg);
+    *n = (size_t)len; *bn = len ? lead + (size_t)len : 0; *base = NULL;
+    const uint8_t *p = (const uint8_t *)"";
+    if (*bn) {
+        if ((*base = mmap(NULL, *bn, PROT_READ, MAP_PRIVATE, fd, (off_t)(off - lead))) == MAP_FAILED) { fprintf(stderr, "romstore_tool: mmap %s: %s\n", path, strerror(errno)); exit(1); }
+        p = (const uint8_t *)*base + lead;
+    }
     close(fd); return p;
 }
 static int scan(uint32_t avg) {
@@ -50,13 +60,13 @@ static int scan(uint32_t avg) {
     char *line = NULL; size_t cap = 0; ssize_t len; uint32_t fi = 0; uint64_t bytes = 0;
     while ((len = getdelim(&line, &cap, '\0', stdin)) > 0) {
         if (line[len - 1] == '\0') len--;
-        line[len] = 0; size_t n; const uint8_t *p = map_file(line, &n);
-        madvise((void *)p, n, MADV_SEQUENTIAL);
+        line[len] = 0; size_t n, bn; void *base; const uint8_t *p = map_file(line, &n, &base, &bn);
+        if (bn) madvise(base, bn, MADV_SEQUENTIAL);
         for (size_t o = 0, c; o < n; o += c) {
             c = cut(p + o, n - o, avg); uint32_t c32 = (uint32_t)c; uint8_t d[32]; CC_SHA256(p + o, c32, d);
             if (fwrite(&fi, 4, 1, stdout) != 1 || fwrite(&c32, 4, 1, stdout) != 1 || fwrite(d, 32, 1, stdout) != 1) { perror("romstore_tool: write"); return 1; }
         }
-        if (n) munmap((void *)p, n);
+        if (bn) munmap(base, bn);
         bytes += n; if (++fi % 1000 == 0) fprintf(stderr, "scan %u files %.2f GB\n", fi, bytes / 1e9);
     }
     free(line);
@@ -79,7 +89,7 @@ static uint64_t rnd(uint64_t *s) { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17
 static void verify_file(const vfile *f, uint8_t *buf, size_t bufn, uint64_t seed) {
     uint32_t idx; int is_dir;
     if (!romstore_lookup(g_st, f->guest, &idx, &is_dir) || is_dir) { bad("not in the store", f->guest); return; }
-    size_t n; const uint8_t *p = map_file(f->phys, &n);
+    size_t n, bn; void *base; const uint8_t *p = map_file(f->phys, &n, &base, &bn);
     if (romstore_file_size(g_st, idx) != n) { bad("size", f->guest); goto out; }
     uint8_t want[32], got[32]; CC_SHA256_CTX c; CC_SHA256(p, (CC_LONG)n, want); CC_SHA256_Init(&c);
     for (uint64_t o = 0; o < n;) {                                      // whole file, in buffer-sized reads
@@ -102,7 +112,7 @@ static void verify_file(const vfile *f, uint8_t *buf, size_t bufn, uint64_t seed
     if (romstore_read(g_st, idx, n, buf, 16) != 0) bad("read at the end of the file", f->guest);
     atomic_fetch_add(&g_bytes, n);
 out:
-    if (n) munmap((void *)p, n);
+    if (bn) munmap(base, bn);
 }
 static void *verify_worker(void *arg) {
     size_t bufn = 8u << 20; uint8_t *buf = malloc(bufn); if (!buf) { perror("malloc"); exit(1); }

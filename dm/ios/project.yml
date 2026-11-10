@@ -1,4 +1,4 @@
-# iOS project (xcodegen); the app name, bundle ID and category come from the game profile (dm/games/<id>/game.tsv, passed by build_ipa.sh through environment variables). tools/build_ipa.sh generates Gen/ first (host source links, the embedded rewritten modules, host tables), then packs the app with the iOS shader libraries (DmIOS.app/msl) and the RomFS (tools/pack_ipa.py).
+# iOS project (xcodegen): Hearth, the one app that boots game packs. tools/build_ipa.sh generates Gen/ first (host source links, the embedded rewritten modules, the bundled pack), then packs the app with the pack's shader libraries and add-on content (tools/pack_ipa.py).
 name: DmIOS
 options:
   bundleIdPrefix: ${DM_BUNDLE_ID}
@@ -12,7 +12,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      - Sources
+      - path: Sources
+        excludes: [Info.plist, "*.swift"]   # Info.plist: generated under Gen/. The Swift files are upstream's single-game launcher and in-game menu, which Hearth (dm/ios/Hearth) replaces: kept in the tree, not built (docs/sync-upstream-2026-11.md)
       - path: Hearth          # the shell: library, Home, launch and close (dm/ios/Hearth)
         excludes: ["Assets/**"]   # build-time sources (the app icon renderer, run by build_ipa.sh), not app code
       - path: Gen/embed.S
@@ -28,7 +29,7 @@ targets:
     dependencies:
       - sdk: libAppleArchive.tbd   # Hearth/HearthImport.m extracts imported games (Apple Archive)
     info:
-      path: Sources/Info.plist
+      path: Gen/Info.plist
       properties:
         CFBundleDisplayName: Hearth   # the shell; each game's name comes from its pack (meta/control.nacp). Per-game defaults live in the pack's profile/settings.json, not here
         CFBundleURLTypes:
@@ -36,13 +37,13 @@ targets:
             CFBundleURLSchemes: [hearth]   # hearth://certificate callback (step 9)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
-        UILaunchStoryboardName: ""
+        UILaunchScreen: {}
         UIFileSharingEnabled: true          # Documents (log.txt, saves) visible in the Files app
         LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
-        UIRequiresFullScreen: true
+        UIRequiresFullScreen: true          # Hearth's layouts are landscape only (upstream's portrait and iPad-window layouts are not ported)
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
         LSApplicationCategoryType: ${DM_APP_CATEGORY}   # game profile app_category
@@ -68,7 +69,7 @@ targets:
       TARGETED_DEVICE_FAMILY: "1,2"
       ENABLE_BITCODE: NO
       GCC_C_LANGUAGE_STANDARD: gnu11
-      OTHER_CFLAGS: $(inherited) -mcpu=apple-a18   # The host assembly contains LSE atomic instructions, which the default baseline does not accept
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-m1   # the oldest chip the app supports (an M1 iPad; iPhones from the A17 Pro, as the games need BC textures), the Mac build's default too: it has the LSE atomics the host assembly uses, which the default baseline does not accept. Not newer: dav1d turns on every feature the target promises, and the A18 target (its I8MM) stopped an M1 iPad with SIGILL in the AV1 decoder (dm/ios/tests/test_cpu_target.py)
       CLANG_ENABLE_OBJC_ARC: YES
       DEBUG_INFORMATION_FORMAT: dwarf
       GCC_WARN_INHIBIT_ALL_WARNINGS: YES

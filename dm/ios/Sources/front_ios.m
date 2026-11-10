@@ -56,7 +56,7 @@ static void front_ios_settings(void) {
     dm_gamepad_idle_fade([s boolForKey:@"DM_CONTROLS_IDLE_FADE"]);
     dm_gamepad_shake_g([s doubleForKey:@"DM_SHAKE_G"]); dm_audio_volume([s doubleForKey:@"DM_VOLUME"]);
     dm_haptics_enable([s boolForKey:@"DM_VIBRATION"]); dm_haptics_strength((float)[s doubleForKey:@"DM_VIBRATION_STRENGTH"]); dm_haptics_start();
-    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_available() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
+    s.capabilities = ^BOOL(NSString *c) { return [c isEqualToString:@"haptics"] ? dm_haptics_can_vibrate() : dm_capability(c.UTF8String) != 0; };   // the loaded game decides which rows exist (frame cap, render scale), the hardware the vibration rows
     LOG("front end: letterbox %s, controls layout %s, controls scale %.2f, opacity %.2f", g_ambient ? "ambient" : "black", g_controls_auto ? "auto (in the bars when they fit)" : "overlay", g_controls_scale, g_controls_opacity);
 }
 static void front_ios_power_watch(void);
@@ -255,7 +255,8 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
-UIViewController *front_ios_root(void) { return [DmGameVC new]; }
+// The game takes the controller when its screen is made: Home takes it back while "Who is playing?" waits for an answer, so the launch's own hand-over came too early
+UIViewController *front_ios_root(void) { dm_gamepad_set_capture(nil); return [DmGameVC new]; }
 
 // The capture album (front.h, hle_album.c), on a game thread. The game's picture is copied before returning (the game reuses its buffer) and encoded in the background
 int front_album_save(const void *rgba, int w, int h) {
@@ -310,6 +311,13 @@ static UILabel *front_ios_fps_label(void) {
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
+// Offline HTML pages (web_apple.m, upstream's): the page's view goes over the game view and under the gamepad, as upstream's front_ios.m places it
+void front_web_attach(UIView *box) {
+    DmGameVC *vc = g_game_vc; UIView *v = vc.view; box.frame = v.bounds;
+    if (vc.game) [v insertSubview:box aboveSubview:vc.game]; else [v addSubview:box];
+}
+void front_web_detach(UIView *box) { (void)box; }
+int front_ctrl_support(int min, int max) { (void)min; (void)max; return -1; }   // front.h: Hearth has no controller applet prompt (upstream's Mac front end has one): canceled at once, as the host does without a window
 
 // Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
