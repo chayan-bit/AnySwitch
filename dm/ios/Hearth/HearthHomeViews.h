@@ -3,6 +3,10 @@
 #import "HearthLibrary.h"
 #import "HearthTheme.h"
 
+// A full-screen layer (Home over the game, a sheet over Home) hides the views it covers from VoiceOver and the UI tree (accessibilityViewIsModal alone
+// leaves them in the tree); covered NO before the layer goes gives them back
+void hearth_ax_cover(UIView *layer, BOOL covered);
+
 NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows when its game cannot start ("Rebuild needed", "Needs signing"), nil when it can
 
 @interface HearthTile : UIControl
@@ -13,6 +17,7 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @property (nonatomic) BOOL chosen;              // Home's focus is on it: grows a little and shows the game's name above it (not UIKit's own `focused`)
 - (void)setChosen:(BOOL)chosen animated:(BOOL)animated;
 @property (nonatomic) BOOL playing;             // the game paused under Home: its state line says Playing
+@property (nonatomic) double importDone;        // a placeholder (HEARTH_IMPORTING): 0...1, shown as a ring over the art and "Importing 42%"
 @end
 
 @interface HearthRoundButton : UIControl
@@ -23,5 +28,6 @@ NSString *hearth_state_line(HearthGame *g);   // the short line a tile shows whe
 @interface HearthTopBar : UIView
 - (void)setUsers:(NSArray<UIImage *> *)pictures names:(NSArray<NSString *> *)names;   // the users' pictures as circles at the left (one user: with the name)
 @property (nonatomic, copy) void (^onUser)(NSInteger index);   // a picture was tapped
+- (void)setNotice:(NSString *)notice;   // an amber line left of the clock (Hearth's signing ends soon), nil for none
 - (void)setMetrics:(HearthMetrics)m;   // avatar size and fonts of this screen
 @end

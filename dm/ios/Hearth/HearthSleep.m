@@ -19,7 +19,7 @@ static void wake(const char *by) {
     [NSNotificationCenter.defaultCenter removeObserver:g_active]; g_active = nil;
     UIApplication.sharedApplication.idleTimerDisabled = g_idle;
     dm_gamepad_set_capture(nil);
-    [g_back makeKeyWindow]; g_back = nil;
+    g_back.accessibilityElementsHidden = NO; [g_back makeKeyWindow]; g_back = nil;
     void (^w)(void) = g_woke; g_woke = nil;
     if (w) w();
 }
@@ -53,6 +53,7 @@ void hearth_sleep(void (^woke)(void)) {
     g_win.overrideUserInterfaceStyle = g_back.overrideUserInterfaceStyle;
     g_win.rootViewController = [HearthSleepVC new];
     [g_win makeKeyAndVisible];
+    g_back.accessibilityElementsHidden = YES;   // the black window is another window: VoiceOver and the UI tree would still reach Home or the game behind it
     UIApplication.sharedApplication.idleTimerDisabled = NO;   // iPadOS may lock now, after its own auto-lock time
     // Unlocking makes the app active again, and the game's front end then turns the idle timer off (front_ios_focus_event): turn it back on while asleep
     g_active = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {

@@ -1,5 +1,6 @@
 // In-app settings registry and store (see DmSettings.h).
 #import "DmSettings.h"
+#import "DmControlMap.h"
 
 NSNotificationName const DmSettingDidChangeNotification = @"DmSettingDidChange";
 
@@ -138,7 +139,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
 }
 @end
 
-@implementation DmSection { NSString *_ident, *_title, *_icon; NSArray<DmSetting *> *_settings; }
+@implementation DmSection { NSString *_ident, *_title, *_icon; NSArray<DmSetting *> *_settings; BOOL _listed; }
 - (void)keepOnly:(NSArray<DmSetting *> *)k { _settings = k; }
 + (instancetype)sectionFromDictionary:(NSDictionary *)d {
     NSMutableArray *list = [NSMutableArray array];
@@ -147,7 +148,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
         if (s) [list addObject:s]; else say([NSString stringWithFormat:@"skipped an entry of section %@: %@", d[@"id"], e]);
     }
     if (!list.count || ![d[@"id"] length] || ![d[@"title"] length]) return nil;
-    DmSection *s = [DmSection new]; s->_ident = d[@"id"]; s->_title = d[@"title"]; s->_icon = d[@"icon"] ?: @"gearshape"; s->_settings = list; return s;
+    DmSection *s = [DmSection new]; s->_ident = d[@"id"]; s->_title = d[@"title"]; s->_icon = d[@"icon"] ?: @"gearshape"; s->_settings = list; s->_listed = ![d[@"listed"] isEqual:@NO]; return s;
 }
 @end
 
@@ -171,7 +172,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
     for (NSArray *l in languages) [langOptions addObject:@{@"value": l[0], @"label": l[1]}];
     NSMutableDictionary *ambient = [slider(@"DM_AMBIENT_LEVEL", @"DMAmbientLevel", @"Ambient brightness", @"How bright the blurred picture in the bars is.", 0.2, 1.0, 0.05, @"0.5") mutableCopy];
     ambient[@"enabledWhen"] = @{@"key": @"DM_LETTERBOX", @"notEquals": @"black"};   // black bars have no picture in them to brighten
-    return withScopes(@[
+    return withScopes([@[
         @{@"id": @"display", @"title": @"Display", @"icon": @"display", @"settings": @[
             @{@"key": @"DM_LETTERBOX", @"plistKey": @"DMLetterbox", @"label": @"Bars around the picture", @"type": @"choice", @"default": @"ambient",
               @"detail": @"Ambient fills the bars with a soft blurred copy of the picture. Black leaves them plain black.",
@@ -227,7 +228,7 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
             @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",
               @"options": @[@{@"value": @"system", @"label": @"Same as the device"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
               @"detail": @"Light or dark menus, or follow the device's own appearance."}]},
-    ]);
+    ] arrayByAddingObjectsFromArray:dm_control_map_sections()]);   // the button maps (DmControlMap.h), on Hearth's Controllers page
 }
 // Where each built-in entry's player choice lives (docs/settings.md); an entry not named here is system
 + (NSDictionary<NSString *, NSString *> *)builtinScopes {

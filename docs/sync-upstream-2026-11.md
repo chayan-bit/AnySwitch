@@ -114,6 +114,22 @@ The merge keeps ours and makes upstream's code compile unchanged on it:
 | dm/tools/tests/test_host_msl.py | the game_profile.h change case removed from the decoder-key test | our generic host compiles no profile; a header change is not a host input |
 | .github/ISSUE_TEMPLATE/bug_report.yml, feature_request.yml | field labels What happened / What is missing (old wording moved to the description) | upstream's issue-areas workflow tells an issue's kind by these form headings |
 
+## Hearth P3 merged on top
+
+Branch `worktree-agent-a47f1a7e301912ec1` (Hearth P3: the Gallery, the Controllers page and keyboard play, import progress and the signing reminder, the VoiceOver fixes for full-screen layers, and 59753a8's hand-back of the controller when the game's screen is made) is what the iPad runs; it was merged into this branch after the upstream merge, as a merge commit of its own.
+Every P3 feature is kept on top of upstream's code:
+
+| File | Decision | Why |
+| --- | --- | --- |
+| dm/gfx/nvn/nvn_mtl.m | upstream's tex_desc, without P3's mip-level `return nil` | upstream (e72991d8) clamps a description with more levels than its size holds, the same case (Sword's 8x8 texture with 8 levels) |
+| dm/gfx/tests/t_rtheap.m | stays deleted | the render-target heap test went with the upstream merge; P3 only added the mip-level case, which upstream's clamp now covers |
+| dm/host/front_mac.m | upstream's front end (controller players, prompt, focus, fullscreen, Cheats menu, text box rules) with P3's key table: keymap.h rows and DM_MAP_KEY_*, modifier keys through flagsChanged, Space's shake only while no row uses it, and the UTF-8 text box info | keyboard play is one table for the Mac and iPadOS; upstream's Shift+arrow right stick is kept on top of the map's P ; L ' right stick |
+| dm/host/Makefile | upstream's link line plus keymap.c / keymap.h | the Mac host's keyboard reads the shared table |
+| dm/host/tests/Makefile | t_keymap added to the AnySwitch tail (run_anyswitch) | P3's key table test |
+| dm/ios/Hearth/HearthLibrary.h | P3's HEARTH_IMPORTING with the split HEARTH_UID | both are needed; the split keeps docs_patches.py from reading the UID as a build ID |
+| dm/ios/Sources/DmGamepad.m | P3's remappable read (DmControlMap) plus upstream's rumble routing to the controller in use | Controllers page remaps buttons by position; rumble follows the controller |
+| dm/ios/tests/Makefile | P3's t_settings (DmControlMap, keymap), t_controls and t_notify; no t_haptics | t_haptics and DmHapticMap.h went with the upstream rumble (hle_haptics.c) |
+
 ## Decisions for the user
 
 Each of these keeps AnySwitch's behaviour for now; none was decided here.
@@ -143,3 +159,14 @@ The 7 Python files that fail fail the same way on a clean checkout of upstream `
 Four of the 176 (test_device_gpu, test_gen_embed, test_pack_manifest, test_romstore) are scripts rather than unittest cases: `python -m unittest` reports "no tests ran" for them, and run directly they pass.
 
 The shader chain header is current: `dmsh_chain.py` prints `bc8830d4ba5a`, as `dm/gfx/nvn/dmsh_chain.h` holds.
+
+### After the Hearth P3 merge
+
+| Suite | Result |
+| --- | --- |
+| Mac host build | builds (`make -C dm/host`) |
+| Host unit tests | 54 suites, 2608 checks, 0 failed (t_keymap 35 checks included) |
+| Metal (gfx) tests | 163 suites, 75341 checks, 1 failed: t_feedback's "with nothing running: a commit", a timing check in upstream's unchanged t_feedback.m (this merge changes nothing under dm/gfx); run alone 8 times it failed once |
+| iOS unit tests | t_settings 2798, t_library 88, t_import 53, t_home_focus 98, t_users 42, t_gallery 16, t_controls 50, t_notify 10 checks, 0 failed; DEVICE_GPU and BUILD_DEFAULTS OK |
+| iOS compile check | 310 files, 0 failed |
+| iOS device build | BUILD SUCCEEDED (Release, generic iOS device, unsigned; not installed) |

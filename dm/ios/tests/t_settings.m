@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import "DmSettings.h"
 #import "DmPalette.h"
+#include "keymap.h"
 
 static int g_fail, g_n;
 #define CHECK(c, ...) do { g_n++; if (!(c)) { g_fail++; printf("FAIL line %d: %s  ", __LINE__, #c); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -442,6 +443,9 @@ int main(void) { @autoreleasepool {
           @"DM_OPMODE": @"both", @"DM_CONTROLS_LAYOUT": @"both", @"DM_PAD_LAYOUT": @"game", @"DM_CONTROLS_SCALE": @"system", @"DM_CONTROLS_OPACITY": @"system", @"DM_CONTROLS_IDLE_FADE": @"system",
           @"DM_SHAKE_G": @"system", @"DM_VIBRATION": @"both", @"DM_VIBRATION_STRENGTH": @"system", @"DM_VOLUME": @"system", @"DM_FPS_TARGET": @"game", @"DM_PSO_FLEX": @"game", @"DM_SHOW_FPS": @"system",
           @"DM_LANG": @"both", @"DM_NICK": @"system", @"DM_APPEARANCE": @"system"};
+      NSMutableDictionary *withMaps = [want mutableCopy];   // the button maps (DmControlMap.h): 16 controller rows and 24 keyboard rows, all system
+      for (int r = 0; r < DM_KEYMAP_ROWS; r++) { if (r < DM_KEYMAP_BUTTONS) withMaps[[NSString stringWithFormat:@"DM_MAP_PAD_%s", dm_keymap_row[r]]] = @"system"; withMaps[[NSString stringWithFormat:@"DM_MAP_KEY_%s", dm_keymap_row[r]]] = @"system"; }
+      want = withMaps;
       NSArray *names = @[@"system", @"game", @"both"];
       DmSettings *s = make(builtin, tmpFile(), [NSMutableDictionary dictionary], @{}); NSUInteger n = 0;
       for (DmSection *sec in s.sections) for (DmSetting *st in sec.settings) { n++; CHECK(want[st.key] != nil, "%s has no scope in the table", st.key.UTF8String); if (want[st.key]) EQ(names[(NSUInteger)st.scope], want[st.key]); }

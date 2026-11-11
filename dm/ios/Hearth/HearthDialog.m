@@ -17,7 +17,11 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
 #define TILE_MAX 116.0   // a picture tile's edge (hearth_dialog_tiles), smaller when many do not fit
 #define TILE_LABEL 34.0
 
-@interface HearthDialogVC : UIViewController
+#define FIELD_H 52.0
+
+@interface HearthDialogVC : UIViewController <UITextFieldDelegate>
+- (NSString *)text;
+- (void)wantText:(NSString *)initial placeholder:(NSString *)placeholder max:(NSInteger)maxChars;   // before the view loads
 @end
 
 @implementation HearthDialogVC {
@@ -25,11 +29,15 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     UIView *_dim, *_panel; UILabel *_titleLabel, *_messageLabel; NSMutableArray<UIControl *> *_buttons; DmFocusView *_ring; DmHintBar *_hints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _done; __weak UIViewController *_over;
     HearthPadHandler _pad, _before; BOOL _took;   // our controller handler; the one that held the controller before us
+    UITextField *_field; NSString *_initial, *_placeholder; NSInteger _maxChars; BOOL _wantsText;   // hearth_dialog_text
 }
 
-+ (void)show:(UIViewController *)over title:(NSString *)title message:(NSString *)message buttons:(NSArray<NSString *> *)names images:(NSArray *)images destructive:(NSInteger)destructive focus:(NSInteger)focus cancel:(NSInteger)cancel answer:(void (^)(NSInteger))answer {
++ (HearthDialogVC *)show:(UIViewController *)over title:(NSString *)title message:(NSString *)message buttons:(NSArray<NSString *> *)names images:(NSArray *)images destructive:(NSInteger)destructive focus:(NSInteger)focus cancel:(NSInteger)cancel answer:(void (^)(NSInteger))answer {
+    return [self show:over title:title message:message buttons:names images:images destructive:destructive focus:focus cancel:cancel answer:answer setup:nil];
+}
++ (HearthDialogVC *)show:(UIViewController *)over title:(NSString *)title message:(NSString *)message buttons:(NSArray<NSString *> *)names images:(NSArray *)images destructive:(NSInteger)destructive focus:(NSInteger)focus cancel:(NSInteger)cancel answer:(void (^)(NSInteger))answer setup:(void (^)(HearthDialogVC *d))setup {
     while (over.presentedViewController) over = over.presentedViewController;
-    HearthDialogVC *d = [self new]; d->_images = images;
+    HearthDialogVC *d = [self new]; d->_images = images; if (setup) setup(d);
     d->_title = title; d->_message = message; d->_names = names; d->_destructive = destructive; d->_cancel = cancel; d->_answer = answer; d->_over = over;
     d->_focus = [[HearthFocus alloc] initWithZones:1]; [d->_focus setCount:(NSInteger)names.count forZone:0]; [d->_focus focusZone:0 index:MIN(MAX(focus, 0), (NSInteger)names.count - 1)];
     d.modalPresentationStyle = UIModalPresentationOverFullScreen; d.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
@@ -39,6 +47,7 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     d->_before = dm_gamepad_capture(); d->_took = YES;
     d->_pad = [^(uint64_t m, int32_t lx, int32_t ly) { [w padState:m lx:lx ly:ly]; } copy];
     dm_gamepad_set_capture(d->_pad);
+    return d;
 }
 
 - (BOOL)canBecomeFirstResponder { return YES; }
@@ -62,6 +71,13 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     _ring = [DmFocusView new]; _ring.radius = 22;
     [self.view addSubview:_dim]; [self.view addSubview:_panel];
     for (UIView *v in @[_titleLabel, _messageLabel, _hints]) [_panel addSubview:v];
+    if (_wantsText) {
+        _field = [UITextField new]; _field.text = _initial; _field.placeholder = _placeholder; _field.delegate = self; _field.returnKeyType = UIReturnKeyDone;
+        _field.font = [DmUI font:20 weight:UIFontWeightMedium]; _field.textColor = DmUI.text; _field.layer.cornerRadius = 14; _field.layer.cornerCurve = kCACornerCurveContinuous;
+        _field.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 16, 1)]; _field.leftViewMode = UITextFieldViewModeAlways; _field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        _field.autocorrectionType = UITextAutocorrectionTypeNo; _field.accessibilityLabel = _title;
+        [_panel addSubview:_field];
+    }
     for (NSUInteger i = 0; i < _names.count; i++) {
         UIControl *b = [UIControl new]; b.layer.cornerRadius = 18; b.layer.cornerCurve = kCACornerCurveContinuous; b.tag = (NSInteger)i;
         UILabel *l = [UILabel new]; l.text = _names[i]; l.font = [DmUI font:20 weight:UIFontWeightSemibold]; l.textAlignment = NSTextAlignmentCenter; l.userInteractionEnabled = NO; l.tag = LABEL_TAG;
@@ -76,7 +92,7 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     }
     [_panel addSubview:_ring];
     __weak HearthDialogVC *w = self;
-    dm_on_style(_panel, ^{ HearthDialogVC *s = w; if (!s) return; s->_panel.backgroundColor = DmUI.panel; s->_panel.layer.shadowColor = UIColor.blackColor.CGColor; for (UIControl *b in s->_buttons) b.backgroundColor = DmUI.row; });
+    dm_on_style(_panel, ^{ HearthDialogVC *s = w; if (!s) return; s->_panel.backgroundColor = DmUI.panel; s->_panel.layer.shadowColor = UIColor.blackColor.CGColor; for (UIControl *b in s->_buttons) b.backgroundColor = DmUI.row; s->_field.backgroundColor = DmUI.row; });
     [self showFocus:NO];
 }
 - (void)viewWillAppear:(BOOL)a {
@@ -85,7 +101,7 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     _panel.transform = CGAffineTransformMakeScale(0.94, 0.94);
     [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ self->_panel.transform = CGAffineTransformIdentity; } completion:nil];
 }
-- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self becomeFirstResponder]; hearth_sound(HearthSoundOpen); }
+- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; if (_field) [_field becomeFirstResponder]; else [self becomeFirstResponder]; hearth_sound(HearthSoundOpen); }
 - (void)viewDidDisappear:(BOOL)a {
     [super viewDidDisappear:a];
     if (!_done) { _done = YES; [_repeat stop]; if (_took && dm_gamepad_capture() == _pad) dm_gamepad_set_capture(_before); }   // taken away from outside (HOME resumed the game): the controller goes to whoever has it now
@@ -101,6 +117,7 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     CGFloat th = ceil([_titleLabel sizeThatFits:CGSizeMake(iw, CGFLOAT_MAX)].height), mh = _message.length ? ceil([_messageLabel sizeThatFits:CGSizeMake(iw, CGFLOAT_MAX)].height) : 0;
     _titleLabel.frame = CGRectMake(pad, y, iw, th); y += th + (mh ? 10 : 0);
     _messageLabel.frame = CGRectMake(pad, y, iw, mh); y += mh + 28;
+    if (_field) { _field.frame = CGRectMake(pad, y - 8, iw, FIELD_H); y += FIELD_H + 12; }
     CGFloat bw = _images ? tile : n > 1 ? (iw - gap * (n - 1)) / n : iw, bh = _images ? tile + TILE_LABEL : BTN_H, x0 = _images ? pad + (iw - (n * tile + gap * (n - 1))) / 2 : pad;
     for (NSUInteger i = 0; i < _buttons.count; i++) {
         UIControl *c = _buttons[i]; c.frame = CGRectMake(x0 + i * (bw + gap), y, bw, bh);
@@ -111,7 +128,7 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
     }
     y += bh + 16;
     CGFloat hh = [_hints heightWithCompact:NO]; _hints.frame = CGRectMake(pad, y, iw, hh); y += hh + 22;
-    _panel.frame = CGRectMake(0, 0, w, y); _panel.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); _panel.transform = t;
+    _panel.frame = CGRectMake(0, 0, w, y); _panel.center = CGPointMake(CGRectGetMidX(b), _field ? MIN(CGRectGetMidY(b), 24 + y / 2) : CGRectGetMidY(b)); _panel.transform = t;   // with a field: towards the top, clear of the keyboard
     _panel.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:_panel.bounds cornerRadius:30].CGPath;
     [self placeRing:NO];
 }
@@ -181,11 +198,19 @@ HearthPadHandler dm_gamepad_capture(void);   // DmGamepad.m: the handler that ho
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
     NSMutableArray *r = [NSMutableArray array];
-    for (NSArray *p in @[@[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"], @[@"\r", @"choose"], @[UIKeyInputEscape, @"cancel"]]) {
+    NSArray *keys = _field ? @[@[UIKeyInputEscape, @"cancel"]]   // the arrows and Return belong to the text field (Return answers through its delegate)
+        : @[@[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"], @[@"\r", @"choose"], @[UIKeyInputEscape, @"cancel"]];
+    for (NSArray *p in keys) {
         UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:p[0] modifierFlags:0 action:NSSelectorFromString(p[1])]; c.wantsPriorityOverSystemBehavior = YES; [r addObject:c];
     }
     return r;
 }
+- (BOOL)textFieldShouldReturn:(UITextField *)f { (void)f; [self finish:(NSInteger)_names.count - 1]; return NO; }   // OK is the last button
+- (BOOL)textField:(UITextField *)f shouldChangeCharactersInRange:(NSRange)r replacementString:(NSString *)s {
+    return _maxChars <= 0 || (NSInteger)(f.text.length - r.length + s.length) <= _maxChars;
+}
+- (NSString *)text { return _field.text ?: @""; }
+- (void)wantText:(NSString *)initial placeholder:(NSString *)placeholder max:(NSInteger)maxChars { _wantsText = YES; _initial = initial; _placeholder = placeholder; _maxChars = maxChars; }
 - (void)keyLeft { [self go:HearthDirLeft]; }
 - (void)keyRight { [self go:HearthDirRight]; }
 @end
@@ -195,6 +220,13 @@ void hearth_dialog(UIViewController *over, NSString *title, NSString *message, N
 }
 void hearth_dialog_tiles(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *names, NSArray *images, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index)) {
     [HearthDialogVC show:over title:title message:message buttons:names images:images ?: @[] destructive:-1 focus:focus cancel:cancel answer:answer];
+}
+void hearth_dialog_text(UIViewController *over, NSString *title, NSString *message, NSString *initial, NSString *placeholder, NSInteger maxChars, void (^answer)(NSString *text)) {
+    __block __weak HearthDialogVC *dw = nil;
+    HearthDialogVC *d = [HearthDialogVC show:over title:title message:message buttons:@[@"Cancel", @"OK"] images:nil destructive:-1 focus:1 cancel:0 answer:^(NSInteger i) {
+        if (answer) answer(i == 1 ? [dw text] : nil);
+    } setup:^(HearthDialogVC *x) { [x wantText:initial placeholder:placeholder max:maxChars]; }];
+    dw = d;
 }
 void hearth_dialog_info(UIViewController *over, NSString *title, NSString *message) {
     hearth_dialog(over, title, message, @[@"OK"], -1, 0, 0, nil);

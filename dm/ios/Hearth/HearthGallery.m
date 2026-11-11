@@ -50,3 +50,15 @@ BOOL hearth_gallery_delete(NSString *documents, NSString *path, NSString **why) 
     if (![NSFileManager.defaultManager removeItemAtPath:p error:&e]) { if (why) *why = e.localizedDescription; return NO; }
     return YES;
 }
+
+NSInteger hearth_grid_move(NSInteger i, NSInteger n, NSInteger cols, HearthDir d) {
+    if (n <= 0 || cols <= 0) return -1;
+    i = MIN(MAX(i, 0), n - 1);
+    switch (d) {
+        case HearthDirUp: return i - cols;   // < 0: the filter row
+        case HearthDirDown: return i / cols == (n - 1) / cols ? i : MIN(i + cols, n - 1);
+        case HearthDirLeft: return i % cols ? i - 1 : i;
+        case HearthDirRight: return (i + 1) % cols && i + 1 < n ? i + 1 : i;
+        default: return i;
+    }
+}

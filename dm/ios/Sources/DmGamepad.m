@@ -1,5 +1,5 @@
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController). Both are merged and handed to the host through dm_input_set (hle_hid.c, bit layout in dm_input.h).
-//   Two layouts; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D") switches them, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (g_profile.pad_full).
+//   Two layouts; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D") switches them, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
 //   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
 //     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
 //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick that is not drawn
@@ -9,7 +9,8 @@
 //     then in 3D the right stick for a touch in the right third.
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
+//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position by default: bottom = B, right = A, left = Y, top = X; the Controllers page remaps them (DmControlMap.h).
+//   A hardware keyboard plays too (GCKeyboard, keys from keymap.h, the Mac host's keys by default): its buttons join the others, its stick keys count when no physical stick is tilted.
 //   Controls in the letterbox bars: when the picture is letterboxed top and bottom (a 16:9 game on a 4:3 iPad) and both bars are tall enough for 44 pt targets, the controls move out of the picture into the bars (front_ios.m's
 //     DM_CONTROLS_LAYOUT=auto, dm_gamepad_layout): top bar ZL, L (L3 in 3D), then - / layout button / + and the frame-rate counter, then R3 (3D), R, ZR; bottom bar the left stick, (3D: the D-pad,) and the diamond.
 //     The keys get a frosted look (a lighter fill, a bright rim and a soft top-lit gloss over the blurred ambient bars). Touches on the bars that no control takes are not sent to the game's touch screen.
@@ -26,6 +27,7 @@
 #include "front.h"
 #include "haptics_apple.h"
 #import "DmPadBits.h"
+#import "DmControlMap.h"
 #import "DmSettings.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
@@ -33,17 +35,22 @@ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which 
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_capturing;   // the settings screen holds the controller (dm_gamepad_set_capture): the game sees nothing
-static uint64_t g_touch_btn, g_pad_btn, g_shake_btn;
-static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry;
+static uint64_t g_touch_btn, g_pad_btn, g_shake_btn, g_key_btn;
+static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry, g_key_lx, g_key_ly, g_key_rx, g_key_ry;
+void dm_gamepad_watch(void);
+static void (^g_monitor)(uint64_t, int32_t, int32_t, int32_t, int32_t);   // main thread: every input merged, captured or not (the Controllers page's Test input)
 static int tilted(int32_t x, int32_t y) { return (int64_t)x * x + (int64_t)y * y > (int64_t)4000 * 4000; }
 static void publish(void) {
     pthread_mutex_lock(&g_mu);
-    if (g_capturing) { dm_input_set(0, 0, 0, 0, 0); pthread_mutex_unlock(&g_mu); return; }   // the settings screen is open
     int32_t lx = g_touch_lx, ly = g_touch_ly, rx = g_touch_rx, ry = g_touch_ry;
-    if (tilted(g_pad_lx, g_pad_ly)) { lx = g_pad_lx; ly = g_pad_ly; }   // a tilted physical stick wins
+    if (tilted(g_key_lx, g_key_ly)) { lx = g_key_lx; ly = g_key_ly; }   // stick keys over the touch stick, a tilted physical stick over both
+    if (tilted(g_key_rx, g_key_ry)) { rx = g_key_rx; ry = g_key_ry; }
+    if (tilted(g_pad_lx, g_pad_ly)) { lx = g_pad_lx; ly = g_pad_ly; }
     if (tilted(g_pad_rx, g_pad_ry)) { rx = g_pad_rx; ry = g_pad_ry; }
-    dm_input_set(g_touch_btn | g_pad_btn | g_shake_btn, lx, ly, rx, ry);
+    uint64_t b = g_touch_btn | g_pad_btn | g_key_btn | g_shake_btn;
+    if (g_capturing) dm_input_set(0, 0, 0, 0, 0); else dm_input_set(b, lx, ly, rx, ry);   // the settings screen or Home holds the controller: the game sees nothing
     pthread_mutex_unlock(&g_mu);
+    if (g_monitor) dispatch_async(dispatch_get_main_queue(), ^{ if (g_monitor) g_monitor(b & ~DM_BTN_SHAKE, lx, ly, rx, ry); });
 }
 
 // ---- Shaking the device ----
@@ -193,7 +200,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         [nc addObserver:self selector:@selector(settingChanged:) name:DmSettingDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
-        [self padsChanged];
+        dm_gamepad_watch(); [self padsChanged];   // the button maps and the keyboard, also for a game started without Home
         motion_start();
         [self armIdle];
     }
@@ -508,16 +515,26 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 
 // ---- Physical controllers ----
 static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+static int8_t g_padsrc[DM_KEYMAP_BUTTONS] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};   // main thread: the physical input each game button plays from (DmControlMap.h)
+static uint8_t g_keymap[DM_KEYMAP_ROWS];
+static uint64_t g_keys_down[4];   // main thread: the keyboard's keys held (HID usages)
+static const char *map_value(const char *name) { return [DmSettings.systemStore valueForKey:@(name)].UTF8String; }   // the effective value (env.txt, else the player's, else the default)
+static void maps_load(void) {
+    dm_pad_map_load(g_padsrc, ^NSString *(NSString *k) { return [DmSettings.systemStore valueForKey:k]; });
+    int bad = dm_keymap_load_from(g_keymap, map_value); if (bad) LOG("[RED] front end: %d DM_MAP_KEY_* values are not keys the map offers; those rows keep their defaults", bad);
+}
+void dm_gamepad_reload_maps(void) { maps_load(); }   // main thread: after the Controllers page changed a map (the system store announces nothing)
 static void read_pad(GCExtendedGamepad *g) {
-    uint64_t m = 0;
     dm_haptics_apple_controller(0, g.controller);   // the game's rumble goes to the controller in use (haptics_apple.m; the same controller again changes nothing)
-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
+    uint32_t p = 0;   // the physical inputs held, in dm_pad_input_ids order
+    #define K(btn, i) if (btn.isPressed) p |= 1u << i
+    K(g.buttonB, 0); K(g.buttonA, 1); K(g.buttonY, 2); K(g.buttonX, 3);   // GameController names the face buttons by another layout's letters: B is the right one, A the bottom
+    if (g.leftThumbstickButton) K(g.leftThumbstickButton, 4); if (g.rightThumbstickButton) K(g.rightThumbstickButton, 5);
+    K(g.leftShoulder, 6); K(g.rightShoulder, 7); K(g.leftTrigger, 8); K(g.rightTrigger, 9);
+    K(g.buttonMenu, 10); if (g.buttonOptions) K(g.buttonOptions, 11);
+    K(g.dpad.left, 12); K(g.dpad.up, 13); K(g.dpad.right, 14); K(g.dpad.down, 15);
     #undef K
+    uint64_t m = dm_pad_map_apply(g_padsrc, p);
     pthread_mutex_lock(&g_mu);
     g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
     g_pad_rx = axis(g.rightThumbstick.xAxis.value); g_pad_ry = axis(g.rightThumbstick.yAxis.value);
@@ -534,6 +551,23 @@ static void read_pad(GCExtendedGamepad *g) {
             g_chord_gen++; if (g_chord) g_chord();
         });
     });
+}
+// The keyboard: what it plays goes to the game with the rest (never to a capture handler: Hearth's screens read keys through UIKeyCommand). With Command held it plays nothing (Cmd+Return is HOME)
+static void key_changed(GCKeyCode code, BOOL pressed) {
+    if (code < 0 || code > 255) return;
+    if (pressed) g_keys_down[code >> 6] |= 1ull << (code & 63); else g_keys_down[code >> 6] &= ~(1ull << (code & 63));
+    uint64_t b = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0;
+    BOOL cmd = (g_keys_down[227 >> 6] >> (227 & 63) & 1) || (g_keys_down[231 >> 6] >> (231 & 63) & 1);
+    if (!cmd) dm_keymap_state(g_keymap, g_keys_down, &b, &lx, &ly, &rx, &ry);
+    pthread_mutex_lock(&g_mu); g_key_btn = b; g_key_lx = lx; g_key_ly = ly; g_key_rx = rx; g_key_ry = ry; pthread_mutex_unlock(&g_mu);
+    publish();
+}
+static void keyboard_attach(void) {
+    GCKeyboard *k = GCKeyboard.coalescedKeyboard;
+    memset(g_keys_down, 0, sizeof g_keys_down); key_changed(0, NO);   // nothing held after a keyboard comes or goes
+    if (!k) return;
+    LOG("front end: a keyboard is connected: it plays as player 1 (keymap.h, the Controllers page)");
+    k.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *in, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) { (void)in; (void)key; key_changed(code, pressed); };
 }
 static BOOL pads_attach(void) {   // every connected controller reports to read_pad; NO when none is connected
     BOOL any = NO;
@@ -571,13 +605,21 @@ void (^dm_gamepad_capture(void))(uint64_t, int32_t, int32_t) { return g_capture;
 void dm_gamepad_watch(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+        maps_load();
+        [nc addObserverForName:DmSettingDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { if ([x.object hasPrefix:@"DM_MAP_"]) maps_load(); }];
         for (NSNotificationName n in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
-            [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; pads_attach(); }];
-        pads_attach();
+            [nc addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; pads_attach(); }];
+        for (NSNotificationName n in @[GCKeyboardDidConnectNotification, GCKeyboardDidDisconnectNotification])
+            [nc addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; keyboard_attach(); }];
+        pads_attach(); keyboard_attach();
     });
 }
+// Main thread: every input as the game would get it (buttons without the shake, both sticks), on each change and once now, captured or not; NULL stops it (the Controllers page's Test input)
+void dm_gamepad_set_monitor(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry)) { g_monitor = [handler copy]; if (handler) publish(); }
 void dm_gamepad_set_chord(void (^handler)(void)) { g_chord = [handler copy]; }   // main thread: called once when + and - have been held together for 0.8 s
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
-    pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_shake_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();
+    pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_shake_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; g_key_btn = 0; g_key_lx = g_key_ly = g_key_rx = g_key_ry = 0; pthread_mutex_unlock(&g_mu); publish();
+    dispatch_async(dispatch_get_main_queue(), ^{ memset(g_keys_down, 0, sizeof g_keys_down); });
 }

@@ -416,16 +416,19 @@ coverage:
 
 # AnySwitch tests (not upstream; run depends on run_anyswitch, since one target has one recipe): applets, album, error applet, device control, RomFS chunk store, game.json profile and pack contract
 .PHONY: run_anyswitch
-run_anyswitch: $(B)/t_err $(B)/t_account $(B)/t_album $(B)/t_devctl $(B)/t_romstore profile-schema pack-check
+run_anyswitch: $(B)/t_err $(B)/t_account $(B)/t_album $(B)/t_keymap $(B)/t_devctl $(B)/t_romstore profile-schema pack-check
 	$(B)/t_devctl
 	$(B)/t_err $(QUIET)
 	$(B)/t_account $(QUIET)
 	$(B)/t_album $(QUIET)
+	$(B)/t_keymap
 	TMPDIR="$(abspath $(B))" $(B)/t_romstore $(QUIET)
 $(B)/t_account: t_account.c ../hle_account.c ../hle_bigstack.c ../hle.h ../dm.h ../front.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wno-unused-function -Wno-incompatible-pointer-types-discards-qualifiers -DT_ACCOUNT -I.. -o $@ t_account.c ../hle_bigstack.c
 $(B)/t_album: t_album.c ../hle_album.c ../hle_bigstack.c ../hle.h ../dm.h ../front.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wno-unused-function -DT_ALBUM -I.. -o $@ t_album.c ../hle_album.c ../hle_bigstack.c
+$(B)/t_keymap: t_keymap.c ../keymap.c ../keymap.h | $(B)
+	$(CLANG) -O1 -Wall -I.. -o $@ t_keymap.c ../keymap.c
 $(B)/t_err: t_err.c ../hle_err.c ../hle_bigstack.c ../hle.h ../dm.h ../front.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Wno-unused-function -Wno-incompatible-pointer-types-discards-qualifiers -I.. -o $@ t_err.c ../hle_err.c ../hle_bigstack.c
 $(B)/t_devctl: t_devctl.c ../devctl.c ../devctl.h ../dm_input.h | $(B)

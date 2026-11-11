@@ -1,6 +1,7 @@
 // HearthImport on the Mac: a scratch pack archived as push_pack.py does (pack_manifest.py write, then aa archive) goes from Documents/Import into the library;
 // a copy still in progress waits; a missing or changed file, a stale contract and an unsafe archive are refused with a note; an interrupted import starts again;
-// a second import replaces the installed game and leaves its save alone; the game running in this process is not replaced under it.
+// a second import replaces the installed game and leaves its save alone; the game running in this process is not replaced under it;
+// each phase (extracting, checking, installing) reports 0 first and 100% exactly once, in order, and the archive's meta/ comes first.
 // Run: make -C dm/ios/tests run (argv: a folder with a valid game.json, and its title id)
 #import "HearthImport.h"
 #include "dm_abi.h"
@@ -14,10 +15,10 @@ static int sh(NSString *cmd) { return system([NSString stringWithFormat:@"( %@ )
 // A bootable scratch pack for this Mac (code/macos.dylib with the code stamp the pack check reads), its inventory written; change runs before the archive is made
 static NSString *pack(NSString *tag, NSString *change) {
     NSString *r = [g_t stringByAppendingFormat:@"/src-%@", tag];
-    NSString *cmd = [NSString stringWithFormat:@"mkdir -p '%@/profile' '%@/code' '%@/msl/macos/b-1' && cp '%@/game.json' '%@/profile/' && printf store > '%@/romfs.dmstore' && printf lib > '%@/msl/macos/b-1/a.metallib' && "
+    NSString *cmd = [NSString stringWithFormat:@"mkdir -p '%@/profile' '%@/code' '%@/msl/macos/b-1' '%@/meta' && cp '%@/game.json' '%@/profile/' && printf store > '%@/romfs.dmstore' && printf lib > '%@/msl/macos/b-1/a.metallib' && printf icon > '%@/meta/icon.jpg' && "
         "printf '.section __DATA,__dminfo\\n.globl _dm_code_info\\n_dm_code_info:\\n.asciz \"code_abi %d\\\\ntitle %@\\\\nmodule main 00\\\\n\"\\n' > '%@/info-%@.S' && "
         "xcrun clang -dynamiclib -arch arm64 -o '%@/code/macos.dylib' '%@/info-%@.S' && python3 -I '%@' write '%@' --title %@",
-        r, r, r, g_prof, r, r, r, DM_CODE_ABI, g_id, g_t, tag, r, g_t, tag, g_tool, r, g_id];
+        r, r, r, r, g_prof, r, r, r, r, DM_CODE_ABI, g_id, g_t, tag, r, g_t, tag, g_tool, r, g_id];
     CHECK(sh(cmd) == 0, "scratch pack %s", tag.UTF8String);
     if (change) CHECK(sh([NSString stringWithFormat:@"cd '%@' && %@", r, change]) == 0, "change %s", change.UTF8String);
     return r;
@@ -26,13 +27,28 @@ static NSString *pack(NSString *tag, NSString *change) {
 static void inbox(HearthImport *imp, NSString *src, NSString *name, long long bytes) {
     NSString *aar = [imp.inbox stringByAppendingFormat:@"/%@.aar", name];
     [NSFileManager.defaultManager createDirectoryAtPath:imp.inbox withIntermediateDirectories:YES attributes:nil error:nil];
-    CHECK(sh([NSString stringWithFormat:@"aa archive -d '%@' -o '%@' -exclude-field uid,gid,flg,btm,ctm", src, aar]) == 0, "archive %s", name.UTF8String);
+    CHECK(sh([NSString stringWithFormat:@"aa archive -d '%@' -o '%@' -include-path meta -exclude-field uid,gid,flg,btm,ctm && aa append -d '%@' -o '%@' -exclude-path meta -exclude-field uid,gid,flg,btm,ctm", src, aar, src, aar]) == 0, "archive %s", name.UTF8String);   // meta/ first, the rest appended (push_pack.py)
     long long size = [[NSFileManager.defaultManager attributesOfItemAtPath:aar error:nil][NSFileSize] longLongValue];
     NSDictionary *note = @{@"title_id": g_id, @"archive": aar.lastPathComponent, @"archive_bytes": @(bytes ? bytes : size), @"files": @4, @"bytes": @100000};
     [[NSJSONSerialization dataWithJSONObject:note options:0 error:nil] writeToFile:[imp.inbox stringByAppendingFormat:@"/%@.ready", name] atomically:YES];
 }
 static NSString *note(HearthImport *imp, NSString *name) { return [NSString stringWithContentsOfFile:[imp.inbox stringByAppendingFormat:@"/%@.hearth-error.txt", name] encoding:NSUTF8StringEncoding error:nil]; }
 static BOOL exists(NSString *p) { return [NSFileManager.defaultManager fileExistsAtPath:p]; }
+// The progress reports of one import: the three phases in order, each from 0, never going back, ending with exactly one 1
+static NSString *progress_problem(NSArray<NSArray *> *ev) {
+    NSInteger phase = -1; double last = 0; int ends = 0;
+    for (NSArray *e in ev) {
+        NSInteger ph = [e[0] integerValue]; double d = [e[1] doubleValue];
+        if (ph != phase) {
+            if (phase >= 0 && ends != 1) return [NSString stringWithFormat:@"phase %ld ended %d times", (long)phase, ends];
+            if (ph != phase + 1 || d != 0) return [NSString stringWithFormat:@"phase %ld began at %g after phase %ld", (long)ph, d, (long)phase];
+            phase = ph; last = 0; ends = 0; continue;
+        }
+        if (d < last || ends) return [NSString stringWithFormat:@"phase %ld went from %g to %g", (long)ph, last, d];
+        last = d; ends += d == 1;
+    }
+    return phase == HearthImportInstalling && ends == 1 ? nil : [NSString stringWithFormat:@"stopped in phase %ld (%d ends)", (long)phase, ends];
+}
 
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc != 3) { fprintf(stderr, "usage: t_import <folder with game.json> <title id>\n"); return 2; }
@@ -51,7 +67,18 @@ int main(int argc, char **argv) { @autoreleasepool {
     inbox(imp, [g_t stringByAppendingPathComponent:@"src-good"], @"a", 0);
     sh([NSString stringWithFormat:@"mkdir -p '%@/a.import/code' && printf junk > '%@/a.import/code/junk'", imp.inbox, imp.inbox]);
     CHECK([imp.ready isEqual:@[@"a"]], "ready: %s", imp.ready.description.UTF8String);
+    FILE *ls = popen([NSString stringWithFormat:@"aa list -i '%@/a.aar' | head -1", imp.inbox].UTF8String, "r"); char first[256] = ""; if (ls) { fgets(first, sizeof first, ls); pclose(ls); }
+    CHECK(!strcmp(first, "meta\n"), "the archive starts with meta/ (got %s)", first);
+    NSMutableArray *ev = [NSMutableArray array]; __block BOOL iconEarly = NO; NSString *work = [imp workDir:@"a"];
+    imp.progress = ^(NSString *name, HearthImportPhase ph, double d) {
+        if ([name isEqual:@"a"]) [ev addObject:@[@(ph), @(d)]];
+        if (ph == HearthImportExtracting && d == 1) iconEarly = exists([work stringByAppendingPathComponent:@"meta/icon.jpg"]);
+    };
+    CHECK([[imp titleOf:@"a"] isEqual:g_id], "the ready note's title");
     CHECK([imp importAll] == 1, "imported (%s)", note(imp, @"a").UTF8String);
+    CHECK(!progress_problem(ev), "progress: %s (%s)", progress_problem(ev).UTF8String, ev.description.UTF8String);
+    CHECK(iconEarly, "the icon is in the work folder once extracted");
+    imp.progress = nil;
     CHECK(exists([dest stringByAppendingPathComponent:@"romfs.dmstore"]) && !exists([dest stringByAppendingPathComponent:@"code/junk"]), "the game's files, not the interrupted run's");
     CHECK(!exists([imp.inbox stringByAppendingPathComponent:@"a.aar"]) && !exists([imp.inbox stringByAppendingPathComponent:@"a.ready"]) && !exists([imp.inbox stringByAppendingPathComponent:@"a.import"]), "the Inbox is empty again");
     NSNumber *ex = nil; [[NSURL fileURLWithPath:dest] getResourceValue:&ex forKey:NSURLIsExcludedFromBackupKey error:nil];

@@ -5,7 +5,7 @@ include ../mac/min_os.mk
 # hle_bigstack.c's inline-assembly entry apart from its return path (SIGBUS in dm_bigstack_enter on Breath of the Wild, PR #556)
 CFLAGS=-O2 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m romstore.c profile.m boot.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m web_apple.m entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m romstore.c profile.m boot.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) keymap.c front_mac.m web_apple.m entry.S
 # Dev input channel (docs/dev-control.md): only with make DEVCTL=1 (also read from the environment, so build_ipa.sh / gen_build.py carry it into the iOS app); product builds have none of it
 ifneq ($(strip $(DEVCTL)),)
 CFLAGS += -DDM_DEVCTL
@@ -76,7 +76,7 @@ endif
 .PHONY: FORCE
 FORCE:
 # Makefile: a change to CFLAGS (or the compile line) rebuilds the host
-dmhost: Makefile $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h pad_switch2_apple.h switch2_proto.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) profile.h dm_abi.h boot.h romstore.h devctl.h $(MSL_H) $(STAMP) $(VPX_LIB) $(DAV1D_LIB) $(ZSTD_LIB) $(MSL_H)
+dmhost: Makefile $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h pad_switch2_apple.h switch2_proto.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h keymap.h pad_apple.h pad_hid.h pad_hid_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) profile.h dm_abi.h boot.h romstore.h devctl.h $(MSL_H) $(STAMP) $(VPX_LIB) $(DAV1D_LIB) $(ZSTD_LIB) $(MSL_H)
 	clang $(CFLAGS) -I. -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(VPX) -I$(DAV1D)/include -I$(ZSTD) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) $(ZSTD_LIB) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 clean:   # the host and everything make generates for it (gen/: the build stamp and the libvpx, dav1d and zstd builds; dmhost_* and *.dSYM beside them, as in .gitignore)
 	rm -rf gen dmhost dmhost_* *.dSYM

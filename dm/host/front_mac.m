@@ -5,7 +5,8 @@
 // Cheats (hle_cheats.c): the Cheats menu's rows toggle, reload (⌘R) and open the cheats folder; its first item "Show Cheats
 // Window" (⌘⇧C, or DM_CHEATS_WINDOW=1 at launch) opens a Cheats panel beside the game: sections, search, the master switch,
 // safe mode, values, details and the import of cheat files (see the code below).
-// Key map (Nintendo layout): WASD left stick, arrow keys D-pad (with Shift held: the right stick, for the camera), J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
+// Keys (keymap.h, the same table as Hearth's keyboard play; DM_MAP_KEY_* changes a key): WASD left stick, P ; L ' right stick (and the arrow keys with Shift held), arrow keys D-pad,
+// J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−. Space shakes the controller while no row of the map uses it.
 // Controllers: face buttons as on the iPhone, by position (right A, bottom B, top X, left Y) or on a Nintendo pad by its labels (pad_apple.h), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
 // Each controller is a player of its own (local co-op): the first one connected is player 1, together with the keyboard, the next player 2, and so on up to 8 (pad_slots.h);
 // DM_PAD_MERGE=1 merges every controller into player 1 instead, DM_KBD_PLAYER=own makes the keyboard player 1 on its own, with the controllers from player 2 on.
@@ -31,13 +32,14 @@ static void merge_rumble_to_s2(int on);
 #include "home_quit.h"
 #include "home_quit_mac.h"
 #include "ctrl_prompt.h"
+#include "keymap.h"
 #include <signal.h>
 #include <math.h>
 #include <sys/stat.h>
 
 static CAMetalLayer *g_layer;
-static uint64_t g_btn;
-static int g_w, g_a, g_s, g_d;
+static uint64_t g_down[4], g_shake;   // the keys held (HID usages, keymap.h)
+static uint8_t g_map[DM_KEYMAP_ROWS];
 static int g_rl, g_ru, g_rr, g_rd;   // arrow keys pressed with Shift held: the right stick (each goes back up as it went down, whatever Shift does meanwhile)
 static int g_input_on = 1;   // main thread: the game window is key, so its keyboard, mouse and controllers reach the game (input_release / input_resume)
 
@@ -142,19 +144,22 @@ static void cursor_hide_for_input(void) {
     if (NSPointInRect([v convertPoint:g_win.mouseLocationOutsideOfEventStream fromView:nil], v.bounds)) [NSCursor setHiddenUntilMouseMoves:YES];
 }
 static void push(void) {
-    int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
-    int32_t rx = (g_rr - g_rl) * 32767, ry = (g_ru - g_rd) * 32767;
-    dm_input_set(g_btn, lx, ly, rx, ry);
+    uint64_t b; int32_t lx, ly, rx, ry;
+    dm_keymap_state(g_map, g_down, &b, &lx, &ly, &rx, &ry);
+    rx = MAX(-32767, MIN(32767, rx + (g_rr - g_rl) * 32767)); ry = MAX(-32767, MIN(32767, ry + (g_ru - g_rd) * 32767));   // the Shift+arrow right stick on top of the map's
+    dm_input_set(b | g_shake, lx, ly, rx, ry);
 }
-static int key_bit(unsigned short code) {
-    switch (code) {
-        case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
-        case 3: return 4;   case 5: return 5;                                            // F G → press stick
-        case 12: return 6;  case 14: return 7;  case 6: return 8;   case 8: return 9;    // Q E Z C → L R ZL ZR
-        case 36: return 10; case 48: return 11;                                          // Return Tab → + −
-        case 123: return 12; case 126: return 13; case 124: return 14; case 125: return 15; // ← ↑ → ↓
-    }
-    return -1;
+// macOS virtual key codes to HID usages, for the keys keymap.c offers (and Space); 0: not a key the map knows
+static int hid_of(unsigned short c) {
+    static const uint8_t t[128] = {
+        [0] = 4, [11] = 5, [8] = 6, [2] = 7, [14] = 8, [3] = 9, [5] = 10, [4] = 11, [34] = 12, [38] = 13, [40] = 14, [37] = 15, [46] = 16, [45] = 17, [31] = 18, [35] = 19,
+        [12] = 20, [15] = 21, [1] = 22, [17] = 23, [32] = 24, [9] = 25, [13] = 26, [7] = 27, [16] = 28, [6] = 29,
+        [18] = 30, [19] = 31, [20] = 32, [21] = 33, [23] = 34, [22] = 35, [26] = 36, [28] = 37, [25] = 38, [29] = 39,
+        [36] = 40, [48] = 43, [49] = 44, [51] = 42, [126] = 82, [125] = 81, [123] = 80, [124] = 79,
+        [56] = 225, [60] = 229, [59] = 224, [58] = 226, [61] = 230,
+        [41] = 51, [39] = 52, [43] = 54, [47] = 55, [44] = 56, [33] = 47, [30] = 48, [27] = 45, [24] = 46, [42] = 49, [50] = 53,
+    };
+    return c < 128 ? t[c] : 0;
 }
 // fn held with a letter: the arrow and function keys carry the same modifier flag, so the key must be a letter for this to be a Globe shortcut
 static int fn_shortcut(NSEvent *e) {
@@ -163,6 +168,15 @@ static int fn_shortcut(NSEvent *e) {
 }
 static ctrl_prompt g_cp; static int g_cp_confirm, g_cp_cancel;   // the controller applet's prompt (front_ctrl_support) and a key pressed in it since its last step
 static int cp_poll(void);
+static int space_mapped(void) { for (int r = 0; r < DM_KEYMAP_ROWS; r++) if (g_map[r] == 44) return 1; return 0; }
+// A key into the held set (keymap.h); returns whether the game takes it (a row of the map, or Space's shake)
+static int key_set(unsigned short code, int down) {
+    int u = hid_of(code); if (!u) return 0;
+    if (down) g_down[u >> 6] |= 1ull << (u & 63); else g_down[u >> 6] &= ~(1ull << (u & 63));
+    if (u == 44 && !space_mapped()) { g_shake = down ? DM_BTN_SHAKE : 0; return 1; }   // Space: shaken while held
+    for (int r = 0; r < DM_KEYMAP_ROWS; r++) if (g_map[r] == u) return 1;
+    return 0;
+}
 static void on_key(NSEvent *e, int down) {
     if (!g_input_on) return;
     unsigned short c = e.keyCode;
@@ -170,16 +184,18 @@ static void on_key(NSEvent *e, int down) {
         if (down && g_cp.phase == CP_OPEN) { if (c == 53 || c == 40) g_cp_cancel = 1; else if (c == 36 || c == 38) g_cp_confirm = 1; cp_poll(); }
         return;
     }
-    switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
-    // An arrow key pressed with Shift held is the right stick until it is released; without Shift, the D-pad. The keyboard had no right stick: a 3D game's camera
+    // An arrow key pressed with Shift held is the right stick until it is released; without Shift, the map's key. The keyboard had no right stick: a 3D game's camera
     // could be turned only with a controller (Donkey Kong Bananza)
     int *rs = c == 123 ? &g_rl : c == 126 ? &g_ru : c == 124 ? &g_rr : c == 125 ? &g_rd : NULL;
     if (rs && (down ? (e.modifierFlags & NSEventModifierFlagShift) != 0 : *rs)) { *rs = down; push(); return; }
-    int b = key_bit(c);
-    uint64_t m = b >= 0 ? 1ull << b : c == 49 ? DM_BTN_SHAKE : 0;   // Space: shaken while held
-    g_btn = down ? (g_btn | m) : (g_btn & ~m);
-    if (down && (m || c == 13 || c == 0 || c == 1 || c == 2)) cursor_hide_for_input();   // a key the game takes (WASD: the left stick)
+    if (key_set(c, down) && down) cursor_hide_for_input();   // a key the game takes
     push();
+}
+// Shift, Control and Option send flagsChanged, not key down and up: the flag of the key's own side says whether it is held
+static void on_flags(NSEvent *e) {
+    NSEventModifierFlags f = e.modifierFlags; unsigned short c = e.keyCode;
+    int down = c == 56 || c == 60 ? (f & NSEventModifierFlagShift) != 0 : c == 59 ? (f & NSEventModifierFlagControl) != 0 : c == 58 || c == 61 ? (f & NSEventModifierFlagOption) != 0 : -1;
+    if (down >= 0 && (!down || (g_input_on && !cp_blocks_input(g_cp.phase)))) { key_set(c, down); push(); }   // a release always lands, so nothing stays held
 }
 
 // Physical controllers (GameController) go to dm_pad_set_player, mapped as the iPhone's (DmGamepad.m read_pad, same layout); player 1's is ORed with the keyboard, a stick takes
@@ -337,7 +353,7 @@ static void input_release(void) {
     g_input_on = 0;
     dm_motion_pro_active(0); hidpad_motion_clear();
     dm_switch2_active(0);
-    g_btn = 0; g_w = g_a = g_s = g_d = 0; g_rl = g_ru = g_rr = g_rd = 0; push();
+    memset(g_down, 0, sizeof g_down); g_shake = 0; g_rl = g_ru = g_rr = g_rd = 0; push();
     if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); }
     pads_release();
 }
@@ -579,7 +595,7 @@ int front_ctrl_support(int min, int max) {
     if (!g_layer) return -1;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{
-        g_btn = 0; g_w = g_a = g_s = g_d = 0; g_rl = g_ru = g_rr = g_rd = 0; push();   // nothing the game held stays pressed while the prompt has the input
+        memset(g_down, 0, sizeof g_down); g_shake = 0; g_rl = g_ru = g_rr = g_rd = 0; push();   // nothing the game held stays pressed while the prompt has the input
         if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); }
         pads_release();
         int a, b; cp_buttons(&a, &b);
@@ -1591,8 +1607,10 @@ void front_run(void (*guest)(void)) {
                 if (conn) hq_log_setting(); }];
         dm_haptics_apple_init();
         pads_start();
-        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
+        int bad = dm_keymap_load(g_map); if (bad) LOG("[RED] front end: %d DM_MAP_KEY_* entries are not keys the map offers; those keys keep their defaults", bad);
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
+            if (e.type == NSEventTypeFlagsChanged) { on_flags(e); return e; }
             if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand)) return e;   // ⌘ shortcuts go to the menu; a key released while ⌘ is held still reaches the game, or it would stay pressed
             if (e.type == NSEventTypeKeyDown && fn_shortcut(e)) return e;   // fn (Globe) + a letter is the system's (fn+F full screen, GitHub issue #873), not the game's F
             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
@@ -1671,10 +1689,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     dispatch_sync(dispatch_get_main_queue(), ^{
         // The box takes the keyboard and the mouse, so the game window never sees the key-up of the button or the touch-up of the click that opened it: nothing may stay pressed
         // while it is up, or the game reads the stuck button / touch the moment the box closes (Stardew Valley's character creation re-opened the keyboard endlessly)
-        g_btn = 0; g_w = g_a = g_s = g_d = 0; g_rl = g_ru = g_rr = g_rd = 0; push();
+        memset(g_down, 0, sizeof g_down); g_shake = 0; g_rl = g_ru = g_rr = g_rd = 0; push();
         dm_touch_set(NULL, 0);
         int min_chars = g_swkbd_min_chars > 0 ? g_swkbd_min_chars : 0;
-        NSString *info = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];
+        NSString *info = [[@[@(sub ? sub : ""), @(guide ? guide : "")] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]] componentsJoinedByString:@"\n"];   // %s would read UTF-8 as Mac Roman
         for (;;) {
             NSAlert *a = [NSAlert new];
             a.messageText = title && *title ? @(title) : @"Input";

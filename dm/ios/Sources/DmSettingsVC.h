@@ -32,6 +32,7 @@
 @property (nonatomic, copy) NSArray<DmPage *> *pages;   // set before the view loads; nil: every visible section of the store
 @property (nonatomic, copy) NSString *heading;          // the big title, "Settings" when nil
 @property (nonatomic, copy) void (^onChange)(void);     // after the player changed a value (a quiet store announces nothing)
+@property (nonatomic) BOOL pageRestoreOnly;             // set before the view loads: each page keeps its own Restore defaults, without Restore all (which would reach every setting of the store)
 - (void)resumeController;   // a screen over this one handed the controller back: what is held now does nothing until it is released
 - (void)reloadPages;   // the categories again (a page appeared or went), keeping the place when it can
 // The text editor panel for a page's own value (a user's name): save gets the trimmed text and returns whether it was taken

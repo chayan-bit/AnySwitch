@@ -29,6 +29,10 @@ HearthLibrary *hearth_library(void) {
 HearthGame *hearth_running_game(void) { return g_running; }
 NSString *hearth_running_user(void) { return g_running_uid; }
 
+NSNotificationName const HearthImportProgressNotification = @"HearthImportProgress";
+static void import_post(NSDictionary *info) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSNotificationCenter.defaultCenter postNotificationName:HearthImportProgressNotification object:nil userInfo:info]; });
+}
 void hearth_import_scan(void (^done)(void)) {
     static dispatch_queue_t q; static dispatch_once_t once; static BOOL busy;
     dispatch_once(&once, ^{ q = dispatch_queue_create("hearth.import", DISPATCH_QUEUE_SERIAL); });
@@ -36,9 +40,17 @@ void hearth_import_scan(void (^done)(void)) {
     HearthImport *imp = [[HearthImport alloc] initWithLibrary:hearth_library()];
     if (!imp.ready.count) return;
     busy = YES; imp.runningId = g_running.titleId;
+    __weak HearthImport *wi = imp;
+    imp.progress = ^(NSString *name, HearthImportPhase ph, double d) {   // extraction is most of the time, checking most of the rest
+        HearthImport *i = wi; NSString *title = [i titleOf:name], *work = [i workDir:name]; if (!title || !work) return;
+        double whole = ph == HearthImportExtracting ? 0.6 * d : ph == HearthImportChecking ? 0.6 + 0.39 * d : 0.99 + 0.01 * d;
+        NSString *phase = ph == HearthImportExtracting ? @"extracting" : ph == HearthImportChecking ? @"checking the files" : @"installing";
+        import_post(@{@"name": name, @"title": title, @"work": work, @"done": @(whole), @"phase": phase});
+    };
     UIBackgroundTaskIdentifier bg = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"import" expirationHandler:nil];   // a little time if the player leaves; an interrupted import starts again later
     dispatch_async(q, ^{
         NSUInteger n = [imp importAll];
+        import_post(@{@"ended": @YES});
         dispatch_async(dispatch_get_main_queue(), ^{
             busy = NO; [UIApplication.sharedApplication endBackgroundTask:bg];
             if (n && done) done();
@@ -163,7 +175,7 @@ static void home_show(void) {
     HearthHomeVC *h = [HearthHomeVC new]; h.overlay = YES; g_overlay = h;
     [root addChildViewController:h];
     h.view.frame = root.view.bounds; h.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; h.view.alpha = 0;
-    [root.view addSubview:h.view]; [h didMoveToParentViewController:root];
+    [root.view addSubview:h.view]; [h didMoveToParentViewController:root]; hearth_ax_cover(h.view, YES);
     hearth_sound(HearthSoundOpen);
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ h.view.alpha = 1; } completion:nil];
     fprintf(stderr, "hearth: Home over %s\n", g_running.titleId.UTF8String);
@@ -176,7 +188,7 @@ void hearth_resume(void) {
     dm_home_suspend(0);
     play_start();
     hearth_sound(HearthSoundBack);
-    [h willMoveToParentViewController:nil];
+    [h willMoveToParentViewController:nil]; hearth_ax_cover(h.view, NO);
     [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ h.view.alpha = 0; }
                      completion:^(BOOL f) { (void)f; [h.view removeFromSuperview]; [h removeFromParentViewController]; }];
     fprintf(stderr, "hearth: back to %s\n", g_running.titleId.UTF8String);

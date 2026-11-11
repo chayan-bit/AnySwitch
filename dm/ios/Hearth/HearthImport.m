@@ -7,12 +7,22 @@
 
 #define SPARE (512ull << 20)   // free space kept beyond the unpacked pack, so the import never fills the device
 
+// A phase's progress: bytes done of a total, reported when the whole percent grows; 100% only from meter_end, once
+typedef struct { __unsafe_unretained HearthImportProgress fn; __unsafe_unretained NSString *name; HearthImportPhase phase; uint64_t total, done; int pct; } meter;
+static void meter_start(meter *m, HearthImportPhase phase, uint64_t total) { m->phase = phase; m->total = total; m->done = 0; m->pct = 0; if (m->fn) m->fn(m->name, phase, 0); }
+static void meter_add(meter *m, uint64_t n) {
+    m->done += n; if (!m->fn || !m->total) return;
+    int p = (int)MIN(99, m->done * 100 / m->total);
+    if (p > m->pct) { m->pct = p; m->fn(m->name, m->phase, p / 100.0); }
+}
+static void meter_end(meter *m) { if (m->fn) m->fn(m->name, m->phase, 1); }
+
 static NSString *hex(const unsigned char *d, size_t n) { NSMutableString *s = [NSMutableString string]; for (size_t i = 0; i < n; i++) [s appendFormat:@"%02x", d[i]]; return s; }
-static NSString *sha256_file(NSString *path) {   // streamed: a pack holds files of several GB
+static NSString *sha256_file(NSString *path, meter *m) {   // streamed: a pack holds files of several GB; m (may be NULL) counts the bytes hashed
     int fd = open(path.fileSystemRepresentation, O_RDONLY); if (fd < 0) return nil;
     CC_SHA256_CTX c; CC_SHA256_Init(&c);
     static const size_t N = 1 << 22; unsigned char *buf = malloc(N); ssize_t r;
-    while ((r = read(fd, buf, N)) > 0) CC_SHA256_Update(&c, buf, (CC_LONG)r);
+    while ((r = read(fd, buf, N)) > 0) { CC_SHA256_Update(&c, buf, (CC_LONG)r); if (m) meter_add(m, (uint64_t)r); }
     free(buf); close(fd);
     if (r < 0) return nil;
     unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &c);
@@ -38,14 +48,25 @@ static int guard(void *arg, AAEntryMessage m, const char *path, void *data) {
     }
     return 0;
 }
-static NSString *extract(NSString *aar, NSString *dir) {   // nil, or what went wrong
+// The archive as read, counted: extraction progress is the share of the (compressed) archive read so far
+typedef struct { AAByteStream file; meter *m; } counted;
+static int counted_close(void *arg) { (void)arg; return 0; }   // the file is closed by its owner; AAByteStreamClose calls this without a check
+static ssize_t counted_read(void *arg, void *buf, size_t n) {
+    counted *c = arg; ssize_t r = AAByteStreamRead(c->file, buf, n);
+    if (r > 0) meter_add(c->m, (uint64_t)r);
+    return r;
+}
+static NSString *extract(NSString *aar, NSString *dir, meter *m) {   // nil, or what went wrong
     char *bad = NULL; ssize_t n = -1; int closed = -1;
     AAByteStream file = AAFileStreamOpenWithPath(aar.fileSystemRepresentation, O_RDONLY, 0);
-    AAByteStream dec = file ? AADecompressionInputStreamOpen(file, 0, 0) : NULL;
+    counted cnt = {file, m};
+    AAByteStream src = file ? AACustomByteStreamOpen() : NULL;
+    if (src) { AACustomByteStreamSetData(src, &cnt); AACustomByteStreamSetReadProc(src, counted_read); AACustomByteStreamSetCloseProc(src, counted_close); }
+    AAByteStream dec = src ? AADecompressionInputStreamOpen(src, 0, 0) : NULL;
     AAArchiveStream in = dec ? AADecodeArchiveInputStreamOpen(dec, NULL, NULL, 0, 0) : NULL;
     AAArchiveStream out = in ? AAExtractArchiveOutputStreamOpen(dir.fileSystemRepresentation, &bad, guard, 0, 0) : NULL;
     if (out) { n = AAArchiveStreamProcess(in, out, NULL, NULL, 0, 0); closed = AAArchiveStreamClose(out); }
-    AAArchiveStreamClose(in); AAByteStreamClose(dec); AAByteStreamClose(file);
+    AAArchiveStreamClose(in); AAByteStreamClose(dec); AAByteStreamClose(src); AAByteStreamClose(file);
     NSString *why = bad ? [NSString stringWithFormat:@"the archive holds an entry that cannot be extracted safely: %s", bad]
         : !out ? @"the archive cannot be opened" : n < 0 || closed < 0 ? @"the archive is damaged or incomplete" : nil;
     free(bad);
@@ -53,7 +74,7 @@ static NSString *extract(NSString *aar, NSString *dir) {   // nil, or what went 
 }
 
 // Every file against the inventory the manifest names: nothing missing, changed or extra, and nothing but plain files and folders
-static NSString *verify(NSString *root, NSString **title) {
+static NSString *verify(NSString *root, NSString **title, meter *mt) {
     NSData *md = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"manifest.json"]];
     NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:nil] : nil;
     if (![m isKindOfClass:NSDictionary.class]) return @"no readable manifest.json";
@@ -62,7 +83,7 @@ static NSString *verify(NSString *root, NSString **title) {
     NSDictionary *inv = [m[@"inventory"] isKindOfClass:NSDictionary.class] ? m[@"inventory"] : nil;
     if (!inv) return @"the manifest has no inventory";
     NSString *invName = [inv[@"file"] isKindOfClass:NSString.class] ? inv[@"file"] : @"files.tsv", *invPath = [root stringByAppendingPathComponent:invName];
-    if (!safe_path(invName.fileSystemRepresentation) || ![sha256_file(invPath) isEqual:inv[@"sha256"]]) return [NSString stringWithFormat:@"%@ is not the inventory the manifest names", invName];
+    if (!safe_path(invName.fileSystemRepresentation) || ![sha256_file(invPath, NULL) isEqual:inv[@"sha256"]]) return [NSString stringWithFormat:@"%@ is not the inventory the manifest names", invName];
     NSMutableDictionary<NSString *, NSArray *> *want = [NSMutableDictionary dictionary];
     for (NSString *l in [[NSString stringWithContentsOfFile:invPath encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"]) {
         if (!l.length || [l hasPrefix:@"#"]) continue;
@@ -80,11 +101,14 @@ static NSString *verify(NSString *root, NSString **title) {
         if (!w) return [NSString stringWithFormat:@"not in the manifest: %@", rel];
         if ([e.fileAttributes[NSFileSize] longLongValue] != [w[0] longLongValue]) return [NSString stringWithFormat:@"changed: %@ (%lld bytes, the inventory says %lld)", rel, [e.fileAttributes[NSFileSize] longLongValue], [w[0] longLongValue]];
     }
+    uint64_t total = 0; for (NSString *rel in want) total += (uint64_t)[want[rel][0] longLongValue];
+    meter_start(mt, HearthImportChecking, total);
     for (NSString *rel in want) {   // sizes first (cheap, above), then every digest
-        NSString *p = [root stringByAppendingPathComponent:rel], *d = sha256_file(p);
+        NSString *p = [root stringByAppendingPathComponent:rel], *d = sha256_file(p, mt);
         if (!d) return [NSString stringWithFormat:@"missing: %@", rel];
         if (![d isEqual:want[rel][1]]) return [NSString stringWithFormat:@"changed: %@", rel];
     }
+    meter_end(mt);
     return nil;
 }
 
@@ -93,6 +117,8 @@ static NSString *verify(NSString *root, NSString **title) {
     if ((self = [super init])) { _lib = lib; _inbox = [lib.documentsDir stringByAppendingPathComponent:@"Import"]; }   // not Documents/Inbox: iOS keeps that one for documents opened in the app, and apps may not write there
     return self;
 }
+- (NSString *)workDir:(NSString *)name { return [self p:name ext:@"import"]; }
+- (NSString *)titleOf:(NSString *)name { id t = [self note:name][@"title_id"]; return [t isKindOfClass:NSString.class] ? [t uppercaseString] : nil; }
 - (NSString *)p:(NSString *)name ext:(NSString *)ext { return [_inbox stringByAppendingPathComponent:[name stringByAppendingPathExtension:ext]]; }
 - (NSDictionary *)note:(NSString *)name {
     NSData *d = [NSData dataWithContentsOfFile:[self p:name ext:@"ready"]];
@@ -134,12 +160,16 @@ static NSString *verify(NSString *root, NSString **title) {
     [fm removeItemAtPath:work error:nil];   // an earlier, interrupted run: start again
     [fm createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
     NSLog(@"hearth: import %@: extracting", name);
-    NSString *why = extract([self p:name ext:@"aar"], work), *title = nil;
+    meter m = {self.progress, name};
+    meter_start(&m, HearthImportExtracting, [note[@"archive_bytes"] unsignedLongLongValue]);
+    NSString *why = extract([self p:name ext:@"aar"], work, &m), *title = nil;
     if (why) return [self fail:name why:why];
+    meter_end(&m);
     double t1 = CFAbsoluteTimeGetCurrent();
-    if ((why = verify(work, &title))) return [self fail:name why:why];
+    if ((why = verify(work, &title, &m))) return [self fail:name why:why];
     if ([_lib checkPackAt:work why:&why]) return [self fail:name why:why];
     if (self.runningId && [title isEqual:self.runningId]) { [fm removeItemAtPath:work error:nil]; return @"waits until the game is closed"; }
+    meter_start(&m, HearthImportInstalling, 0);
     NSString *games = [_lib.supportDir stringByAppendingPathComponent:@"Games"], *dest = [games stringByAppendingPathComponent:title];
     NSString *old = [games stringByAppendingFormat:@"/.replaced-%@", name];
     NSError *e = nil;
@@ -150,6 +180,7 @@ static NSString *verify(NSString *root, NSString **title) {
     if (had) [fm removeItemAtPath:old error:nil];
     [[NSURL fileURLWithPath:dest] setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];   // the user's own game, large, and can be imported again
     [fm removeItemAtPath:[self p:name ext:@"aar"] error:nil]; [fm removeItemAtPath:[self p:name ext:@"ready"] error:nil];
+    meter_end(&m);
     NSLog(@"hearth: imported %@ as %@ (%@): extracted in %.1f s, checked in %.1f s", name, title, had ? @"replacing the installed one" : @"new", t1 - t0, CFAbsoluteTimeGetCurrent() - t1);
     return nil;
 }

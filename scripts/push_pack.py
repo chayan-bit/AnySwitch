@@ -6,7 +6,7 @@
 1. The iOS part of the pack (pack_manifest.py subset: verified against its inventory first), cloned into the work folder.
 2. Its code signed the way Hearth loads code from its data folder (notes/hearth-p2.md, E1): the identity that signed the installed app, the identifier set to
    the app's bundle ID, no entitlements. Both are read from the app given with --app (the same build that is installed); --identity and --bundle-id override them.
-3. A new inventory, then one Apple Archive (.aar) of the whole tree: a device copy is one file per call, and a pack holds about 100 000 shader files.
+3. A new inventory, then one Apple Archive (.aar) of the whole tree, meta/ first (the icon and name show early): a device copy is one file per call, and a pack holds about 100 000 shader files.
 4. With --device: the archive, then a small <name>.ready that names its size, each copied with one devicectl call into the app's Documents/Import/.
    Hearth imports it when it starts or comes back to the front: it extracts, checks every file against the inventory and moves the game into its library.
 Every push uses a new name, because devicectl keeps an existing file of the same size. Take a verified backup of the device's saves first (the device rules).
@@ -60,7 +60,11 @@ def build(pack, work, identity, bundle_id):
     else: print(f'push_pack: [RED] no code/{PLATFORM}.dylib: the game will need the code inside the app')
     m = pack_manifest.reinventory(stage, PLATFORM)
     aar = work / f'{name}.aar'
-    run(['aa', 'archive', '-d', str(stage), '-o', str(aar), '-exclude-field', 'uid,gid,flg,btm,ctm'])
+    fields = ['-exclude-field', 'uid,gid,flg,btm,ctm']
+    if (stage / 'meta').is_dir():   # meta/ first: Hearth shows the game's icon and name on its placeholder tile while the rest is still extracting
+        run(['aa', 'archive', '-d', str(stage), '-o', str(aar), '-include-path', 'meta', *fields])
+        run(['aa', 'append', '-d', str(stage), '-o', str(aar), '-exclude-path', 'meta', *fields])
+    else: run(['aa', 'archive', '-d', str(stage), '-o', str(aar), *fields])
     ready = work / f'{name}.ready'
     ready.write_text(json.dumps({'title_id': title, 'archive': aar.name, 'archive_bytes': aar.stat().st_size,
                                  'files': m['inventory']['files'], 'bytes': m['inventory']['bytes']}, indent=1) + '\n')

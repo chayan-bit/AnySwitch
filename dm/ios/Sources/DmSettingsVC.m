@@ -20,6 +20,7 @@ typedef NS_ENUM(NSInteger, Dir) { DirNone = 0, DirUp, DirDown, DirLeft, DirRight
 + (NSArray<DmPage *> *)pagesOf:(DmSettings *)st gameRowsOnly:(BOOL)gameOnly {
     NSMutableArray *out = [NSMutableArray array];
     for (DmSection *s in st.visibleSections) {
+        if (!s.listed) continue;
         BOOL any = !gameOnly; for (DmSetting *x in [st visibleSettingsInSection:s]) if (x.scope != DmScopeSystem) any = YES;
         if (!any) continue;
         DmPage *p = [self section:s]; p->_gameRowsOnly = gameOnly; [out addObject:p];
@@ -122,7 +123,7 @@ static void on_trait(UIView *v, void (^apply)(void)) {
             if (r.slider) [r.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
         }
         add([[DmRowView alloc] initWithSetting:nil kind:DmItemReset compact:_compact]);
-        if (!pg.gameRowsOnly) add([[DmRowView alloc] initWithSetting:nil kind:DmItemResetAll compact:_compact]);   // in a game's Options it would reach the system settings too
+        if (!pg.gameRowsOnly && !self.pageRestoreOnly) add([[DmRowView alloc] initWithSetting:nil kind:DmItemResetAll compact:_compact]);   // in a game's Options it would reach the system settings too
     } else {
         _items = pg.items ? pg.items() : @[];
         if (!_items.count) _items = @[[DmPageItem info:@"Nothing here yet" detail:nil]];

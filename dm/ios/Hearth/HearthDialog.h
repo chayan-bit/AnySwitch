@@ -8,5 +8,8 @@
 void hearth_dialog(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *buttons, NSInteger destructive, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index));
 // Picture tiles in one row (a user picker, the avatar chooser): images holds a UIImage per name (NSNull for a tile with only its name, such as Cancel); the rest as hearth_dialog
 void hearth_dialog_tiles(UIViewController *over, NSString *title, NSString *message, NSArray<NSString *> *names, NSArray *images, NSInteger focus, NSInteger cancel, void (^answer)(NSInteger index));
+// A line of text to type (a game's software keyboard): the field above Cancel and OK, the system keyboard up at once. Return or OK answers the text, Cancel, Escape or B nil.
+// maxChars: the most UTF-16 units the field takes (0: no limit)
+void hearth_dialog_text(UIViewController *over, NSString *title, NSString *message, NSString *initial, NSString *placeholder, NSInteger maxChars, void (^answer)(NSString *text));
 // One OK button: information the player only has to dismiss
 void hearth_dialog_info(UIViewController *over, NSString *title, NSString *message);

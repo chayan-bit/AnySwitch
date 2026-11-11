@@ -8,9 +8,12 @@
 #import "HearthTheme.h"
 #import "HearthSound.h"
 #import "HearthQuickVC.h"
+#import "HearthGalleryVC.h"
 #import "HearthSleep.h"
 #import "HearthDialog.h"
 #import "HearthSettingsPages.h"
+#import "HearthControllers.h"
+#import "HearthNotify.h"
 #import "DmSettings.h"
 #import "DmSettingsVC.h"
 #import "DmSettingsViews.h"
@@ -30,7 +33,8 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     HearthTopBar *_bar; UIScrollView *_row; UILabel *_empty; UIView *_divider; UILabel *_buttonName; CGFloat _tileSize; HearthMetrics _m; NSMutableArray<HearthTile *> *_tiles; NSArray<HearthRoundButton *> *_buttons;
     DmFocusView *_tileRing, *_buttonRing; DmHintBar *_hints; NSArray *_shownHints;
     HearthFocus *_focus; DmRepeat *_repeat; uint64_t _prev; BOOL _baselined, _launching;
-    DmSettingsVC *_settings; HearthQuickVC *_quick; NSArray<NSString *> *_buttonActions;
+    DmSettingsVC *_settings; HearthQuickVC *_quick; HearthGalleryVC *_gallery; NSArray<NSString *> *_buttonActions;
+    HearthGame *_importing; NSString *_importPhase; double _importDone;   // the game being imported (a placeholder tile), what it is doing, and how far it is
 }
 
 #pragma mark - Build
@@ -47,7 +51,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _tileRing = [DmFocusView new]; _tileRing.radius = HEARTH_TILE_RADIUS + 6; [_row addSubview:_tileRing];
     _empty = [UILabel new]; _empty.text = @"No games yet"; _empty.font = [DmUI font:22 weight:UIFontWeightSemibold]; _empty.textColor = DmUI.sub; _empty.textAlignment = NSTextAlignmentCenter;
     NSMutableArray *bs = [NSMutableArray array], *acts = [NSMutableArray array];
-    NSArray *defs = @[@[@"gearshape.fill", @"Settings", @"openSettings"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
+    NSArray *defs = @[@[@"photo.on.rectangle", @"Gallery", @"openGallery"], @[@"gearshape.fill", @"Settings", @"openSettings"], @[@"gamecontroller.fill", @"Controllers", @"openControllers"], @[@"switch.2", @"Quick Settings", @"openQuick"], @[@"moon.fill", @"Sleep", @"sleep"]];
     if (_overlay) defs = [defs arrayByAddingObject:@[@"xmark", @"Close the game", @"closeGame"]];   // touch's way to close the paused game
     for (NSArray *d in defs) { [bs addObject:[[HearthRoundButton alloc] initWithSymbol:d[0] label:d[1]]]; [acts addObject:d[2]]; }
     _buttons = bs; _buttonActions = acts;
@@ -63,13 +67,28 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     dm_gamepad_watch();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scanInbox) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(importMoved:) name:HearthImportProgressNotification object:nil];
     [self scanInbox];
+    hearth_notify_schedule(hearth_signing_ends(NSBundle.mainBundle.bundlePath, hearth_library().documentsDir));   // only once the player allowed notifications (the Signing page)
 }
 // This screen's measures (HearthTheme.h). The size is 0 before the first layout (the screen's then), so the first layout rebuilds the tiles when the real ones differ
 - (HearthMetrics)currentMetrics {
     CGSize s = self.view.bounds.size; if (s.height <= 0) s = self.view.window.windowScene.screen.bounds.size;
     UIEdgeInsets si = self.view.safeAreaInsets;
     return hearth_metrics(s.width, s.height, si.top, si.bottom);
+}
+// An import's progress: a placeholder tile with the game's icon and name as soon as meta/ is out, its ring and percentage following; gone when the import ends (the reload shows the game)
+- (void)importMoved:(NSNotification *)n {
+    NSDictionary *u = n.userInfo;
+    if ([u[@"ended"] boolValue]) { if (_importing) { _importing = nil; [self reload]; } return; }
+    NSString *title = u[@"title"], *work = u[@"work"];
+    HearthGame *g = [hearth_library() placeholderAt:work title:title];
+    _importDone = [u[@"done"] doubleValue]; _importPhase = u[@"phase"];
+    g.why = [NSString stringWithFormat:@"This game is being imported from the Mac (%@, %.0f%% done). It can be played once the import is finished.", _importPhase, floor(_importDone * 100)];
+    BOOL same = _importing && [_importing.titleId isEqual:g.titleId] && [_importing.name isEqual:g.name] && (_importing.iconPath != nil) == (g.iconPath != nil);
+    _importing = g;
+    if (!same) { [self reload]; return; }   // a new import, or its name and icon arrived
+    for (HearthTile *t in _tiles) if (t.game.reason == HEARTH_IMPORTING) { t.game.why = g.why; t.importDone = _importDone; }
 }
 - (void)scanInbox { __weak HearthHomeVC *w = self; hearth_import_scan(^{ [w reload]; }); }   // a game pushed from the Mac appears when its import is done
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_repeat stop]; }
@@ -87,12 +106,13 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
         for (HearthGame *g in games) if (![g.titleId isEqual:run.titleId]) [m addObject:g];
         games = m;
     }
+    if (_importing && ![[games valueForKey:@"titleId"] containsObject:_importing.titleId]) games = [games arrayByAddingObject:_importing];   // shortcut: a game being imported again over an installed one shows no progress, its tile stays until the swap
     fprintf(stderr, "home: %lu games\n", (unsigned long)games.count);
     for (HearthTile *t in _tiles) [t removeFromSuperview];
     [_tiles removeAllObjects];
     _m = [self currentMetrics]; _tileSize = _m.tile;
     for (HearthGame *g in games) {
-        HearthTile *t = [[HearthTile alloc] initWithGame:g metrics:_m]; t.playing = g == run;
+        HearthTile *t = [[HearthTile alloc] initWithGame:g metrics:_m]; t.playing = g == run; if (g == _importing) t.importDone = _importDone;
         [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
         [t addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tileHeld:)]];   // the game's Options
         [_row insertSubview:t belowSubview:_tileRing]; [_tiles addObject:t];
@@ -103,6 +123,7 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     NSMutableArray *pics = [NSMutableArray array], *names = [NSMutableArray array];
     for (HearthUser *u in hearth_users().users) { [pics addObject:hearth_avatar_image(u)]; [names addObject:u.name]; }
     [_bar setUsers:pics names:names];
+    [_bar setNotice:hearth_signing_line(hearth_signing_ends(NSBundle.mainBundle.bundlePath, hearth_library().documentsDir), NSDate.date)];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     [self showFocus:NO];
 }
@@ -212,8 +233,9 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     __weak HearthHomeVC *w = self;
     hearth_sleep(^{ HearthHomeVC *s = w; if (hearth_home_up()) hearth_resume(); else if (s) { [s takeController]; [s becomeFirstResponder]; } });
 }
+- (BOOL)layerUp { return _quick || _settings || _gallery; }   // a panel, a sheet or the Gallery is over Home
 - (void)openQuick {
-    if (_quick || _settings) return;
+    if (self.layerUp) return;
     hearth_sound(HearthSoundOpen); [_repeat stop];
     HearthQuickVC *q = [HearthQuickVC new]; _quick = q; q.compact = _m.compact;
     __weak HearthHomeVC *w = self;
@@ -221,14 +243,30 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     q.onSleep = ^{ [w sleep]; };
     [self addChildViewController:q];
     q.view.frame = self.view.bounds; q.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:q.view]; [q didMoveToParentViewController:self];
+    [self.view addSubview:q.view]; [q didMoveToParentViewController:self]; hearth_ax_cover(q.view, YES);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [q padState:m lx:lx ly:ly]; });
 }
-- (BOOL)closeQuick { if (!_quick) return NO; [_quick close]; return YES; }   // HOME with the panel open closes only the panel
+- (BOOL)closeQuick { if (_gallery) { [_gallery close]; return YES; } if (!_quick) return NO; [_quick close]; return YES; }   // HOME with the panel or the Gallery open closes only that
+- (void)openGallery {
+    if (self.layerUp) return;
+    hearth_sound(HearthSoundOpen); [_repeat stop];
+    HearthGalleryVC *g = [HearthGalleryVC new]; _gallery = g;
+    __weak HearthHomeVC *w = self; g.onClose = ^{ [w galleryGone]; };
+    [self addChildViewController:g];
+    g.view.frame = self.view.bounds; g.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:g.view]; [g didMoveToParentViewController:self]; hearth_ax_cover(g.view, YES);
+    dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [g padState:m lx:lx ly:ly]; });
+}
+- (void)galleryGone {
+    HearthGalleryVC *g = _gallery; if (!g) return;
+    _gallery = nil;
+    [g willMoveToParentViewController:nil]; hearth_ax_cover(g.view, NO); [g.view removeFromSuperview]; [g removeFromParentViewController];
+    [self takeController]; [self becomeFirstResponder];
+}
 - (void)quickGone {
     HearthQuickVC *q = _quick; if (!q) return;
     _quick = nil;
-    [q willMoveToParentViewController:nil]; [q.view removeFromSuperview]; [q removeFromParentViewController];
+    [q willMoveToParentViewController:nil]; hearth_ax_cover(q.view, NO); [q.view removeFromSuperview]; [q removeFromParentViewController];
     if (!hearth_asleep()) { [self takeController]; [self becomeFirstResponder]; }
 }
 - (void)launch:(HearthTile *)t {
@@ -256,18 +294,20 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     } completion:^(BOOL f) { (void)f; t.art.hidden = NO; done(); }];
 }
 - (void)openSettings { [self showSheet:hearth_system_settings(self.view.bounds.size)]; }
+- (void)openControllers { [self showSheet:hearth_controllers(self.view.bounds.size)]; }
 - (void)openUser:(HearthUser *)u {   // a picture in the top bar: that user on the Users page
-    if (_settings || _quick) return;
+    if (self.layerUp) return;
     DmSettingsVC *v = hearth_system_settings(self.view.bounds.size); [self showSheet:v]; hearth_settings_show_user(v, u.uid);
 }
 - (void)openOptions:(HearthGame *)g {
+    if (g.reason == HEARTH_IMPORTING) return;   // nothing to set until it is installed
     __weak HearthHomeVC *w = self;
     fprintf(stderr, "hearth: Options of %s\n", g.titleId.UTF8String);
     [self showSheet:hearth_options(g, self.view.bounds.size, ^{ [w closeSettings]; })];   // a deleted game: back to Home, which lists the games again
 }
 // System Settings or a game's Options, over Home; it has the controller until it closes
 - (void)showSheet:(DmSettingsVC *)vc {
-    if (_settings || _quick) return;
+    if (self.layerUp) return;
     hearth_sound(HearthSoundOpen); [_repeat stop];
     __weak HearthHomeVC *w = self;
     vc.onClose = ^{ [w closeSettings]; };
@@ -275,14 +315,14 @@ enum { ZoneTiles = 0, ZoneButtons = 1, ZoneCount };
     _settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
-    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self];
+    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self]; hearth_ax_cover(vc.view, YES);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [vc padState:m lx:lx ly:ly]; });
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ vc.view.alpha = 1; vc.view.transform = CGAffineTransformIdentity; } completion:nil];
 }
 - (void)closeSettings {
     DmSettingsVC *vc = _settings; if (!vc) return;
     _settings = nil; hearth_sound(HearthSoundBack);
-    [vc willMoveToParentViewController:nil];
+    [vc willMoveToParentViewController:nil]; hearth_ax_cover(vc.view, NO);
     [UIView animateWithDuration:0.14 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.98, 0.98); }
                      completion:^(BOOL f) { (void)f; [vc.view removeFromSuperview]; [vc removeFromParentViewController]; }];
     [self takeController]; [self becomeFirstResponder]; [self reload];   // the player's name may have changed
@@ -336,7 +376,7 @@ static HearthDir dir_of(uint64_t m, int32_t lx, int32_t ly) {
     if (up & 1ull << DMB_X && _focus.zone == ZoneTiles && _focus.index >= 0 && _tiles[(NSUInteger)_focus.index].playing) { [_focus showRing]; hearth_confirm_close(self); }
 }
 - (NSArray<UIKeyCommand *> *)keyCommands {
-    if (_settings || _quick || _launching) return @[];
+    if (self.layerUp || _launching) return @[];
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in @[@[UIKeyInputUpArrow, @"keyUp"], @[UIKeyInputDownArrow, @"keyDown"], @[UIKeyInputLeftArrow, @"keyLeft"], @[UIKeyInputRightArrow, @"keyRight"], @[@"\r", @"activate"]]) {
         UIKeyCommand *c = [UIKeyCommand keyCommandWithInput:p[0] modifierFlags:0 action:NSSelectorFromString(p[1])]; c.wantsPriorityOverSystemBehavior = YES; [r addObject:c];

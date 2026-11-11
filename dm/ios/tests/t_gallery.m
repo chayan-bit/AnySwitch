@@ -30,6 +30,12 @@ int main(void) { @autoreleasepool {
     CHECK(!hearth_gallery_delete(docs, [a stringByAppendingPathComponent:@".name"], &why), "the name file: refused");
     CHECK(hearth_gallery_delete(docs, p1, &why) && ![fm fileExistsAtPath:p1] && hearth_gallery_items(docs).count == 3, "one picture deleted");
     [fm removeItemAtPath:docs error:nil];
+    // the grid: 7 items in rows of 3 (0 1 2 / 3 4 5 / 6)
+    CHECK(hearth_grid_move(1, 7, 3, HearthDirUp) < 0 && hearth_grid_move(4, 7, 3, HearthDirUp) == 1, "up: the row above, or the filter row from the first");
+    CHECK(hearth_grid_move(1, 7, 3, HearthDirDown) == 4 && hearth_grid_move(5, 7, 3, HearthDirDown) == 6 && hearth_grid_move(6, 7, 3, HearthDirDown) == 6, "down: the row below, its last item on a short row, stays on the last row");
+    CHECK(hearth_grid_move(3, 7, 3, HearthDirLeft) == 3 && hearth_grid_move(4, 7, 3, HearthDirLeft) == 3, "left stops at the row's start");
+    CHECK(hearth_grid_move(2, 7, 3, HearthDirRight) == 2 && hearth_grid_move(6, 7, 3, HearthDirRight) == 6 && hearth_grid_move(0, 7, 3, HearthDirRight) == 1, "right stops at the row's end and the last item");
+    CHECK(hearth_grid_move(0, 0, 3, HearthDirDown) == -1 && hearth_grid_move(9, 7, 3, HearthDirNone) == 6, "no items: -1; an index past the end is clamped");
     printf("t_gallery: %d checks, %d failed\n", g_n, g_fail);
     return g_fail != 0;
 } }

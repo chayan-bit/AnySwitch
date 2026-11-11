@@ -17,6 +17,7 @@
 #import "HearthCapture.h"
 #import "HearthGallery.h"
 #import "HearthAvatar.h"
+#import "HearthHomeViews.h"
 #import "HearthTheme.h"
 #include <errno.h>
 #include "front.h"
@@ -153,7 +154,7 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
     self.settings = vc; [self addChildViewController:vc];
     vc.view.frame = self.view.bounds; vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.97, 0.97);
-    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self];
+    [self.view addSubview:vc.view]; [vc didMoveToParentViewController:self]; hearth_ax_cover(vc.view, YES);
     g_settings_open = 1; dm_focus_set(2);
     dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { [vc padState:m lx:lx ly:ly]; });
     [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ vc.view.alpha = 1; vc.view.transform = CGAffineTransformIdentity; } completion:nil];
@@ -162,7 +163,7 @@ static __weak DmGameVC *g_game_vc;   // for the album calls, which arrive on a g
     DmSettingsVC *vc = self.settings; if (!vc) return;
     self.settings = nil;
     dm_gamepad_set_capture(nil); g_settings_open = 0; dm_focus_set(1);
-    [vc willMoveToParentViewController:nil];
+    [vc willMoveToParentViewController:nil]; hearth_ax_cover(vc.view, NO);
     [UIView animateWithDuration:0.14 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vc.view.alpha = 0; vc.view.transform = CGAffineTransformMakeScale(0.98, 0.98); }
                      completion:^(BOOL f) { (void)f; [vc.view removeFromSuperview]; [vc removeFromParentViewController]; }];
 }
@@ -319,23 +320,18 @@ void front_web_attach(UIView *box) {
 void front_web_detach(UIView *box) { (void)box; }
 int front_ctrl_support(int min, int max) { (void)min; (void)max; return -1; }   // front.h: Hearth has no controller applet prompt (upstream's Mac front end has one): canceled at once, as the host does without a window
 
-// Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result
+// Software keyboard: Hearth's text panel (hearth_dialog_text) on the main thread, the calling thread waits for the result
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
-    (void)max_chars;
     if (!g_layer) return -1;
     __block int r = 0; __block NSString *text = nil;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    NSString *t = title && *title ? @(title) : @"", *m = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];
+    NSString *t = title && *title ? @(title) : @"", *m = [[@[@(sub ? sub : ""), @(guide ? guide : "")] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]] componentsJoinedByString:@"\n"];
     NSString *init = initial ? @(initial) : @"", *ph = guide ? @(guide) : @"";
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
-        [ac addTextFieldWithConfigurationHandler:^(UITextField *f) { f.text = init; f.placeholder = ph; }];
-        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; r = 1; text = ac.textFields.firstObject.text; dispatch_semaphore_signal(done); }]];
-        [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; dispatch_semaphore_signal(done); }]];
         UIViewController *vc = nil;
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes) if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) vc = w.rootViewController;
         if (!vc) { dispatch_semaphore_signal(done); return; }
-        [vc presentViewController:ac animated:YES completion:nil];
+        hearth_dialog_text(vc, t.length ? t : @"Enter text", m, init, ph, max_chars, ^(NSString *s) { if (s) { r = 1; text = s; } dispatch_semaphore_signal(done); });
     });
     // The guest clock keeps running meanwhile, as on the Switch (hle_swkbd.c): a freeze here as well stopped Octopath Traveler 0's frame loop for as long as the box was up and made its sound stutter
     // (4,977 ms and 2,577 ms frames, 5,181 wakeups a second). The inline keyboard freezes around its own call (hle_swkbd.c)
@@ -345,7 +341,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     return 1;
 }
 
-// A notice the player has to see (front.h): an alert on the main thread, without blocking the caller.
+// A notice the player has to see (front.h): Hearth's dialog on the main thread, without blocking the caller.
 // Called at boot (shader libraries missing, nvn_mtl.m) the key window may not exist yet, so it retries for a few seconds instead of dropping the alert
 static void notice_show(NSString *t, NSString *m, int tries) {
     UIViewController *vc = nil;
@@ -355,9 +351,7 @@ static void notice_show(NSString *t, NSString *m, int tries) {
         if (tries > 0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{ notice_show(t, m, tries - 1); }); return; }
         LOG("[RED] front end: no window for the alert \"%s\"", t.UTF8String); return;
     }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [vc presentViewController:a animated:YES completion:nil];
+    hearth_dialog_info(vc, t, m);
 }
 void front_notice(const char *title, const char *msg) {
     LOG("front end: telling the player: %s: %s", title, msg);

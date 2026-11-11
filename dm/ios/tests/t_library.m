@@ -69,6 +69,8 @@ int main(int argc, char **argv) { @autoreleasepool {   // argv: a folder with a 
     CHECK(all[1].reason != 0 && all[1].why.length, "incomplete pack refused: %d", all[1].reason);
     CHECK([lib gameWithId:@"0100000000020000"].reason == DM_PACK_REBUILD, "gameWithId");
     CHECK([lib gameWithId:@"01000000000F0000"] == nil, "unknown id");
+    HearthGame *ph = [lib placeholderAt:[games stringByAppendingPathComponent:@"0100000000010000"] title:@"0100000000010000"], *ph0 = [lib placeholderAt:@"/nonexistent" title:@"0100000000030000"];
+    CHECK(ph.reason == HEARTH_IMPORTING && [ph.name isEqual:@"Second Language Name"] && [ph0.name isEqual:@"New game"] && !ph0.iconPath && [ph0.titleId isEqual:@"0100000000030000"], "placeholder: the name once meta/ is there, else New game");
 
     // 4. the cache follows the files: a fixed manifest is checked again
     manifest([games stringByAppendingPathComponent:@"0100000000020000"], @"0100000000020000", DM_PACK_FORMAT);
