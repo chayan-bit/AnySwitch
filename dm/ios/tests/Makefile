@@ -9,7 +9,7 @@ t_home_focus: t_home_focus.m ../Hearth/HearthFocus.m ../Hearth/HearthFocus.h ../
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -I../Sources -o $@ t_home_focus.m ../Hearth/HearthFocus.m ../Sources/DmRepeat.m -framework Foundation
 t_users: t_users.m ../Hearth/HearthUsers.m ../Hearth/HearthUsers.h ../Hearth/HearthLibrary.h
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -o $@ t_users.m ../Hearth/HearthUsers.m -framework Foundation
-t_controls: t_controls.m ../Sources/DmControlMap.m ../Sources/DmControlMap.h ../Sources/DmSettings.m ../../host/keymap.c ../../host/keymap.h
+t_controls: t_controls.m ../Sources/DmControlMap.m ../Sources/DmControlMap.h ../Sources/DmSettings.m ../../host/keymap.c ../../host/keymap.h ../../host/pad_slots.h
 	clang -O1 -g -Wall -fobjc-arc -I../Sources -I../../host -o $@ t_controls.m ../Sources/DmSettings.m ../Sources/DmControlMap.m ../../host/keymap.c -framework Foundation
 t_gallery: t_gallery.m ../Hearth/HearthGallery.m ../Hearth/HearthGallery.h
 	clang -O1 -g -Wall -fobjc-arc -I../Hearth -o $@ t_gallery.m ../Hearth/HearthGallery.m -framework Foundation

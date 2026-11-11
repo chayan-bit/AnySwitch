@@ -442,7 +442,7 @@ int main(void) { @autoreleasepool {
     { NSDictionary *want = @{@"DM_LETTERBOX": @"both", @"DM_AMBIENT_LEVEL": @"system", @"DM_UPSCALE": @"both", @"DM_UPSCALE_SHARPNESS": @"both", @"DM_RENDER_SCALE": @"game", @"DM_INTERNAL_RES": @"game",
           @"DM_OPMODE": @"both", @"DM_CONTROLS_LAYOUT": @"both", @"DM_PAD_LAYOUT": @"game", @"DM_CONTROLS_SCALE": @"system", @"DM_CONTROLS_OPACITY": @"system", @"DM_CONTROLS_IDLE_FADE": @"system",
           @"DM_SHAKE_G": @"system", @"DM_VIBRATION": @"both", @"DM_VIBRATION_STRENGTH": @"system", @"DM_VOLUME": @"system", @"DM_FPS_TARGET": @"game", @"DM_PSO_FLEX": @"game", @"DM_SHOW_FPS": @"system",
-          @"DM_LANG": @"both", @"DM_NICK": @"system", @"DM_APPEARANCE": @"system"};
+          @"DM_LANG": @"both", @"DM_NICK": @"system", @"DM_APPEARANCE": @"system", @"DM_PAD_MERGE": @"system", @"DM_PAD_PRESS_TO_JOIN": @"system"};
       NSMutableDictionary *withMaps = [want mutableCopy];   // the button maps (DmControlMap.h): 16 controller rows and 24 keyboard rows, all system
       for (int r = 0; r < DM_KEYMAP_ROWS; r++) { if (r < DM_KEYMAP_BUTTONS) withMaps[[NSString stringWithFormat:@"DM_MAP_PAD_%s", dm_keymap_row[r]]] = @"system"; withMaps[[NSString stringWithFormat:@"DM_MAP_KEY_%s", dm_keymap_row[r]]] = @"system"; }
       want = withMaps;

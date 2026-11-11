@@ -228,6 +228,11 @@ static NSArray<NSDictionary *> *withScopes(NSArray<NSDictionary *> *sections);
             @{@"key": @"DM_APPEARANCE", @"label": @"Appearance", @"type": @"choice", @"default": @"system",
               @"options": @[@{@"value": @"system", @"label": @"Same as the device"}, @{@"value": @"light", @"label": @"Light"}, @{@"value": @"dark", @"label": @"Dark"}],
               @"detail": @"Light or dark menus, or follow the device's own appearance."}]},
+        @{@"id": @"players", @"title": @"Players", @"icon": @"person.2", @"listed": @NO, @"settings": @[   // on Hearth's Controllers page (HearthControllers.m); DmGamepad.m reads them again when the page changes them
+            @{@"key": @"DM_PAD_MERGE", @"label": @"All controllers as player 1", @"type": @"toggle", @"default": @"0",
+              @"detail": @"Every controller plays as player 1, for one player who switches between controllers. Off: each controller is a player of its own, for playing together."},
+            @{@"key": @"DM_PAD_PRESS_TO_JOIN", @"label": @"Press a button to join", @"type": @"toggle", @"default": @"0", @"enabledWhen": @{@"key": @"DM_PAD_MERGE", @"equals": @"0"},
+              @"detail": @"A controller becomes a player when one of its buttons is pressed, as the lowest player number still free, so the players choose their order. Off: each controller is a player as it connects."}]},
     ] arrayByAddingObjectsFromArray:dm_control_map_sections()]);   // the button maps (DmControlMap.h), on Hearth's Controllers page
 }
 // Where each built-in entry's player choice lives (docs/settings.md); an entry not named here is system
