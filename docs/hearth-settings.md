@@ -104,6 +104,8 @@ A value that is stored for a hidden row is kept and still applies; the row only 
 | System | Game language | `DM_LANG` | the Switch languages | en-US | restart | both |
 | System | Player name | `DM_NICK` | text, up to 32 characters | Player | restart | system |
 | Appearance | Appearance | `DM_APPEARANCE` | system, light, dark | system (the device's own) | at once | system |
+| Players (Controllers page) | All controllers as player 1 | `DM_PAD_MERGE` | on, off | off | at once | system |
+| Players (Controllers page) | Press a button to join (only while the row above is off) | `DM_PAD_PRESS_TO_JOIN` | on, off | off | at once | system |
 
 Everything else that the host reads from a `DM_*` variable stays environment-only: logging, traces and dumps, test hooks, file paths, and the per-game compatibility switches that a game profile sets.
 
@@ -115,6 +117,18 @@ The threshold is the **Shake sensitivity** slider on the Controls page, 0.5 to 4
 A lower value makes the shake easier to trigger and suits the heavier iPad; a higher one needs a sharper flick.
 A line `DM_SHAKE_G=1.0` in `Documents/env.txt` overrides the slider (the row is then dimmed and locked), as for any setting.
 The log says which threshold is in use at start (`front end: shaking the device (iPhone or iPad) shakes the controller (threshold ... G)`) and the peak of each detected shake.
+
+### Players (`DM_PAD_MERGE`, `DM_PAD_PRESS_TO_JOIN`)
+
+Each physical controller is a player of its own, as in upstream's front ends: the first one connected is player 1, the next player 2, up to 8.
+The keyboard and the touch controls always play as player 1, together with player 1's controller.
+A controller unplugged and plugged in again gets its player back (`pad_slots.h` keeps the name of each slot's last controller); a new one takes player 1 when it is free, else the lowest player no controller has held yet.
+**All controllers as player 1** merges every controller into player 1 (the last one moved wins), for one player who switches between controllers.
+**Press a button to join** leaves a new controller without a player until one of its buttons is pressed; it then becomes the lowest player still free, and that press plays too.
+Both rows are on the Controllers page (section `players`, not listed in System Settings) and apply at once: `DmGamepad.m` reads them again when the page changes them, and every controller gets its player again.
+Home, the settings screens and the + / - chord take any controller's buttons, a player or not; while one of them holds the controllers, no player's input reaches the game.
+The Connected page shows the player each controller plays as.
+The log names each controller's player as it connects, joins and disconnects (`controller '...' connected: player 2 (npad 1)`).
 
 ### Internal resolution (`DM_INTERNAL_RES`)
 
