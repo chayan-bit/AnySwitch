@@ -28,6 +28,10 @@
 #include "front.h"
 #include "haptics_apple.h"
 #include "pad_slots.h"
+#include "ctrl_prompt.h"
+#import "DmSettingsViews.h"
+#import "HearthLaunch.h"
+#import "HearthAvatar.h"
 #import "DmPadBits.h"
 #import "DmControlMap.h"
 #import "DmSettings.h"
@@ -556,9 +560,8 @@ static int pad_join(GCController *c) {   // DM_PAD_PRESS_TO_JOIN: c pressed a bu
     npad_name(p, nb, sizeof nb); LOG("controller '%s': a button pressed: player %d (npad %s)", pad_name(c), p + 1, nb);
     return p;
 }
-static void read_pad(GCExtendedGamepad *g) {
-    GCController *c = g.controller;
-    uint32_t in = 0;   // the physical inputs held, in dm_pad_input_ids order
+static uint32_t pad_inputs(GCExtendedGamepad *g) {   // the physical inputs held, in dm_pad_input_ids order
+    uint32_t in = 0;
     #define K(btn, i) if (btn.isPressed) in |= 1u << i
     K(g.buttonB, 0); K(g.buttonA, 1); K(g.buttonY, 2); K(g.buttonX, 3);   // GameController names the face buttons by another layout's letters: B is the right one, A the bottom
     if (g.leftThumbstickButton) K(g.leftThumbstickButton, 4); if (g.rightThumbstickButton) K(g.rightThumbstickButton, 5);
@@ -566,6 +569,13 @@ static void read_pad(GCExtendedGamepad *g) {
     K(g.buttonMenu, 10); if (g.buttonOptions) K(g.buttonOptions, 11);
     K(g.dpad.left, 12); K(g.dpad.up, 13); K(g.dpad.right, 14); K(g.dpad.down, 15);
     #undef K
+    return in;
+}
+static ctrl_prompt g_cp;   // the controller applet's prompt, below
+static int cp_poll(int confirm, int cancel);
+static void read_pad(GCExtendedGamepad *g) {
+    GCController *c = g.controller;
+    uint32_t in = pad_inputs(g);
     uint64_t m = dm_pad_map_apply(g_padsrc, in);
     int32_t ax[4] = {axis(g.leftThumbstick.xAxis.value), axis(g.leftThumbstick.yAxis.value), axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value)};
     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)c);
@@ -635,6 +645,7 @@ static void pads_attach(GCController *gone) {
     if (!any) dm_haptics_apple_controller(0, nil);   // the game's rumble goes to the device again
     dm_pad_players(g_merge ? 0 : pad_slot_mask(&g_slots));
     g_pads_any = any; [g_view padsInUse:any];
+    if (g_cp.phase != CP_IDLE) cp_poll(0, 0);   // a controller came or went while the controller applet's prompt is up
 }
 static void pads_mode_load(void) {   // DM_PAD_MERGE and DM_PAD_PRESS_TO_JOIN (the Controllers page's Players rows); a change gives every controller its player again
     static int loaded;
@@ -650,6 +661,132 @@ static void pads_mode_load(void) {   // DM_PAD_MERGE and DM_PAD_PRESS_TO_JOIN (t
     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
 }
 @end
+
+// ---- The controller applet's prompt ----
+// front.h front_ctrl_support, ctrl_prompt.h (issue #1640), ported from upstream's DmGamepad.m: the game asked for more players than it sees, and its thread waits while a card is up
+// over the game. A controller that joins meanwhile is a player at once (its first button with Press a button to join, its connection without) and the count follows. A and B are
+// the game's A and B after the Controllers page's map, on any controller (the press that makes a controller join does not count); Return and Escape on a keyboard and the card's
+// Done and Cancel buttons do the same. The card is drawn as Hearth's dialogs are (DmUI's colours and fonts) and presented over the game, so HOME waits as it does for any dialog.
+// It holds the controllers (dm_gamepad_set_capture): the game gets no input while it is up, nor until the A or B that closed it is let go. A front end passes the texts in the
+// player's language as DM_CTRL_PROMPT_TEXT (cp_text). Main thread
+static int g_cp_ok; static dispatch_semaphore_t g_cp_done;
+static void (^g_cp_before)(uint64_t, int32_t, int32_t);   // the capture handler the prompt took the controllers from (nil: the game)
+void dm_gamepad_set_capture(void (^handler)(uint64_t buttons, int32_t lx, int32_t ly));
+void (^dm_gamepad_capture(void))(uint64_t, int32_t, int32_t);
+static void cp_player_one(UILabel *name, UIImageView *picture) {   // player 1 is the Hearth user the game started as
+    NSString *uid = hearth_running_user(); HearthUser *u = uid ? [hearth_users() userWithUid:uid] : nil; if (!u) return;
+    name.text = [NSString stringWithFormat:@"Player 1: %@", u.name]; picture.image = hearth_avatar_image(u);
+}
+@interface DmCtrlPromptVC : UIViewController
+@property (nonatomic, strong) UILabel *titleLabel, *hint, *count;
+@property (nonatomic, strong) UIButton *done, *cancelButton;
+@end
+static DmCtrlPromptVC *g_cp_vc;
+@implementation DmCtrlPromptVC
+static UILabel *cp_label(CGFloat size, UIFontWeight w, UIColor *c) {
+    UILabel *l = [UILabel new]; l.font = [DmUI font:size weight:w]; l.textColor = c; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter; return l;
+}
+- (UIButton *)button:(NSString *)title primary:(BOOL)primary action:(SEL)action {
+    UIButtonConfiguration *cfg = primary ? UIButtonConfiguration.filledButtonConfiguration : UIButtonConfiguration.grayButtonConfiguration;
+    cfg.title = title; cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule; cfg.buttonSize = UIButtonConfigurationSizeLarge;
+    if (primary) { cfg.baseBackgroundColor = DmUI.accent; cfg.baseForegroundColor = UIColor.blackColor; }
+    UIButton *b = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside]; return b;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55]; self.view.accessibilityViewIsModal = YES;   // the scrim keeps every touch from the game and the touch gamepad
+    self.titleLabel = cp_label(26, UIFontWeightBold, DmUI.text); self.hint = cp_label(18, UIFontWeightRegular, DmUI.sub); self.count = cp_label(20, UIFontWeightSemibold, DmUI.text);
+    NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObjects:self.titleLabel, self.hint, nil];
+    UIImageView *pic = [UIImageView new]; UILabel *who = cp_label(17, UIFontWeightMedium, DmUI.sub); cp_player_one(who, pic);
+    if (who.text.length) {
+        pic.layer.cornerRadius = 18; pic.clipsToBounds = YES; pic.contentMode = UIViewContentModeScaleAspectFill;
+        [pic.widthAnchor constraintEqualToConstant:36].active = YES; [pic.heightAnchor constraintEqualToConstant:36].active = YES;
+        UIStackView *p1 = [[UIStackView alloc] initWithArrangedSubviews:pic.image ? @[pic, who] : @[who]]; p1.spacing = 10; p1.alignment = UIStackViewAlignmentCenter;
+        UIStackView *centre = [[UIStackView alloc] initWithArrangedSubviews:@[p1]]; centre.axis = UILayoutConstraintAxisVertical; centre.alignment = UIStackViewAlignmentCenter;
+        [rows addObject:centre];
+    }
+    [rows addObject:self.count];
+    self.done = [self button:@"Done" primary:YES action:@selector(confirm)];
+    self.cancelButton = [self button:@"Cancel" primary:NO action:@selector(cancel)];
+    UIStackView *actions = [[UIStackView alloc] initWithArrangedSubviews:@[self.cancelButton, self.done]];   // Cancel left, as in Hearth's dialogs
+    actions.spacing = 16; actions.distribution = UIStackViewDistributionFillEqually;
+    [rows addObject:actions];
+    UIStackView *card = [[UIStackView alloc] initWithArrangedSubviews:rows];
+    card.axis = UILayoutConstraintAxisVertical; card.spacing = 14; [card setCustomSpacing:28 afterView:self.count];
+    card.layoutMargins = UIEdgeInsetsMake(32, 36, 28, 36); card.layoutMarginsRelativeArrangement = YES;
+    card.backgroundColor = DmUI.panel; card.layer.cornerRadius = 30; card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.shadowOpacity = 0.3; card.layer.shadowRadius = 30; card.layer.shadowOffset = CGSizeMake(0, 12);
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:card];
+    NSLayoutConstraint *wide = [card.widthAnchor constraintEqualToConstant:520]; wide.priority = UILayoutPriorityDefaultHigh;   // narrower on a narrow screen
+    [NSLayoutConstraint activateConstraints:@[[card.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor], [card.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [card.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor constant:-32], wide]];
+}
+- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self becomeFirstResponder]; }
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (NSArray<UIKeyCommand *> *)keyCommands {
+    return @[[UIKeyCommand keyCommandWithInput:@"\r" modifierFlags:0 action:@selector(confirm)], [UIKeyCommand keyCommandWithInput:UIKeyInputEscape modifierFlags:0 action:@selector(cancel)]];
+}
+- (void)confirm { cp_poll(1, 0); }
+- (void)cancel { cp_poll(0, 1); }
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+@end
+static void cp_buttons(int *a, int *b) {   // the game's A and B (after the map) held on any controller
+    *a = *b = 0;
+    for (GCController *c in GCController.controllers) if (c.extendedGamepad) { uint64_t m = dm_pad_map_apply(g_padsrc, pad_inputs(c.extendedGamepad)); *a |= (int)(m >> B_A & 1); *b |= (int)(m >> B_B & 1); }
+}
+static int cp_waiting(void) {   // connected controllers that are no player yet
+    int n = 0;
+    if (!g_merge) for (GCController *c in GCController.controllers) if (c.extendedGamepad && pad_slot_of(&g_slots, (__bridge const void *)c) < 0) n++;
+    return n;
+}
+static void cp_show(void) {   // the card's texts and its Done button follow each step
+    const char *env = getenv("DM_CTRL_PROMPT_TEXT"); char t[CP_TEXTS][256];
+    for (int i = 0; i < CP_TEXTS; i++) cp_text(env, i, &g_cp, t[i], sizeof t[i]);
+    DmCtrlPromptVC *vc = g_cp_vc; [vc loadViewIfNeeded];
+    vc.titleLabel.text = @(t[CP_TEXT_TITLE]); vc.hint.text = @(t[CP_TEXT_HINT]); vc.count.text = @(t[CP_TEXT_COUNT]);
+    [vc.done setTitle:@(t[CP_TEXT_DONE]) forState:UIControlStateNormal]; vc.done.enabled = cp_can_confirm(&g_cp);
+    [vc.cancelButton setTitle:@(t[CP_TEXT_CANCEL]) forState:UIControlStateNormal];
+}
+// One step of the prompt (a button on a controller, the card's buttons or keys, a controller joining, coming or going)
+static int cp_poll(int confirm, int cancel) {
+    if (g_cp.phase == CP_IDLE) return 0;
+    int a, b, joined = dm_players_reported(); cp_buttons(&a, &b);
+    cp_phase was = g_cp.phase, ph = cp_step(&g_cp, joined, cp_waiting(), a, b, confirm, cancel);
+    if (was == CP_OPEN && ph == CP_OPEN) cp_show();
+    if (was == CP_OPEN && ph != CP_OPEN) {
+        [g_cp_vc dismissViewControllerAnimated:YES completion:nil]; g_cp_vc = nil;
+        LOG("front end: controller prompt closed: %d players (%s)", joined, g_cp.ok ? "done" : "canceled");
+        g_cp_ok = g_cp.ok; dispatch_semaphore_signal(g_cp_done);
+        ph = cp_step(&g_cp, joined, 0, a, b, 0, 0);   // nothing held: the game has its input at once
+    }
+    if (ph == CP_IDLE) {   // the controllers go back, each read as it is now; after this step, as it may run inside the capture handler being replaced
+        void (^before)(uint64_t, int32_t, int32_t) = g_cp_before; g_cp_before = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{ dm_gamepad_set_capture(before); });
+        return 0;
+    }
+    return 1;
+}
+int front_ctrl_support(int min, int max) {
+    if (!front_metal_layer()) return -1;
+    __block int shown = 0;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *over = g_view.window.rootViewController; while (over.presentedViewController) over = over.presentedViewController;
+        if (!over || g_cp.phase != CP_IDLE) { dispatch_semaphore_signal(done); return; }
+        int a, b; cp_buttons(&a, &b);
+        g_cp_done = done; cp_open(&g_cp, min, max, dm_players_reported(), a, b); shown = 1;
+        LOG("front end: controller prompt open: %d to %d players wanted, %d in, %d controllers waiting to join", min, max, g_cp.joined, cp_waiting());
+        g_cp_vc = [DmCtrlPromptVC new]; g_cp_vc.modalPresentationStyle = UIModalPresentationOverFullScreen; g_cp_vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+        cp_show(); [over presentViewController:g_cp_vc animated:YES completion:nil];
+        g_cp_before = dm_gamepad_capture();
+        dm_gamepad_set_capture(^(uint64_t m, int32_t lx, int32_t ly) { (void)m; (void)lx; (void)ly; cp_poll(0, 0); });   // the game gets nothing meanwhile; this also takes the first step
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return shown ? g_cp_ok : -1;
+}
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 BOOL dm_gamepad_layout(CGRect content, BOOL allowBars) { return [g_view setContent:content allowBars:allowBars]; }   // main thread: the picture's rectangle; YES when the controls moved into the bars around it

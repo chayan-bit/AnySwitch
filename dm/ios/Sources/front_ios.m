@@ -318,7 +318,6 @@ void front_web_attach(UIView *box) {
     if (vc.game) [v insertSubview:box aboveSubview:vc.game]; else [v addSubview:box];
 }
 void front_web_detach(UIView *box) { (void)box; }
-int front_ctrl_support(int min, int max) { (void)min; (void)max; return -1; }   // front.h: Hearth has no controller applet prompt (upstream's Mac front end has one): canceled at once, as the host does without a window
 
 // Software keyboard: Hearth's text panel (hearth_dialog_text) on the main thread, the calling thread waits for the result
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
