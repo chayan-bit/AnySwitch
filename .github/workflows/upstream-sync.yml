@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      # gh aims at a fork's parent by default; every PR, issue and lookup here belongs to this repository
+      GH_REPO: ${{ github.repository }}
       UPSTREAM: https://github.com/seedds/nxnative.git
     steps:
       - uses: actions/checkout@v4
